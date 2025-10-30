@@ -1,24 +1,57 @@
 # YPF Ruta
 ## Aplicaciones
 ### Server
-La arquitectura del server del sistema está implementada de manera distribuida. Cada nodo, ejecuta uno de los siguientes aplicaciones:
+El servidor consiste en un sistema distribuido. Dentro del sistema , existen tres tipos diferentes de clústers:
 
-- Estación
-- Surtidor
+- *Surtidores* en una estación.
+- *Nodos suscriptos a una tarjeta*.
+- *Nodos líderes de tarjetas* que forman una *cuenta*.
+
+Entidades que participan:
+
+- **Surtidores.** Los surtidores corresponden a las máquinas conectadas de manera *local* en una estación.
+- **Estaciones/Nodos.** Los nodos representan estaciones de YPF. Dentro de una estación, uno de los surtidores tiene la responsabilidad de llevar a cabo la función del nodo en el sitema global.
+
+Hay tres tipos de nodos:
+
+- **Suscriptor (tarjeta).** Los nodos suscriptores mantienen informados a sus pares sobre las actualizaciones al registro de las tarjetas a las que suscriben. Un nodo puede estar suscripto a varias tarjetas.
+- **Líder (tarjeta).** Los nodos líder *lideran* un clúster de nodos suscriptores a una tarjeta; ésto es: tienen la responsabilidad de intercomunicar a los nodos del clúster y a su vez de mantener informado sobre actualizaciones de la tarjeta al *nodo cuenta* cuando este así lo solicite. Un nodo líder es también un nodo suscriptor.
+- **Cuenta.** Los nodos cuenta se comunican con un nodo líder de cada una de las tarjetas que le pertenecen a la cuenta. Un nodo cuenta **no** puede ser el líder de un clúster de nodos suscriptos a una tarjeta.
 
 ### Cliente
-El único cliente (fuera del servidor de YPF) es el **administrador**. El administrador es responsables de
+El único cliente (fuera del servidor de YPF) es el **administrador**. El administrador puede
 
-- limitar los montos disponibles tanto en las cuentas principales,
-- como en las tarjetas. Y de
-- consultar los saldos de las cuentas
-- y de las tarjetas. Además, puede
-- solicitar las facturación de las cuenta principal que le pertenece.
+- Limitar los montos disponibles en su cuenta.
+- Limitar los montos disponibles en las tarjetas de la cuenta.
+- Consultar los saldos de las cuentas.
+- Consultar los saldos de las tarjetas de la cuenta.
+- Realizar la facturación de la cuenta.
 
 ## Arquitectura del servidor
-Como ya se mencionó, el servidor está compuesto de dos ejecutables: **estación** y **surtidor**. Éstas entidades componen dos sistemas distribuidos separados: el sistema de estaciones, que contiene la información de todas las cuentas y de todas sus tarjetas, y el sistema de surtidores de cada estación, que mantiene la información que se genera de las tarjetas en cada surtidor, quedando centralizada en el nodo principal de la estación.  
+Como ya se mencionó, el servidor está implementado de manera distribuida. Los clústers que lo conforman tienen diferentes responsabilidades:
 
-En el sistema de estaciones, cada estación es un nodo. Para demostrar el funcionamiento de este sistema, vamos a hacer un recorrido de las situaciones en las que puede encontrarse:
+#### Clúster de surtidores
+
+Los surtidores en una estación están conectados de manera local y se encargan de mantener actualizado al surtidor líder del clúster para que este ejerza la función de nodo estación en el sistema global.
+
+#### Clúster de nodos suscriptos a una tarjeta
+
+Los nodos suscriptos a una tarjeta informan a sus pares de las actualizaciones en los registros de las tarjetas a las que suscriben. Hay un líder del clúster y los *súbditos* se encargan de elegirlo al principio de la ejecución y en caso de que el mismo deje de estar activo.
+
+![Clúster de nodos suscriptos a una tarjeta](diagrams/card-cluster-overview.svg)
+
+#### Clúster de cuenta
+
+El clúster de nodos líderes de tarjetas tienen su propio líder: el *nodo cuenta*. Dentro de éste clúster se mantiene actualizada al nodo cuenta ante cualquier cambio en alguno de los registros de las tarjetas que conforman la cuenta. Los *súbditos* eligen un líder al principio de la ejecución y en caso de que el mismo deje de estar activo. Las actualizaciones son comunicadas sólo cuando el nodo cuenta así lo solicita.
+
+![Clúster de cuenta](diagrams/account-clusters-overview.svg)
+
+#### Vista de águila
+
+Agrupando los diferentes tipos de clúster, la vista general de una posible configuración del sistema se ve de la siguiente forma:
+
+![*Overview* del sistema distribuido global](diagrams/distributed-system-overview.svg)
+
 
 ### 1. *Un conductor usa su tarjeta por primera vez en el surtidor de una estación*
 El conductor le da su tarjeta al cajero, que usa la terminal de cobro de la columna del surtidor que usó para cargar nafta. El surtidor (a partir de este punto llamamos surtidor a la terminal de cobro del mismo) necesita saber si el cobro puede o no ser efectuado. Para ello, solicita la información de la tarjeta. El mensaje utilizado para la solicitud es delegado al nodo central de la estación. En este punto ya nos encontramos en el sistema distribuido de estaciones.  
