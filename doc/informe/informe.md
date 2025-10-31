@@ -1,7 +1,10 @@
 # YPF Ruta
+En este trabajo se desarrolla **YPF Ruta**, un sistema que permite a las empresas centralizar el pago y el control de gasto de combustilble para su flota de vehículos.  
+Las empresas tienen una cuenta principal y tarjetas asociadas para cada uno de los conductores de sus vehículos. Cuando un vehículo necesita cargar en cualquiera de las 1600 estaciones distribuídas alrededor del país, puede utilizar dicha tarjeta para autorizar la carga; siendo luego facturado mensualmente el monto total de todas las tarjetas a la compañía.
+
 ## Aplicaciones
 ### Server
-El servidor consiste en un sistema distribuido. Dentro del sistema , existen tres tipos diferentes de clústers:
+El servidor consiste de un sistema distribuido en el que existen tres tipos diferentes de clústers de nodos:
 
 - *Surtidores* en una estación.
 - *Nodos suscriptos a una tarjeta*.
@@ -9,13 +12,13 @@ El servidor consiste en un sistema distribuido. Dentro del sistema , existen tre
 
 Entidades que participan:
 
-- **Surtidores.** Los surtidores corresponden a las máquinas conectadas de manera *local* en una estación.
+- **Surtidores.** Los surtidores corresponden a las máquinas interconectadas de manera *local* en una estación.
 - **Estaciones/Nodos.** Los nodos representan estaciones de YPF. Dentro de una estación, uno de los surtidores tiene la responsabilidad de llevar a cabo la función del nodo en el sitema global.
 
 Hay tres tipos de nodos:
 
-- **Suscriptor (tarjeta).** Los nodos suscriptores mantienen informados a sus pares sobre las actualizaciones al registro de las tarjetas a las que suscriben. Un nodo puede estar suscripto a varias tarjetas.
-- **Líder (tarjeta).** Los nodos líder *lideran* un clúster de nodos suscriptores a una tarjeta; ésto es: tienen la responsabilidad de intercomunicar a los nodos del clúster y a su vez de mantener informado sobre actualizaciones de la tarjeta al *nodo cuenta* cuando este así lo solicite. Un nodo líder es también un nodo suscriptor.
+- **Suscriptor (tarjeta).** Los nodos suscriptores mantienen informados a sus pares (otros nodos suscriptos a la misma tarjeta) sobre las actualizaciones al registro de la tarjetas a la que suscriben. Un nodo puede estar suscripto a varias tarjetas.
+- **Líder (tarjeta).** Los nodos líder *lideran* un clúster de nodos suscriptores a una tarjeta; ésto es: tienen la responsabilidad de intercomunicar a los nodos del clúster y a su vez de informar sobre actualizaciones de la tarjeta al *nodo cuenta* cuando este así lo solicite. Un nodo líder es también un nodo suscriptor.
 - **Cuenta.** Los nodos cuenta se comunican con un nodo líder de cada una de las tarjetas que le pertenecen a la cuenta. Un nodo cuenta **no** puede ser el líder de un clúster de nodos suscriptos a una tarjeta.
 
 ### Cliente
@@ -28,30 +31,63 @@ El único cliente (fuera del servidor de YPF) es el **administrador**. El admini
 - Realizar la facturación de la cuenta.
 
 ## Arquitectura del servidor
-Como ya se mencionó, el servidor está implementado de manera distribuida. Los clústers que lo conforman tienen diferentes responsabilidades:
+Como ya se mencionó, el servidor está implementado de manera distribuida. El foco principal del diseño de la arquitectura está en reducir la cantidad de mensajes entre nodos que tienen viajar en la red, partiendo de la arquitectura trivial: un grafo completo, con réplicas de la información del sistema en todos los nodos.  
 
-#### Clúster de surtidores
+Se pueden hacer varias optimizaciones a partir de algunas observaciones del *modelo de negocio* del sistema. Existe localidad con respecto al posicionamiento geográfico de las estaciones; un conductor que aparece en una estación probablemente vuelva a aparecer en estaciones cercanas, y probablemente no aparazca en una estación en la otra punta del país (o al menos no con frecuencia significativa).  
+Una forma de optimizar la comunicación entre nodos sería entonces tenerlos separados por cuentas: cada nodo tendría una réplica de la información de todas las tarjetas de la cuenta a la que pertenece y sólo debería comunicar a los otros nodos del clúster de la cuenta respecto de las actualizaciones de la misma. El problema con esto último es que una empresa grande, con muchas tarjetas y muchos conductores a lo largo del país; tendría réplicas innecesarias: un conductor que vive en Salta probablemente no use una estación en Santa Cruz, sin embargo, si uno de sus compañeros de trabajo así lo hace, entonces el registro de su tarjeta estaría replicado en la estación de Santa Cruz.  
+La solución que se encontró es la de dividir los clústers por tarjeta y no por cuenta. Ahora bien, como también necesitamos centralizar la información de todas las tarjetas pertenecientes a una cuenta, surge la necesidad de los nodos *cuenta*. Para minimizar la comunicación de los nodos cuenta con los nodos de las tarjetas que le pertenecen, el rol de comunicador se centraliza en los nodos *líder tarjeta*.  
+
+A continuación se explica más en profundidad cada uno de los tipos de clúster que se mencionaron.
+
+#### Clúster de surtidores.
 
 Los surtidores en una estación están conectados de manera local y se encargan de mantener actualizado al surtidor líder del clúster para que este ejerza la función de nodo estación en el sistema global.
 
-#### Clúster de nodos suscriptos a una tarjeta
+\begin{figure}[H]
+\centering
+\includesvg[width=0.8\textwidth]{diagrams/station-cluster-overview}
+\caption{Dos estaciones, con cuatro surtidores cada una.}
+\end{figure}
+
+#### Clúster de nodos suscriptos a una tarjeta.
 
 Los nodos suscriptos a una tarjeta informan a sus pares de las actualizaciones en los registros de las tarjetas a las que suscriben. Hay un líder del clúster y los *súbditos* se encargan de elegirlo al principio de la ejecución y en caso de que el mismo deje de estar activo.
 
-![Clúster de nodos suscriptos a una tarjeta](diagrams/card-cluster-overview.svg)
+\begin{figure}[H]
+\centering
+\includesvg[width=0.8\textwidth]{diagrams/card-cluster-overview}
+\caption{Clúster de nodos suscriptos a una tarjeta.}
+\end{figure}
 
-#### Clúster de cuenta
+#### Clúster de cuenta.
 
-El clúster de nodos líderes de tarjetas tienen su propio líder: el *nodo cuenta*. Dentro de éste clúster se mantiene actualizada al nodo cuenta ante cualquier cambio en alguno de los registros de las tarjetas que conforman la cuenta. Los *súbditos* eligen un líder al principio de la ejecución y en caso de que el mismo deje de estar activo. Las actualizaciones son comunicadas sólo cuando el nodo cuenta así lo solicita.
+El clúster de nodos líderes de tarjetas tienen su propio líder: el *nodo cuenta*. Dentro de éste clúster se mantiene actualizado al nodo cuenta ante cualquier cambio en alguno de los registros de las tarjetas que conforman la cuenta. Los *súbditos* eligen un líder al principio de la ejecución y en caso de que el mismo deje de estar activo. Las actualizaciones son comunicadas sólo cuando el nodo cuenta así lo solicita.
 
-![Clúster de cuenta](diagrams/account-clusters-overview.svg)
+\begin{figure}[H]
+\centering
+\includesvg[width=0.8\textwidth]{diagrams/account-clusters-overview.svg}
+\caption{Clúster de cuenta.}
+\end{figure}
 
-#### Vista de águila
+#### Vista de águila.
 
-Agrupando los diferentes tipos de clúster, la vista general de una posible configuración del sistema se ve de la siguiente forma:
+Cabe recalcar que los nodos cuenta (azules) no pueden ser nodos líderes de tarjetas (verdes). Por otro lado, los nodos líder tarjeta (verdes) siempre son suscriptores a la tarjeta que lideran (rojos); más aún, todos los nodos del sistema cumplen mínimamente con el rol de suscriptor.  
+En resumen:
 
-![*Overview* del sistema distribuido global](diagrams/distributed-system-overview.svg)
+- los nodos cuenta y los nodos líder tarjeta ejecutan también la responsabilidad de nodos suscriptores,
+- los nodos líder tarjeta son, en particular, suscriptores a la tarjeta que lideran (también pueden estar suscriptos a otras tarjetas)
+- y los nodos cuenta no pueden ser nodos líder. Si un nodo líder tarjeta asume la responsabilidad de ser un nodo cuenta, entonces tiene que delegar la responsabilidad de líder tarjeta a otro nodo del clúster de suscriptores a la tarjeta; de donde surge una última regla:
+- un clúster de nodos suscriptos a una tarjeta tiene que cumplir con una cantidad mínima. En caso de no hacerlo, se invita a un nodo del sistema a suscribirse a la tarjeta.  
 
+Agrupando los niveles de clúster (y obviando los surtidores), la vista general de una posible configuración del sistema se ve de la siguiente forma:
+
+\begin{figure}[H]
+\centering
+\includesvg[width=0.8\textwidth]{diagrams/distributed-system-overview.svg}
+\caption{*Overview* del sistema distribuido global.}
+\end{figure}
+
+#### Paseo por varios casos de uso.
 
 ### 1. *Un conductor usa su tarjeta por primera vez en el surtidor de una estación*
 El conductor le da su tarjeta al cajero, que usa la terminal de cobro de la columna del surtidor que usó para cargar nafta. El surtidor (a partir de este punto llamamos surtidor a la terminal de cobro del mismo) necesita saber si el cobro puede o no ser efectuado. Para ello, solicita la información de la tarjeta. El mensaje utilizado para la solicitud es delegado al nodo central de la estación. En este punto ya nos encontramos en el sistema distribuido de estaciones.  
