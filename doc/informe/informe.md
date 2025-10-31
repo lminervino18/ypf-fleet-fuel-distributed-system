@@ -146,7 +146,6 @@ Hasta ahora sólo consideramos los casos felices del funcionamiento del sistema,
 
 #### *Se cae $N_{15}$: nodo cuenta.*
 
-
 \newpage
 ## Flujo de las consultas de los clientes
 - Cuando un **administrador** hace una consulta de ya sea su cuenta principal o una de sus tarjetas, propaga el mensaje desde el nodo más cercano hasta su ubicación. Cada uno de los nodos del server que recibe la consulta, checkea si tiene o no el registro de la tarjeta, si no la tiene propaga el mensaje. Eventualmente uno de los nodos que recibe la consulta contiene la información y le contesta al administrador, (TODO: ya sea directamente o por medio de un nodo que mantenga una pared entre cliente y los nodos de las estaciones).
@@ -156,20 +155,199 @@ Hasta ahora sólo consideramos los casos felices del funcionamiento del sistema,
 ## Modelo de actores
 Como probablemente ya se haya inferido, el modelo que plantea el sistema es un modelo de actores, ejecutado sobre un sistema distribuido.
 
+## Modelo de Actores
+
+El sistema se modela siguiendo el **paradigma de actores distribuidos**, donde cada proceso representa una entidad que se comunica mediante el envío de mensajes.
+
 ### Actores
-Los actores del modelo son:
-- **nodo estación suscriptor**: nodo estación que está suscripto a un registro de una tarjeta.
-- **nodo estación lider**: nodo estación que está suscripto a un registro de una tarjeta y que tiene como responsabilidad mantener actualizado al nodo cuenta.
-- **nodo cuenta**: nodo que tiene direcciones de nodos estácion líder de manera tal que la unión de las suscripciones de esos nodos equivalga al conjunto de tarjetas de la cuenta.
-- **nodo surtidor**: nodo que se ejecuta en la red local de una estación y que sólo realiza consultas al nodo de la estación.
 
-Los actores estación suscriptor, estación lider y estación cuenta pueden correrse sobre uno o distintos nodos, idealmente, y como consecuencia de los algoritmos de actualización del sistema, *un nodo cuenta siempre va a ejecutarse en el mismo nodo que un nodo estación líder*.
+Los actores principales son los siguientes:
 
-### Mensajes
-- **Cobrar**: el mensaje que envía el nodo surtidor al nodo central de su estación.
-- **Consulta Registro**: el mensaje que se propaga como consecuencia de que una estación no conozca una tarjeta que le llega de uno de sus surtidores.
-- **Registro**: La contestación al mensaje anterior.
-- **Suscripción**: El mensaje que un nodo envía a los suscriptores de una tarjeta para que lo agreguen a la lista de suscriptores en sus registros de esa tarjeta.
-- **Actualización**: el mensaje que se propaga a los nodos suscriptos a una tarjeta cada vez que esta se actualiza en cualquiera de los nodos que están suscriptos a ellas.
-- TODO: **Líder estación**: Mensaje que se propaga para elegir un líder en un clúster de nodos suscriptos a una tarjeta.
-- TODO: **Líder cuenta**: Mensaje que se propaga para elegir un líder en un conjunto de clústers de nodos suscriptos a las tarjetas que componen una cuenta principal.
+- **Nodo Surtidor**: ejecuta en la red local de una estación y solo envía solicitudes de cobro al nodo central de la estación.
+- **Nodo Estación Suscriptor**: estación que mantiene registros locales de tarjetas que se usaron en su zona. Se suscribe a actualizaciones y propaga consultas cuando no posee el registro.
+- **Nodo Estación Líder**: estación que lidera un conjunto de suscriptores de una tarjeta. Valida transacciones consultando al nodo cuenta y distribuye las actualizaciones a los suscriptores.
+- **Nodo Cuenta**: centraliza el control de saldo y límite de una cuenta principal. Mantiene comunicación directa con los nodos líderes de las tarjetas asociadas.
+
+Los nodos **suscriptor**, **líder** y **cuenta** pueden ejecutarse en procesos distintos o combinados en el mismo host.  
+Por diseño, **un nodo cuenta siempre reside en el mismo proceso que un nodo líder**, lo que simplifica la sincronización y reduce la latencia entre ambos.
+
+### Mensajes del sistema
+
+Los actores se comunican únicamente mediante mensajes, los cuales encapsulan las operaciones y los datos necesarios para la coordinación distribuida.
+
+| Mensaje | Descripción |
+|---------|-------------|
+| **Cobrar** | Enviado por el nodo surtidor al nodo central de la estación para iniciar una transacción |
+| **ConsultaRegistro** | Propagado cuando una estación no conoce una tarjeta. Busca su registro en la red de estaciones vecinas |
+| **Registro** | Respuesta con la información completa de una tarjeta solicitada |
+| **Suscripción** | Enviado por un nodo que desea mantenerse actualizado sobre los cambios de una tarjeta |
+| **Actualización** | Propagado a todos los suscriptores de una tarjeta cuando se registra una nueva operación |
+| **ConsultaSaldoCuenta** | Solicitud que un líder envía al nodo cuenta para verificar si la cuenta tiene saldo disponible |
+| **RespuestaSaldoCuenta** | Mensaje del nodo cuenta al líder indicando si la operación puede realizarse |
+
+### Representación en pseudocódigo (Rust simplificado)
+
+```rust
+// ======== Definición de mensajes ========
+
+enum Mensaje {
+    Cobrar { tarjeta: String, monto: f64 },
+    ConsultaRegistro { tarjeta: String },
+    Registro { tarjeta: String, registro: RegistroTarjeta },
+    Suscripcion { tarjeta: String, nodo: NodoID },
+    Actualizacion { tarjeta: String, delta: f64 },
+    ConsultaSaldoCuenta { cuenta: String, monto: f64 },
+    RespuestaSaldoCuenta { ok: bool },
+}
+
+// ======== Estructura de los registros ========
+
+struct RegistroTarjeta {
+    tarjeta: String,
+    cuenta: String,
+    saldo_usado: f64,
+    ttl: u8,        // contador para baja automática
+    version: u64,   // control de versión para concurrencia
+}
+
+// ======== Nodo Surtidor ========
+
+struct NodoSurtidor {
+    id: NodoID,
+    estacion: NodoID,
+}
+
+impl NodoSurtidor {
+    fn cobrar(&self, tarjeta: String, monto: f64) {
+        enviar(self.estacion, Mensaje::Cobrar { tarjeta, monto });
+    }
+}
+
+// ======== Nodo Estación Suscriptor ========
+
+struct NodoSuscriptor {
+    id: NodoID,
+    tarjetas: HashMap<String, RegistroTarjeta>,
+    vecinos: Vec<NodoID>,
+    lideres: HashMap<String, NodoID>,
+}
+
+impl NodoSuscriptor {
+    fn recibir_cobrar(&mut self, tarjeta: String, monto: f64) {
+        if let Some(r) = self.tarjetas.get(&tarjeta) {
+            let lider = self.lideres[&tarjeta];
+            enviar(lider, Mensaje::ConsultaSaldoCuenta { cuenta: r.cuenta.clone(), monto });
+        } else {
+            // Propaga búsqueda de la tarjeta
+            for v in &self.vecinos {
+                enviar(*v, Mensaje::ConsultaRegistro { tarjeta: tarjeta.clone() });
+            }
+        }
+    }
+
+    fn recibir_registro(&mut self, tarjeta: String, registro: RegistroTarjeta, origen: NodoID) {
+        self.tarjetas.insert(tarjeta.clone(), registro);
+        enviar(origen, Mensaje::Suscripcion { tarjeta, nodo: self.id });
+    }
+
+    fn recibir_actualizacion(&mut self, tarjeta: String, delta: f64) {
+        if let Some(r) = self.tarjetas.get_mut(&tarjeta) {
+            r.saldo_usado += delta;
+            r.ttl = r.ttl.saturating_sub(1);
+            if r.ttl == 0 {
+                self.tarjetas.remove(&tarjeta);
+            }
+        }
+    }
+}
+
+// ======== Nodo Estación Líder ========
+
+struct NodoLider {
+    id: NodoID,
+    tarjeta: String,
+    cuenta: String,
+    nodo_cuenta: NodoID,
+    suscriptores: Vec<NodoID>,
+    saldo_local: f64,
+}
+
+impl NodoLider {
+    fn recibir_consulta_saldo(&self, monto: f64) {
+        enviar(self.nodo_cuenta, Mensaje::ConsultaSaldoCuenta {
+            cuenta: self.cuenta.clone(),
+            monto,
+        });
+    }
+
+    fn recibir_respuesta_saldo(&mut self, ok: bool, delta: f64) {
+        if ok {
+            self.saldo_local += delta;
+            for s in &self.suscriptores {
+                enviar(*s, Mensaje::Actualizacion {
+                    tarjeta: self.tarjeta.clone(),
+                    delta,
+                });
+            }
+        }
+    }
+
+    fn recibir_suscripcion(&mut self, nodo: NodoID) {
+        self.suscriptores.push(nodo);
+    }
+}
+
+// ======== Nodo Cuenta ========
+
+struct NodoCuenta {
+    id: NodoID,
+    cuenta: String,
+    limite: f64,
+    consumo_total: f64,
+}
+
+impl NodoCuenta {
+    fn recibir_consulta_saldo(&mut self, monto: f64, origen: NodoID) {
+        if self.consumo_total + monto <= self.limite {
+            self.consumo_total += monto;
+            enviar(origen, Mensaje::RespuestaSaldoCuenta { ok: true });
+        } else {
+            enviar(origen, Mensaje::RespuestaSaldoCuenta { ok: false });
+        }
+    }
+}
+```
+
+### Flujo de mensajes resumido
+
+```
+Surtidor → NodoSuscriptor: Cobrar(tarjeta, monto)
+NodoSuscriptor → NodoLider: ConsultaSaldoCuenta
+NodoLider → NodoCuenta: ConsultaSaldoCuenta
+NodoCuenta → NodoLider: RespuestaSaldoCuenta(ok)
+NodoLider → Suscriptores: Actualizacion
+NodoSuscriptor → Actualiza registro y TTL
+```
+
+# Protocolos de comunicación: uso de TCP
+
+En el sistema **YPF Ruta** se utiliza el protocolo **TCP (Transmission Control Protocol)** tanto para la comunicación local entre *surtidores y su estación*, como para la comunicación entre los distintos nodos distribuidos del sistema (*suscriptores, líderes y cuentas*).
+
+## Justificación
+
+TCP garantiza la **entrega confiable y ordenada** de los mensajes, propiedad esencial en un entorno donde cada operación representa una transacción económica.  
+La consistencia e integridad de los datos son prioritarias sobre la latencia o el rendimiento bruto de la red.
+
+## Comunicación local
+
+Dentro de cada estación, los surtidores se conectan al nodo central mediante TCP sobre la red local (LAN).  
+Este canal asegura que los mensajes `Cobrar` y las respuestas de autorización se transmitan sin pérdidas ni duplicaciones, manteniendo la coherencia del registro de ventas.
+
+## Comunicación entre nodos
+
+Las estaciones y los distintos nodos del sistema intercambian información mediante TCP, manteniendo sincronizados los registros de tarjetas y cuentas.  
+El uso de TCP facilita la detección de desconexiones, el control de flujo y la confirmación explícita de entrega, reduciendo la complejidad de los mecanismos de replicación y actualización distribuidos.
+## Comunicación entre nodos
+
+Las estaciones y los distintos nodos del sistema intercambian información mediante TCP, manteniendo sincronizados los registros de tarjetas y cuentas.  
+El uso de TCP facilita la detección de desconexiones, el control de flujo y la confirmación explícita de entrega, reduciendo la complejidad de los mecanismos de replicación y actualización distribuidos.
