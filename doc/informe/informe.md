@@ -125,6 +125,22 @@ Supongamos que un conductor utiliza siempre su tarjeta en las estaciones cercana
 Sería un desperdicio de recursos—mínimos en memoria, pero sí significativos para la comunicación en la red—tener un nodo suscrito a la lista de una tarjeta si éste no fuera a volver a ser utilizado.  
 Por esto se introduce el campo **TTL** en los registros de las tarjetas. Si un nodo es actualizado de manera *externa*, es decir, se actualiza la información de un registro de una de sus tarjetas sin que la tarjeta haya efectuado la carga en esa estación; un número mayor a TTL veces, entonces se elimina de la lista de suscripción de la tarjeta. De esta forma, evitamos que con el paso del tiempo el sistema gaste recursos actualizando a estaciones a las que no les debería importar el registro de una tarjeta.
 
+### *Node failure recovery*
+Hasta ahora sólo consideramos los casos felices del funcionamiento del sistema, pero en la realidad los nodos pueden fallar. A continuación detallamos lo que pasaría en caso de que cada uno de los distintos tipos de nodos falle, a partir de la siguiente configuración arbitraria del sistema:
+
+\begin{figure}[H]
+\centering
+\includesvg[width=0.8\textwidth]{diagrams/recovery-initial-state}
+\caption{Estado inicial del sistema.}
+\end{figure}
+
+#### *Se cae $N_1$: nodo suscriptor.*
+
+#### *Se cae $N_{12}$: nodo líder tarjeta.*
+
+#### *Se cae $N_{15}$: nodo cuenta.*
+
+
 \newpage
 ## Flujo de las consultas de los clientes
 - Cuando un **administrador** hace una consulta de ya sea su cuenta principal o una de sus tarjetas, propaga el mensaje desde el nodo más cercano hasta su ubicación. Cada uno de los nodos del server que recibe la consulta, checkea si tiene o no el registro de la tarjeta, si no la tiene propaga el mensaje. Eventualmente uno de los nodos que recibe la consulta contiene la información y le contesta al administrador, (TODO: ya sea directamente o por medio de un nodo que mantenga una pared entre cliente y los nodos de las estaciones).
