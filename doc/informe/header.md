@@ -7,3 +7,15 @@ header-includes:
   - \usepackage{float}
   - \usepackage{svg}
 ---
+
+\title{     \textbf{YPF Ruta}}
+
+<!-- \author{
+Alejo Ordoñez \textit{(Padrón 108397)}\\ \texttt{ alordonez@fi.uba.ar } \\[2.5ex]
+Lorenzo Minervino \textit{(Padrón 107863)}\\ \texttt{ lminervino@fi.uba.ar }\\[2.5ex]
+} -->
+
+\maketitle
+\thispagestyle{empty}
+\newpage
+\tableofcontents

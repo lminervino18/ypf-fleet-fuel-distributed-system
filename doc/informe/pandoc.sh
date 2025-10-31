@@ -1,1 +1,7 @@
-pandoc header.md informe.md -o informe.pdf --pdf-engine=xelatex --pdf-engine-opt=--shell-escape
+pandoc \
+    header.md\
+    informe.md \
+    --pdf-engine=xelatex \
+    --pdf-engine-opt=--shell-escape \
+    -o informe.pdf
+    # --number-sections \
