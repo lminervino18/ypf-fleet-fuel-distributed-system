@@ -136,6 +136,12 @@ Hasta ahora sólo consideramos los casos felices del funcionamiento del sistema,
 
 #### *Se cae $N_1$: nodo suscriptor.*
 
+\begin{figure}[H]
+\centering
+\includesvg[width=0.8\textwidth]{diagrams/recovery-from-n1-failure}
+\caption{*Recovery* de la falla en $N_1$.}
+\end{figure}
+
 #### *Se cae $N_{12}$: nodo líder tarjeta.*
 
 #### *Se cae $N_{15}$: nodo cuenta.*
