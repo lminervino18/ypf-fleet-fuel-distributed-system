@@ -142,7 +142,12 @@ Hasta ahora sólo consideramos los casos felices del funcionamiento del sistema,
 \caption{*Recovery* de la falla en $N_1$.}
 \end{figure}
 
-#### *Se cae $N_{12}$: nodo líder tarjeta.*
+#### *Se cae $N_{13}$: nodo líder tarjeta.*
+\begin{figure}[H]
+\centering
+\includesvg[width=0.8\textwidth]{diagrams/recovery-from-n13-failure}
+\caption{*Recovery* de la falla en $N_{13}$.}
+\end{figure}
 
 #### *Se cae $N_{15}$: nodo cuenta.*
 
