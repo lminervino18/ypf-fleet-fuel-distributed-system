@@ -6,6 +6,24 @@ lang: es
 header-includes:
   - \usepackage{float}
   - \usepackage{svg}
+  - \usepackage{xcolor}
+  - \usepackage{listings}
+  - |
+    \lstset{
+      language=C,
+      breaklines=true,
+      breakatwhitespace=true,
+      basicstyle=\ttfamily\small,
+      columns=fullflexible,
+      numbers=left,
+      numberstyle=\tiny\color{gray},
+      stepnumber=1,
+      numbersep=8pt,
+      keywordstyle=\color{blue}\bfseries,
+      commentstyle=\color{gray},
+      stringstyle=\color{red!70!black},
+      showstringspaces=false
+    }
 ---
 
 \title{     \textbf{YPF Ruta}}

@@ -193,7 +193,8 @@ Por diseño, **cada cuenta tiene un único nodo cuenta** y cada tarjeta tiene un
 | **Suscripción** | Petición para ser agregado a la lista de suscriptores de una tarjeta |
 | **Actualización** | Propagada a todos los suscriptores después de un cobro exitoso |
 
-## Representación en pseudocódigo (Rust simplificado)
+\newpage
+## Representación en pseudocódigo Rust
 
 ```rust
 // ======== Tipos auxiliares ========
