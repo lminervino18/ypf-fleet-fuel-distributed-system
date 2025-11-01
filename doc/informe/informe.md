@@ -513,3 +513,7 @@ Este canal asegura que los mensajes `Cobrar` y las respuestas de autorización s
 ## Comunicación entre nodos
 Las estaciones y los distintos nodos del sistema intercambian información mediante TCP, manteniendo sincronizados los registros de tarjetas y cuentas.  
 El uso de TCP facilita la detección de desconexiones, el control de flujo y la confirmación explícita de entrega, reduciendo la complejidad de los mecanismos de replicación y actualización distribuidos.
+
+# Protocolo de comunicación
+Si bien los nodos tienen acceso al código de la implementación de las entidades del sistema, obviamente no comparten memoria, y por tanto se hace necesario *serializar* y *deserializar* los mensajes que se envían en la red. Para esto se imlementa un protocolo de comunicación que serializa la información relevante sobre los distintos mensajes que circulan en el sistema en tiras de bytes, que pueden ser luego deserializadas en el receptor haciendo uso del mismo protocolo.
+
