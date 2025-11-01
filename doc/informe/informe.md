@@ -131,10 +131,12 @@ Hasta ahora sólo consideramos los casos felices del funcionamiento del sistema,
 \begin{figure}[H]
 \centering
 \includesvg[width=0.8\textwidth]{diagrams/recovery-initial-state}
-\caption{Estado inicial del sistema.}
+\caption{Estado inicial del sistema. Dos cuentas, una con las tarjetas $T_1$ y $T_2$ y la otra con $T_3$, $T_4$ y $T_5$.}
 \end{figure}
 
 #### *Se cae $N_1$: nodo suscriptor.*
+Que se caiga un nodo suscriptor no representa un problema demasiado grande. En este caso la estación va a tener que guardarse las actualizaciones a la tarjeta, sin poder realizar las consultas de suficiencia de saldo en las mismas o en sus cuentas. No hay nada más que hacer puesto que la única responsabilidad del nodo suscriptor es comunicar al nodo líder y no hay nunca posibilidad de que esto así ocurra.  
+Cuando el nodo vuelve a la vida, tiene que preguntar quién es el leader, enviarle sus actualizaciones de la tarjeta a la que el clúster suscribe para que este actualice al resto de nodos en el clúster y al nodo recuperado, a este último con la agregación de las actualizaciones que acaba de enviar y las que se efectuaron durante su baja.
 
 \begin{figure}[H]
 \centering
@@ -143,13 +145,23 @@ Hasta ahora sólo consideramos los casos felices del funcionamiento del sistema,
 \end{figure}
 
 #### *Se cae $N_{13}$: nodo líder tarjeta.*
+Que se caiga un nodo líder tarjeta representa un mayor problema ya que su responsabilidad es la de centralizar la información generada por un clúster sobre una tarjeta y estar disponible para cuando el nodo cuenta al que pertenece la tarjeta consulte la información de la misma. En este caso se usa el algoritmo de elección de líder *Bully* y se comunica al nodo cuenta sobre el líder elegido.  
+En caso de que sea el nodo cuenta quien se entera de la baja del nodo líder, simplemente envía un mensaje de elección de líder, sin participar de la elección, y recibir el líder elegido al final de la misma.
+
 \begin{figure}[H]
 \centering
 \includesvg[width=0.8\textwidth]{diagrams/recovery-from-n13-failure}
 \caption{*Recovery* de la falla en $N_{13}$.}
 \end{figure}
 
-#### *Se cae $N_{15}$: nodo cuenta.*
+#### *Se cae $N_{22}$: nodo cuenta.*
+Este es el caso más complicado, ya que el nodo cuenta es el tipo de nodo con mayor responsabilidad del sistema. La dinámica de recovery de este caso es muy similar a la de cuando se cae un nodo líder tarjeta, sumando una re-elección del nodo líder tarjeta ya que las responsabilidades líder tarjeta y cuenta no son compatibles.
+
+\begin{figure}[H]
+\centering
+\includesvg[width=0.8\textwidth]{diagrams/recovery-from-n22-failure}
+\caption{*Recovery* de la falla en $N_{22}$. En este diagrama se obvia el algoritmo *bully* para elegir nodo líder del clúster suscripto a la tarjeta $T_5$ puesto que ya se mostró en mayor detalle en el caso anterior. (4.) Existen optimizaciones como hacer que $N_{21}$ mande un sólo mensaje de ELECTION a los nodos del clúster, pero en sí la idea es logar que los nodos elijan a un nuevo líder, ya que los nodos cuenta no pueden ser nodos líder tarjeta. (5.) Notar además que es $N_{21}$ quien se encarga de poner al clúster de suscriptores $T_5$ en modo elección, para no quedar elegido, siendo que es el de mayor ID, puede simplemente no contestar, o contestar con mensaje del tipo CANNOT.}
+\end{figure}
 
 
 \newpage
