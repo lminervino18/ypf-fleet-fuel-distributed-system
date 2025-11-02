@@ -26,14 +26,27 @@ header-includes:
     }
 ---
 
-\title{     \textbf{YPF Ruta}}
+\begin{titlepage}
+    \centering
+    \vspace*{5cm}
 
-<!-- \author{
-Alejo Ordoñez \textit{(Padrón 108397)}\\ \texttt{ alordonez@fi.uba.ar } \\[2.5ex]
-Lorenzo Minervino \textit{(Padrón 107863)}\\ \texttt{ lminervino@fi.uba.ar }\\[2.5ex]
-} -->
+    \includegraphics[width=0.4\textwidth]{logo-fiuba.png}\\[1cm]
 
-\maketitle
-\thispagestyle{empty}
+    {\Huge \textbf{Trabajo Práctico 2 - YPF Ruta}}\\[0.2cm]
+
+    {\large \textbf{Programación Concurrente}}\\[0.8cm]
+
+    \begin{tabular}{lll}
+        108397 - & \textbf{Alejo Ordoñez} & \href{https://github.com/alejoordonez02}{github.com/alejoordonez02} \\[-2pt]
+        105666 - & \textbf{Francisco Pereyra} & \href{https://github.com/fapereyra}{github.com/fapereyra} \\[-2pt]
+        107863 - & \textbf{Lorenzo Minervino} & \href{https://github.com/lminervino18}{github.com/lminervino18} \\[-2pt]
+        103376 - & \textbf{Alejandro Paff} & \href{https://github.com/AlePaff}{github.com/AlePaff} \\[-2pt]
+    \end{tabular}
+
+    \vfill
+
+    {\large 2c2025}
+\end{titlepage}
+
 \newpage
 \tableofcontents
