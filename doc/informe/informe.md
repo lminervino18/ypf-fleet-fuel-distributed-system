@@ -527,10 +527,10 @@ Por último, los campos están definidos de la siguiente manera:
 En el sistema **YPF Ruta** se utiliza el protocolo **TCP (Transmission Control Protocol)** tanto para la comunicación local entre *surtidores*, como para la comunicación entre los distintos nodos distribuidos del sistema (*suscriptores, líderes y cuentas*).  
 TCP garantiza la **entrega confiable y ordenada** de los mensajes, propiedad esencial en un entorno donde cada operación representa una transacción económica. Además provee la detección de interrupciones de comunicación, que es esencial para que los nodos se enteren si sus pares fallan y actuen en concecuencia.
 
-## Comunicación local
+### Comunicación local
 Dentro de cada estación, los surtidores se conectan al nodo central mediante TCP sobre la red local (LAN).  
 Este canal asegura que los mensajes `Cobrar` y las respuestas de autorización se transmitan sin pérdidas ni duplicaciones, manteniendo la coherencia del registro de ventas.
 
-## Comunicación entre nodos
+### Comunicación entre nodos
 Las estaciones y los distintos nodos del sistema intercambian información mediante TCP, manteniendo sincronizados los registros de tarjetas y cuentas.  
 El uso de TCP facilita la detección de desconexiones, el control de flujo y la confirmación explícita de entrega, reduciendo la complejidad de los mecanismos de replicación y actualización distribuidos.
