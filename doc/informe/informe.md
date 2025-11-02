@@ -164,8 +164,7 @@ Este es el caso más complicado, ya que el nodo cuenta es el tipo de nodo con ma
 
 \newpage
 # Flujo de las consultas de los clientes
-- Cuando un **administrador** hace una consulta de ya sea su cuenta principal o una de sus tarjetas, propaga el mensaje desde el nodo más cercano hasta su ubicación. Cada uno de los nodos del server que recibe la consulta, checkea si tiene o no el registro de la tarjeta, si no la tiene propaga el mensaje. Eventualmente uno de los nodos que recibe la consulta contiene la información y le contesta al administrador, (TODO: ya sea directamente o por medio de un nodo que mantenga una pared entre cliente y los nodos de las estaciones).
-- Para actualizar el límite de cuenta o de tarjeta, se procede como en el caso anterior sólo que ahora contestan nodos cuenta o nodos suscritos a la tarjeta, respectivamente.
+Cuando un **administrador** hace una consulta o impone un nuevo monto límite, ya sea de su cuenta principal o de una sus tarjetas, el mensaje de la consulta se direcciona a al nodo más cercano geográficamente. El nodo del server que recibe la consulta, checkea si tiene o no el registro y si no lo tiene propaga el mensaje de la misma forma en la que lo haría si se tratara de una consulta de registro entre nodos. Cuando llega el registro, el nodo que recibió la consulta del cliente, se suscribe al mismo y contesta al administrador, de esta manera ninguna estación está sobrecargada con peticiones de los clientes y las posteriores consultas se responden más rápido.
 
 \newpage
 # Modelo de Actores
