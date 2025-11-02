@@ -334,8 +334,7 @@ impl NodoSuscriptor {
         // Validar límite de tarjeta y continuar el flujo normal hacia el líder
         let monto_y_reply = self.pendientes.get(&req_id).cloned();
         if let Some(_reply_to) = monto_y_reply {
-            // No guardamos monto aquí, confiamos en que nos llega por Actualizacion y RespuestaCobro.
-            // Si quisieras, podés llevar req_id->monto en otro mapa.
+            // No guardamos monto acá, confiamos en que nos llega por Actualizacion y RespuestaCobro.
         }
 
         if let Some(r) = self.tarjetas.get(&tarjeta) {
@@ -501,8 +500,30 @@ impl NodoCuenta {
 12. **NodoSuscriptor → Surtidor:** `RespuestaCobro(ok)`
 
 \newpage
-# Protocolos de comunicación: uso de TCP
+# Protocolo de comunicación
+Por tratarse de un sistema distribuido, los nodos obviamente no comparten memoria, si no que se comunican por red. Es por esto que se hace necesario introducir un protocolo de aplicación y el elegir un protocolo de capa de transporte.
 
+## Protocolo de capa de aplicación
+Si bien los nodos tienen acceso al código de la implementación de las entidades del sistema, no comparten memoria, si no que se comunican enviando mensajes por red, y por tanto se hace necesario introducir un **protocolo** de *serialización* y *deserialización* de las tiras de bytes que se envían.  
+El protocolo es simple, todos los mensajes tienen 1 byte para el tipo de mensaje (disponibilidad para $2^{1\times 8}=256$ tipos de mensaje distintos), de manera tal que el resto de la deserialización se lleva a cabo según este tipo. Para los mensajes descriptos en la descripción del modelo de autores, se propone la siguiente estructura:
+
+- **`Cobrar`.** `req_id`: ID de un nodo, `tarjeta_id`: ID de una tarjeta, `monto`: doble precisión, `origen_id`: ID de un nodo.
+- **`RespuestaCobro`.** `req_id`: ID de un nodo, `ok`: booleano, `razon`: enum de tipos de error, `monto`: doble precisión.
+- **`RegistroCobro`.** `req_id`: ID de un nodo, `registro`: *registro de tarjeta*.
+- **`Suscripcion`.** `tarjeta`: ID de una tarjeta, `delta`: doble precisión.
+- **`Actualización`.** `tarjeta`: ID de una tarjeta, `delta`: doble precisión.
+
+El *registro de tarjeta* es **`RegistroTarjeta`:** `tarjeta`: ID de la tarjeta, `cuenta`: ID de la cuenta, `saldo_usado`: doble precisión, `limite_tarjeta`: doble precisión, `ttl`: entero positivo, `lider_id`: ID de un nodo.  
+
+Por último, los campos están definidos de la siguiente manera:
+
+- **ID de un nodo.** Sabemos que hay 1600 nodos por lo que bastarían 11 bits para representarlos a todos. Para no hacer operaciones bit-wise y para tener margen para muchas más estaciones usamos 2 bytes. Los IDs podrían ser caracteres ascii o números enteros, es indistinto.
+- **ID de una tarjeta.** No sabemos cuántas tarjetas hay, por lo que usamos 4 bytes para representar sus IDs ($2^{4\times 8}$, más de 4 mil millones de IDs distintos).
+- **Doble precisión.** Usamos el estándar 754 de la IEEE de doble precisión para todos los números que representan montos y fracciones de tiempo. Son 8 bytes: 1 bit de signo, 11 bits para el exponente y el resto de los 52 bits para la mantisa. En Rust esto es un `f64`.
+- **Entero positivo.** Si sólo se usase para el TTL entonces bastaría con tener un byte para este campo.
+- **Enum de tipos de error.** Un sólo byte para poder representar hasta 256 tipos de erorres distintos. Luego durante la deserialización debería traducirse el tipo a un mensaje legible por el usuario (si es que no se trata de un error del sistema que pueda ser manejable por el mismo).
+
+## Protocolo de capa de transporte
 En el sistema **YPF Ruta** se utiliza el protocolo **TCP (Transmission Control Protocol)** tanto para la comunicación local entre *surtidores*, como para la comunicación entre los distintos nodos distribuidos del sistema (*suscriptores, líderes y cuentas*).  
 TCP garantiza la **entrega confiable y ordenada** de los mensajes, propiedad esencial en un entorno donde cada operación representa una transacción económica. Además provee la detección de interrupciones de comunicación, que es esencial para que los nodos se enteren si sus pares fallan y actuen en concecuencia.
 
@@ -513,7 +534,3 @@ Este canal asegura que los mensajes `Cobrar` y las respuestas de autorización s
 ## Comunicación entre nodos
 Las estaciones y los distintos nodos del sistema intercambian información mediante TCP, manteniendo sincronizados los registros de tarjetas y cuentas.  
 El uso de TCP facilita la detección de desconexiones, el control de flujo y la confirmación explícita de entrega, reduciendo la complejidad de los mecanismos de replicación y actualización distribuidos.
-
-# Protocolo de comunicación
-Si bien los nodos tienen acceso al código de la implementación de las entidades del sistema, obviamente no comparten memoria, y por tanto se hace necesario *serializar* y *deserializar* los mensajes que se envían en la red. Para esto se imlementa un protocolo de comunicación que serializa la información relevante sobre los distintos mensajes que circulan en el sistema en tiras de bytes, que pueden ser luego deserializadas en el receptor haciendo uso del mismo protocolo.
-
