@@ -126,6 +126,9 @@ Supongamos que un conductor utiliza siempre su tarjeta en las estaciones cercana
 Sería un desperdicio de recursos—mínimos en memoria, pero sí significativos para la comunicación en la red—tener un nodo suscrito a la lista de una tarjeta si éste no fuera a volver a ser utilizado.  
 Por esto se introduce el campo **TTL** en los registros de las tarjetas. Si un nodo es actualizado de manera *externa*, es decir, se actualiza la información de un registro de una de sus tarjetas sin que la tarjeta haya efectuado la carga en esa estación; un número mayor a TTL veces, entonces se elimina de la lista de suscripción de la tarjeta. De esta forma, evitamos que con el paso del tiempo el sistema gaste recursos actualizando a estaciones a las que no les debería importar el registro de una tarjeta.
 
+## *Mutual exclusion*
+Dado que las cuentas pertenecen a conductores y que éstos son entes físicos en el mundo real, se hace imposible que la misma tarjeta aparezca en dos estaciones distintas a la vez. Sin embargo, un caso de acceso mutable compartido que no queda descartado es el de la actualización del monto disponible en una cuenta. Gracias a la centralización de la comunicación cuenta-tarjeta por medio de líder tarjeta y siendo que es un único nodo, el nodo cuenta, quien sincrónica y atómicamente resuelve las consultas de saldo disponible; queda resuleto el problema de las *race condition* para este monto.
+
 ## *Node failure recovery*
 Hasta ahora sólo consideramos los casos felices del funcionamiento del sistema, pero en la realidad los nodos pueden fallar. A continuación detallamos lo que pasaría en caso de que cada uno de los distintos tipos de nodos falle, a partir de la siguiente configuración arbitraria del sistema:
 
