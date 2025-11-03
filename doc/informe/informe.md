@@ -56,7 +56,9 @@ Los surtidores en una estación están conectados de manera local y se encargan 
 
 ### Clúster de nodos suscriptos a una tarjeta.
 
-Los nodos suscriptos a una tarjeta informan a sus pares de las actualizaciones en los registros de las tarjetas a las que suscriben. Hay un líder del clúster y los *súbditos* se encargan de elegirlo al principio de la ejecución y en caso de que el mismo deje de estar activo.
+Los nodos suscriptos a una tarjeta mantienen una réplica local de la información de las tarjetas a las que suscriben y se comunican entre sí para mantenerse actualizados sobre cambios en dichas tarjetas. Dentro de este clúster existe un **nodo líder de tarjeta** que centraliza las comunicaciones del clúster hacia el exterior (especialmente con el nodo cuenta) y coordina las actualizaciones internas. Los demás nodos del clúster (llamados *súbditos* o *seguidores*) eligen al líder al inicio de la ejecución y cuando el líder actual deja de estar disponible.
+
+**Aclaración:** El nodo líder de tarjeta es diferente del nodo líder de surtidores. Mientras que el líder de surtidores opera a nivel local dentro de una estación física, el líder de tarjeta opera a nivel distribuido entre múltiples estaciones que manejan la misma tarjeta.
 
 \begin{figure}[H]
 \centering
@@ -104,12 +106,12 @@ En caso de que el mensaje llegue a un nodo cuenta al que le pertenece la tarjeta
 4. Con todas las condiciones del sistema distribuido en orden, la estación procede a realizar el cobro para luego actualizar a los suscriptores de la tarjeta (que acaban de generarse).
 
 ### 2. *Un conductor usa su tarjeta en el surtidor de una estación a la que frecuenta.*
-Si un conductor utiliza su tarjeta en una estación a la que va con frecuencia, entonces ésta estación ya tiene cargado el registro de la tarjeta. Aún así, se necesita saber si a la cuenta le queda monto para realizar el cobro, para esto se procede de la siguiente manera:
+Si un conductor utiliza su tarjeta en una estación a la que va con frecuencia, entonces ésta estación \colorbox{yellow}{ya tiene cargado} el registro de la tarjeta. Aún así, se necesita saber si a la cuenta le queda monto para realizar el cobro, para esto se procede de la siguiente manera:
 
-1. El surtidor envía la consulta de saldo de cuenta al nodo líder de la estación.
-2. El nodo líder de la estación envía la consulta de saldo de cuenta al nodo líder tarjeta.
-3. El nodo líder tarjeta envía la consulta al nodo cuenta.
-4. El nodo cuenta consulta las actualizaciones de los nodos líder del resto de tarjetas, computa la respuesta y se la envía al nodo líder tarjeta que le hizo la consulta.
+1. \textcolor{orange}{El surtidor} envía la consulta de saldo de cuenta al \textcolor{red}{nodo líder de la estación}.
+2. \textcolor{red}{El nodo líder de la estación} envía la consulta de saldo de cuenta al \textcolor{green}{nodo líder tarjeta}.
+3. \textcolor{green}{El nodo líder tarjeta} envía la consulta al \textcolor{blue}{nodo cuenta}.
+4. \textcolor{blue}{El nodo cuenta} consulta las actualizaciones de los nodos líder del resto de tarjetas, computa la respuesta y se la envía al \textcolor{green}{nodo líder tarjeta} que le hizo la consulta.
 
 ### 3. *Un conductor usa su tarjeta en una nueva estación nueva, habiéndola usado en otras.*
 Si un conductor usa su tarjeta en una nueva estación, es decir, en una estación en la que todavía no la había usado, entonces la estación no va a contar con el registro de la tarjeta y por tanto propagará la consulta como en el caso 1. Ésta vez si va a recibir una respuesta de una de los nodos que estén suscriptos a la tarjeta, por lo que
@@ -154,7 +156,7 @@ En caso de que sea el nodo cuenta quien se entera de la baja del nodo líder, si
 \end{figure}
 
 ### *Se cae $N_{22}$: nodo cuenta.*
-Este es el caso más complicado, ya que el nodo cuenta es el tipo de nodo con mayor responsabilidad del sistema. La dinámica de recovery de este caso es muy similar a la de cuando se cae un nodo líder tarjeta, sumando una re-elección del nodo líder tarjeta ya que las responsabilidades líder tarjeta y cuenta no son compatibles.
+Este es el caso más complicado, ya que el nodo cuenta es el tipo de nodo con mayor responsabilidad del sistema. La dinámica de recovery de este caso es muy similar a la de cuando se cae un nodo líder tarjeta, pero con un paso adicional: el nodo que asuma el rol de cuenta debe delegar su rol de líder de tarjeta a otro nodo de su clúster, ya que las responsabilidades líder tarjeta y cuenta no son compatibles. Sin embargo, las responsabilidades de líder tarjeta y líder estación sí son compatibles.
 
 \begin{figure}[H]
 \centering
