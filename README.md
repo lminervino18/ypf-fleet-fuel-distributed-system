@@ -155,16 +155,17 @@ Cuando un **administrador** hace una consulta o impone un nuevo monto límite, y
 
 ## Modelo de Actores
 
-El sistema se modela siguiendo el **paradigma de actores distribuidos**, donde cada proceso representa una entidad que se comunica mediante el envío de mensajes.  
+El sistema se modela siguiendo el **paradigma de actores distribuidos**. Cada nodo en el sistema distribuido ejecuta varios actores, con distintas responsabilidades. En particular si un nodo ejecuta, por ejemplo, un actor **Cuenta**, entonces, ese nodo es un **Nodo Cuenta**. Se mantiene la limitación de que un nodo cuenta no puede ser un nodo líder de una tarjeta que pertenece a esa cuenta, por tanto un nodo no puede tener actores cuenta 1 y lider de una tarjeta que pertenezca a la cuenta 1.  
+Los ejecutables de los nodos proveen una abstracción de comunicación entre actores, de manera tal que un actor se comunica con otro como si ambos vivieran en el mismo nodo. Se separan entonces la comunicación entre actores en los nodos y entre los nodos en sí. Esto es porque los actores no engloban la responsabilidad de, por ejemplo, mantener una mínima cantidad de réplicas de una tarjeta en distintos nodos del sistema distribuído; los mensajes que pertenecen a esa coordinación se manejan en otro grupo de entidades que se comunican: los nodos.  
 Cada actor mantiene su propio estado interno y procesa mensajes de forma asíncrona, garantizando independencia y resiliencia ante fallos.
 
 ### Actores
 
-- **Nodo Surtidor**: ejecuta en la red local de una estación y envía solicitudes de cobro al nodo estación correspondiente.  
-- **Nodo Estación Suscriptor**: mantiene registros locales de tarjetas que se usaron en su zona. Si no conoce una tarjeta, propaga el intento de cobro a sus estaciones vecinas.  
+- **Surtidor**: ejecuta en la red local de una estación y envía solicitudes de cobro al nodo estación correspondiente.  
+- **Estación Suscriptor**: mantiene registros locales de tarjetas que se usaron en su zona. Si no conoce una tarjeta, propaga el intento de cobro a sus estaciones vecinas.  
   Además, valida el **límite de la tarjeta** antes de delegar el cobro al nodo líder.  
-- **Nodo Estación Líder**: lidera un clúster de suscriptores de una tarjeta. Recibe cobros de los suscriptores y los reenvía al nodo cuenta para su validación global. Luego distribuye las actualizaciones a los nodos suscriptores.  
-- **Nodo Cuenta**: centraliza el control del saldo total de la cuenta principal. Valida los límites globales de la empresa y confirma o rechaza las operaciones.
+- **Estación Líder**: lidera un clúster de suscriptores de una tarjeta. Recibe cobros de los suscriptores y los reenvía al nodo cuenta para su validación global. Luego distribuye las actualizaciones a los nodos suscriptores.  
+- **Cuenta**: centraliza el control del saldo total de la cuenta principal. Valida los límites globales de la empresa y confirma o rechaza las operaciones.
 
 Por diseño, **cada cuenta tiene un único nodo cuenta** y cada tarjeta tiene un único **nodo líder**, que actúa como intermediario entre el nodo cuenta y los nodos suscriptores.
 
@@ -215,15 +216,15 @@ struct RegistroTarjeta {
     lider_id: NodoID,  // líder de la tarjeta (para enviar Suscripcion/Cobrar)
 }
 
-// ======== Nodo Surtidor ========
+// ======== Surtidor ========
 
-struct NodoSurtidor {
+struct Surtidor {
     id: NodoID,
     estacion: NodoID,
     seq: ReqID, // generador local de req_id
 }
 
-impl NodoSurtidor {
+impl Surtidor {
     fn cobrar(&mut self, tarjeta: TarjetaID, monto: f64) {
         let req = self.nuevo_req();
         enviar(self.estacion.clone(), Mensaje::Cobrar { req_id: req, tarjeta, monto, origen: self.id.clone() });
@@ -240,9 +241,9 @@ impl NodoSurtidor {
     fn nuevo_req(&mut self) -> ReqID { self.seq += 1; self.seq }
 }
 
-// ======== Nodo Estación Suscriptor ========
+// ======== Estación Suscriptor ========
 
-struct NodoSuscriptor {
+struct Suscriptor {
     id: NodoID,
     tarjetas: HashMap<TarjetaID, RegistroTarjeta>,
     vecinos: Vec<NodoID>,
@@ -252,7 +253,7 @@ struct NodoSuscriptor {
     esperando_registro: HashSet<ReqID>,
 }
 
-impl NodoSuscriptor {
+impl Suscriptor {
     // Entrada principal del flujo desde surtidor o vecinos
     fn handle_cobrar(&mut self, req_id: ReqID, tarjeta: TarjetaID, monto: f64, origen: NodoID) {
         // Si el origen es un surtidor, recordar a quién responder.
@@ -349,9 +350,9 @@ impl NodoSuscriptor {
     }
 }
 
-// ======== Nodo Estación Líder ========
+// ======== Estación Líder ========
 
-struct NodoLider {
+struct Lider {
     id: NodoID,
     tarjeta: TarjetaID,
     cuenta: CuentaID,
@@ -361,8 +362,8 @@ struct NodoLider {
     pendientes: HashMap<ReqID, (NodoID, f64)>,
 }
 
-impl NodoLider {
-    // Recibe Cobrar desde un suscriptor y lo reenvía al NodoCuenta
+impl Lider {
+    // Recibe Cobrar desde un suscriptor y lo reenvía al Cuenta
     fn handle_cobrar(&mut self, req_id: ReqID, tarjeta: TarjetaID, monto: f64, origen: NodoID) {
         self.pendientes.insert(req_id, (origen.clone(), monto));
         enviar(self.nodo_cuenta.clone(), Mensaje::Cobrar {
@@ -370,7 +371,7 @@ impl NodoLider {
         });
     }
 
-    // Recibe la decisión del NodoCuenta
+    // Recibe la decisión del Cuenta
     fn handle_respuesta_cobro(&mut self, req_id: ReqID, ok: bool, razon: String, monto: f64) {
         if let Some((origen_suscriptor, monto_guardado)) = self.pendientes.remove(&req_id) {
             if ok {
@@ -393,16 +394,16 @@ impl NodoLider {
     }
 }
 
-// ======== Nodo Cuenta ========
+// ======== Cuenta ========
 
-struct NodoCuenta {
+struct Cuenta {
     id: NodoID,
     cuenta: CuentaID,
     limite: f64,
     consumo_total: f64,
 }
 
-impl NodoCuenta {
+impl Cuenta {
     // Valida el límite global de la cuenta y decide el cobro
     fn handle_cobrar(&mut self, req_id: ReqID, _tarjeta: TarjetaID, monto: f64, origen: NodoID) {
         if self.consumo_total + monto <= self.limite {
@@ -420,8 +421,8 @@ impl NodoCuenta {
 
 // ======== Notas operativas ========
 // - programar_timeout: si expira y no llegó Registro, se asume "primer uso" y se crean
-//   RegistroTarjeta, NodoLider y NodoCuenta locales (caso 1), y se reintenta Cobrar.
-// - recuperar_monto(req_id): en una implementación real, el NodoSuscriptor guardaría req_id -> monto
+//   RegistroTarjeta, Lider y Cuenta locales (caso 1), y se reintenta Cobrar.
+// - recuperar_monto(req_id): en una implementación real, el Suscriptor guardaría req_id -> monto
 //   en un HashMap para enviar el monto correcto al reenviar tras recibir Registro.
 // - enviar(): primitiva de envío de mensajes entre actores (TCP).
 
@@ -431,56 +432,56 @@ impl NodoCuenta {
 
 ### Caso 1: Primer uso de la tarjeta
 
-1. **Surtidor → NodoSuscriptor:** `Cobrar(tarjeta, monto)`  
-2. **NodoSuscriptor → Vecinos:** `Cobrar(tarjeta, monto)`  
+1. **Surtidor → Suscriptor:** `Cobrar(tarjeta, monto)`  
+2. **Suscriptor → Vecinos:** `Cobrar(tarjeta, monto)`  
     Ningún nodo responde → *primer uso detectado*  
-3. **NodoSuscriptor crea:** `RegistroTarjeta + NodoLíder + NodoCuenta`  
-4. **NodoSuscriptor** valida límite de tarjeta *(local = 0, OK)*  
-5. **NodoSuscriptor → NodoLíder:** `Cobrar(tarjeta, monto)`  
-6. **NodoLíder → NodoCuenta:** `Cobrar(tarjeta, monto)`  
+3. **Suscriptor crea:** `RegistroTarjeta + NodoLíder + NodoCuenta`  
+4. **Suscriptor** valida límite de tarjeta *(local = 0, OK)*  
+5. **Suscriptor → Líder:** `Cobrar(tarjeta, monto)`  
+6. **Líder → NodoCuenta:** `Cobrar(tarjeta, monto)`  
 7. **NodoCuenta** valida límite de cuenta:  
     Si **OK** → actualiza `consumo_total` y responde `(ok = true)`  
     Si **excede** → responde `(ok = false, "Límite de cuenta principal")`  
-8. **NodoLíder** recibe respuesta:  
+8. **Líder** recibe respuesta:  
     Si **OK** → envía `Actualización` a suscriptores *(propagando el cobro)*  
-    En cualquier caso → responde al **NodoSuscriptor**  
-9. **NodoSuscriptor** actualiza su registro local y `TTL`  
-10. **NodoSuscriptor → Surtidor:** `RespuestaCobro(ok)`
+    En cualquier caso → responde al **Surtidor**  
+9. **Surtidor** actualiza su registro local y `TTL`  
+10. **Surtidor → Surtidor:** `RespuestaCobro(ok)`
 
 ### Caso 2: Uso en estación frecuente
 
-1. **Surtidor → NodoSuscriptor:** `Cobrar(tarjeta, monto)`  
-2. **NodoSuscriptor** valida límite de tarjeta:  
+1. **Surtidor → Surtidor:** `Cobrar(tarjeta, monto)`  
+2. **Surtidor** valida límite de tarjeta:  
     Si **excede** → responde `"Límite de tarjeta alcanzado"`  
-    Si **OK** → **NodoSuscriptor → NodoLíder:** `Cobrar(tarjeta, monto)`  
-3. **NodoLíder → NodoCuenta:** `Cobrar(tarjeta, monto)`  
+    Si **OK** → **Surtidor → Líder:** `Cobrar(tarjeta, monto)`  
+3. **Líder → NodoCuenta:** `Cobrar(tarjeta, monto)`  
 4. **NodoCuenta** valida límite global:  
     Si **excede** → `RespuestaCobro(false)`  
     Si **OK** → `RespuestaCobro(true)`  
-5. **NodoLíder** recibe la respuesta y:  
+5. **Líder** recibe la respuesta y:  
     Si **OK** → `Actualización` a suscriptores *(saldo actualizado)*  
-6. **NodoLíder → NodoSuscriptor:** `RespuestaCobro(ok)`  
-7. **NodoSuscriptor** actualiza su registro + `TTL`  
-8. **NodoSuscriptor → Surtidor:** `RespuestaCobro(ok)`
+6. **Líder → Surtidor:** `RespuestaCobro(ok)`  
+7. **Surtidor** actualiza su registro + `TTL`  
+8. **Surtidor → Surtidor:** `RespuestaCobro(ok)`
 
 ### Caso 3: Uso en nueva estación (ya conocida por otras)
 
-1. **Surtidor → NodoSuscriptor:** `Cobrar(tarjeta, monto)`  
-2. **NodoSuscriptor** no conoce la tarjeta → propaga a **vecinos**  
+1. **Surtidor → Surtidor:** `Cobrar(tarjeta, monto)`  
+2. **Surtidor** no conoce la tarjeta → propaga a **vecinos**  
 3. **NodoVecino** con registro → responde con `Registro(tarjeta)`  
-4. **NodoSuscriptor** almacena el registro recibido  
-5. **NodoSuscriptor → NodoLíder:** `Suscripción`  
-6. **NodoSuscriptor** valida límite de tarjeta local:  
+4. **Surtidor** almacena el registro recibido  
+5. **Surtidor → Líder:** `Suscripción`  
+6. **Surtidor** valida límite de tarjeta local:  
     Si **excede** → `RespuestaCobro(false)`  
-    Si **OK** → **NodoSuscriptor → NodoLíder:** `Cobrar(tarjeta, monto)`  
+    Si **OK** → **Surtidor → Líder:** `Cobrar(tarjeta, monto)`  
 7. **NodoLíder → NodoCuenta:** `Cobrar(tarjeta, monto)`  
 8. **NodoCuenta** valida límite global:  
     Si **excede** → `RespuestaCobro(false)`  
     Si **OK** → `RespuestaCobro(true)`  
 9. **NodoLíder** envía `Actualización` a todos los suscriptores *(incluido el nuevo)*  
-10. **NodoLíder → NodoSuscriptor:** `RespuestaCobro(ok)`  
-11. **NodoSuscriptor** actualiza su `TTL` y registro  
-12. **NodoSuscriptor → Surtidor:** `RespuestaCobro(ok)`
+10. **NodoLíder → Surtidor:** `RespuestaCobro(ok)`  
+11. **Surtidor** actualiza su `TTL` y registro  
+12. **Surtidor → Surtidor:** `RespuestaCobro(ok)`
 
 ## Protocolo de comunicación
 Por tratarse de un sistema distribuido, los nodos obviamente no comparten memoria, si no que se comunican por red. Es por esto que se hace necesario introducir un protocolo de aplicación y el elegir un protocolo de capa de transporte.

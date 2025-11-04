@@ -178,16 +178,17 @@ Cuando un **administrador** hace una consulta o impone un nuevo monto límite, y
 \newpage
 # Modelo de Actores
 
-El sistema se modela siguiendo el **paradigma de actores distribuidos**, donde cada proceso representa una entidad que se comunica mediante el envío de mensajes.  
+El sistema se modela siguiendo el **paradigma de actores distribuidos**. Cada nodo en el sistema distribuido ejecuta varios actores, con distintas responsabilidades. En particular si un nodo ejecuta, por ejemplo, un actor **Cuenta**, entonces, ese nodo es un **Nodo Cuenta**. Se mantiene la limitación de que un nodo cuenta no puede ser un nodo líder de una tarjeta que pertenece a esa cuenta, por tanto un nodo no puede tener actores cuenta 1 y lider de una tarjeta que pertenezca a la cuenta 1.  
+Los ejecutables de los nodos proveen una abstracción de comunicación entre actores, de manera tal que un actor se comunica con otro como si ambos vivieran en el mismo nodo. Se separan entonces la comunicación entre actores en los nodos y entre los nodos en sí. Esto es porque los actores no engloban la responsabilidad de, por ejemplo, mantener una mínima cantidad de réplicas de una tarjeta en distintos nodos del sistema distribuído; los mensajes que pertenecen a esa coordinación se manejan en otro grupo de entidades que se comunican: los nodos.  
 Cada actor mantiene su propio estado interno y procesa mensajes de forma asíncrona, garantizando independencia y resiliencia ante fallos.
 
 ## Actores
 
-- **Nodo Surtidor**: ejecuta en la red local de una estación y envía solicitudes de cobro al nodo estación correspondiente.  
-- **Nodo Estación Suscriptor**: mantiene registros locales de tarjetas que se usaron en su zona. Si no conoce una tarjeta, propaga el intento de cobro a sus estaciones vecinas.  
+- **Surtidor**: ejecuta en la red local de una estación y envía solicitudes de cobro al nodo estación correspondiente.  
+- **Estación Suscriptor**: mantiene registros locales de tarjetas que se usaron en su zona. Si no conoce una tarjeta, propaga el intento de cobro a sus estaciones vecinas.  
   Además, valida el **límite de la tarjeta** antes de delegar el cobro al nodo líder.  
-- **Nodo Estación Líder**: lidera un clúster de suscriptores de una tarjeta. Recibe cobros de los suscriptores y los reenvía al nodo cuenta para su validación global. Luego distribuye las actualizaciones a los nodos suscriptores.  
-- **Nodo Cuenta**: centraliza el control del saldo total de la cuenta principal. Valida los límites globales de la empresa y confirma o rechaza las operaciones.
+- **Estación Líder**: lidera un clúster de suscriptores de una tarjeta. Recibe cobros de los suscriptores y los reenvía al nodo cuenta para su validación global. Luego distribuye las actualizaciones a los nodos suscriptores.  
+- **Cuenta**: centraliza el control del saldo total de la cuenta principal. Valida los límites globales de la empresa y confirma o rechaza las operaciones.
 
 Por diseño, **cada cuenta tiene un único nodo cuenta** y cada tarjeta tiene un único **nodo líder**, que actúa como intermediario entre el nodo cuenta y los nodos suscriptores.
 
@@ -239,7 +240,7 @@ struct RegistroTarjeta {
     lider_id: NodoID,  // líder de la tarjeta (para enviar Suscripcion/Cobrar)
 }
 
-// ======== Nodo Surtidor ========
+// ======== Surtidor ========
 
 struct NodoSurtidor {
     id: NodoID,
@@ -264,7 +265,7 @@ impl NodoSurtidor {
     fn nuevo_req(&mut self) -> ReqID { self.seq += 1; self.seq }
 }
 
-// ======== Nodo Estación Suscriptor ========
+// ======== Estación Suscriptor ========
 
 struct NodoSuscriptor {
     id: NodoID,
@@ -373,7 +374,7 @@ impl NodoSuscriptor {
     }
 }
 
-// ======== Nodo Estación Líder ========
+// ======== Estación Líder ========
 
 struct NodoLider {
     id: NodoID,
@@ -417,7 +418,7 @@ impl NodoLider {
     }
 }
 
-// ======== Nodo Cuenta ========
+// ======== Cuenta ========
 
 struct NodoCuenta {
     id: NodoID,
