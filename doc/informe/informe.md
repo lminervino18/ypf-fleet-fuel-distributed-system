@@ -106,7 +106,7 @@ En caso de que el mensaje llegue a un nodo cuenta al que le pertenece la tarjeta
 4. Con todas las condiciones del sistema distribuido en orden, la estación procede a realizar el cobro para luego actualizar a los suscriptores de la tarjeta (que acaban de generarse).
 
 ### 2. *Un conductor usa su tarjeta en el surtidor de una estación a la que frecuenta.*
-Si un conductor utiliza su tarjeta en una estación a la que va con frecuencia, entonces ésta estación \colorbox{yellow}{ya tiene cargado} el registro de la tarjeta. Aún así, se necesita saber si a la cuenta le queda monto para realizar el cobro, para esto se procede de la siguiente manera:
+Si un conductor utiliza su tarjeta en una estación a la que va con frecuencia, entonces ésta estación ya tiene cargado el registro de la tarjeta. Aún así, se necesita saber si a la cuenta le queda monto para realizar el cobro, para esto se procede de la siguiente manera:
 
 1. \textcolor{orange}{El surtidor} envía la consulta de saldo de cuenta al \textcolor{red}{nodo líder de la estación}.
 2. \textcolor{red}{El nodo líder de la estación} envía la consulta de saldo de cuenta al \textcolor{green}{nodo líder tarjeta}.
