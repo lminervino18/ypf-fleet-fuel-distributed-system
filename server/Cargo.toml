@@ -1,6 +1,12 @@
 [package]
 name = "server"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+tokio = { version = "1", features = ["full", "net"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+rand = { version = "0.8", features = ["small_rng"] }
+common = { path = "../common" }   # link to your shared crate
+libc = "0.2.177"
