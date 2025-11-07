@@ -106,7 +106,7 @@ En caso de que el mensaje llegue a un nodo cuenta al que le pertenece la tarjeta
 4. Con todas las condiciones del sistema distribuido en orden, la estación procede a realizar el cobro para luego actualizar a los suscriptores de la tarjeta (que acaban de generarse).
 
 ### 2. *Un conductor usa su tarjeta en el surtidor de una estación a la que frecuenta.*
-Si un conductor utiliza su tarjeta en una estación a la que va con frecuencia, entonces ésta estación \colorbox{yellow}{ya tiene cargado} el registro de la tarjeta. Aún así, se necesita saber si a la cuenta le queda monto para realizar el cobro, para esto se procede de la siguiente manera:
+Si un conductor utiliza su tarjeta en una estación a la que va con frecuencia, entonces ésta estación ya tiene cargado el registro de la tarjeta. Aún así, se necesita saber si a la cuenta le queda monto para realizar el cobro, para esto se procede de la siguiente manera:
 
 1. \textcolor{orange}{El surtidor} envía la consulta de saldo de cuenta al \textcolor{red}{nodo líder de la estación}.
 2. \textcolor{red}{El nodo líder de la estación} envía la consulta de saldo de cuenta al \textcolor{green}{nodo líder tarjeta}.
@@ -178,18 +178,24 @@ Cuando un **administrador** hace una consulta o impone un nuevo monto límite, y
 \newpage
 # Modelo de Actores
 
-El sistema se modela siguiendo el **paradigma de actores distribuidos**, donde cada proceso representa una entidad que se comunica mediante el envío de mensajes.  
-Cada actor mantiene su propio estado interno y procesa mensajes de forma asíncrona, garantizando independencia y resiliencia ante fallos.
+El sistema se modela siguiendo el **paradigma de actores distribuidos**. Cada nodo en el sistema distribuido ejecuta varios actores, con distintas responsabilidades. En particular si un nodo ejecuta, por ejemplo, un actor **Cuenta**, entonces, ese nodo es un **Nodo Cuenta**. Se mantiene la limitación de que un nodo cuenta no puede ser un nodo líder de una tarjeta que pertenece a esa cuenta, por tanto un nodo no puede tener actores cuenta 1 y lider de una tarjeta que pertenezca a la cuenta 1.  
+Los ejecutables de los nodos proveen una abstracción de comunicación entre actores, de manera tal que un actor se comunica con otro como si ambos vivieran en el mismo nodo. Se separan entonces la comunicación entre actores en los nodos y entre los nodos en sí. Esto es porque los actores no engloban la responsabilidad de, por ejemplo, mantener una mínima cantidad de réplicas de una tarjeta en distintos nodos del sistema distribuído; los mensajes que pertenecen a esa coordinación se manejan en otro grupo de entidades que se comunican: los nodos.  
+Cada actor mantiene su propio estado interno y procesa mensajes de forma asíncrona, garantizando independencia y resiliencia ante fallos.  
+En este modelo se especifica el funcionamiento de la comunicación entre actores en los nodos del sistema y no la comunicación entre nodos, que ya se mostró en la sección de arquitectura del servidor.
+
+\begin{figure}[H]
+\centering
+\includesvg[width=0.8\textwidth]{diagrams/actor-model-diagram}
+\caption{Diagrama del modelo de actores. Las entidades de la lógica de negocio del sistema están abstraídas del funcionamiento del sistema distribuido.}
+\end{figure}
 
 ## Actores
 
-- **Nodo Surtidor**: ejecuta en la red local de una estación y envía solicitudes de cobro al nodo estación correspondiente.  
-- **Nodo Estación Suscriptor**: mantiene registros locales de tarjetas que se usaron en su zona. Si no conoce una tarjeta, propaga el intento de cobro a sus estaciones vecinas.  
-  Además, valida el **límite de la tarjeta** antes de delegar el cobro al nodo líder.  
-- **Nodo Estación Líder**: lidera un clúster de suscriptores de una tarjeta. Recibe cobros de los suscriptores y los reenvía al nodo cuenta para su validación global. Luego distribuye las actualizaciones a los nodos suscriptores.  
-- **Nodo Cuenta**: centraliza el control del saldo total de la cuenta principal. Valida los límites globales de la empresa y confirma o rechaza las operaciones.
+- **Suscriptor**: mantiene registros locales de tarjetas que se usaron en su zona. Si no conoce una tarjeta, propaga el intento de cobro a sus estaciones vecinas. Además, valida el **límite de la tarjeta** antes de delegar el cobro al nodo líder.  
+- **Líder Tarjeta**: lidera un clúster de suscriptores de una tarjeta. Recibe cobros de los suscriptores y los reenvía al nodo cuenta para su validación global, esto es, checkear el límite de la cuenta. Luego distribuye las actualizaciones a los nodos suscriptores.  
+- **Cuenta**: centraliza el control del saldo total de la cuenta principal. Valida los límites globales de la empresa y confirma o rechaza las las operaciones.
 
-Por diseño, **cada cuenta tiene un único nodo cuenta** y cada tarjeta tiene un único **nodo líder**, que actúa como intermediario entre el nodo cuenta y los nodos suscriptores.
+Cada cuenta tiene un único nodo cuenta y cada tarjeta tiene un único **nodo líder**, que actúa como intermediario entre el nodo cuenta y los nodos suscriptores.  
 
 ## Mensajes del sistema
 
@@ -198,314 +204,190 @@ Por diseño, **cada cuenta tiene un único nodo cuenta** y cada tarjeta tiene un
 | **Cobrar** | Solicitud de cobro iniciada por un surtidor o reenviada entre nodos |
 | **RespuestaCobro** | Confirmación o rechazo del cobro (por límite de tarjeta o de cuenta) |
 | **Registro** | Información completa de una tarjeta, enviada cuando un nodo la conoce |
-| **Suscripción** | Petición para ser agregado a la lista de suscriptores de una tarjeta |
 | **Actualización** | Propagada a todos los suscriptores después de un cobro exitoso |
 
 \newpage
 ## Representación en pseudocódigo Rust
 
 ```rust
-// ======== Tipos auxiliares ========
-type NodoID = String;
-type TarjetaID = String;
-type CuentaID = String;
-type ReqID = u64;
+enum ErrorCobro {
+    // ...
+}
 
-// ======== Definición de mensajes ========
-// Todos los mensajes que forman parte del flujo de cobro llevan req_id para correlación.
-
+// ======== Mensajes ========
 enum Mensaje {
-    // Flujo principal
-    Cobrar { req_id: ReqID, tarjeta: TarjetaID, monto: f64, origen: NodoID },
-    RespuestaCobro { req_id: ReqID, ok: bool, razon: String, monto: f64 },
-
-    // Descubrimiento y suscripción
-    Registro { req_id: ReqID, tarjeta: TarjetaID, registro: RegistroTarjeta },
-    Suscripcion { tarjeta: TarjetaID, nodo: NodoID },
-
-    // Replicación eventual
-    Actualizacion { tarjeta: TarjetaID, delta: f64 },
+    // flujo principal
+    Cobrar {
+        // suscriptor -> líder tarjeta & líder tarjeta -> cuenta
+        transaction_id: TransactionID,
+        tarjeta: TarjetaID,
+        monto: f64,
+        origen: ActorID,
+        destino: ActorID,
+    },
+    RespuestaCobro {
+        // líder tarjeta -> suscriptor & cuenta -> líder tarjeta
+        transaction_id: TransactionID,
+        ok: bool,
+        razon: ErrorCobro,
+        monto: f64,
+    },
+    Actualizacion {
+        // actualizaciones de límites de tarjetas/cuentas
+    },
 }
 
 // ======== Estructura de los registros ========
-
-#[derive(Clone)]
 struct RegistroTarjeta {
     tarjeta: TarjetaID,
     cuenta: CuentaID,
     saldo_usado: f64,
     limite_tarjeta: f64,
-    ttl: u8,           // tiempo de vida de la suscripción
-    lider_id: NodoID,  // líder de la tarjeta (para enviar Suscripcion/Cobrar)
+    ttl: u8,          // tiempo de vida de la suscripción
+    lider_id: NodoID, // líder de la tarjeta
 }
 
-// ======== Nodo Surtidor ========
-
-struct NodoSurtidor {
-    id: NodoID,
-    estacion: NodoID,
-    seq: ReqID, // generador local de req_id
+// ======== Suscriptor ========
+struct Suscriptor {
+    id: ActorID,
+    tarjeta: RegistroTarjeta,
+    pendientes: HashMap<TransactionID, f64>,
 }
 
-impl NodoSurtidor {
-    fn cobrar(&mut self, tarjeta: TarjetaID, monto: f64) {
-        let req = self.nuevo_req();
-        enviar(self.estacion.clone(), Mensaje::Cobrar { req_id: req, tarjeta, monto, origen: self.id.clone() });
+impl Suscriptor {
+    // entrada del cobro en un surtidor a un suscriptor que contiene el nodo
+    fn handle_cobrar(&mut self, transaction_id: TransactionID, tarjeta: TarjetaID, monto: f64) {
+        tarjeta.ttl = INITIAL_TTL;
+        if monto + tarjeta.gastado > tarjeta.limite {
+            // no puedo cobrar
+        }
+
+        self.lider
+            .send(Mensaje::Cobrar::new(transaction_id, tarjeta, monto));
     }
 
-    fn handle_respuesta(&self, req_id: ReqID, ok: bool, razon: String, monto: f64) {
+    fn handle_respuesta_cobro(
+        &mut self,
+        transaction_id: TransactionID,
+        ok: bool,
+        razon: String,
+        monto: f64,
+    ) {
         if ok {
-            mostrar(format!("[{}] Cobro ${:.2} realizado con éxito", req_id, monto));
-        } else {
-            mostrar(format!("[{}] Cobro rechazado: {}", req_id, razon));
+            // se puede cargar nafta
+            return;
         }
+
+        // no se puede cargar nafta
     }
 
-    fn nuevo_req(&mut self) -> ReqID { self.seq += 1; self.seq }
-}
-
-// ======== Nodo Estación Suscriptor ========
-
-struct NodoSuscriptor {
-    id: NodoID,
-    tarjetas: HashMap<TarjetaID, RegistroTarjeta>,
-    vecinos: Vec<NodoID>,
-    // req_id -> a quién debo devolver el resultado final (surtidor)
-    pendientes: HashMap<ReqID, NodoID>,
-    // req_id -> marca de que ya pedí/propagué y estoy esperando Registro (caso 3)
-    esperando_registro: HashSet<ReqID>,
-}
-
-impl NodoSuscriptor {
-    // Entrada principal del flujo desde surtidor o vecinos
-    fn handle_cobrar(&mut self, req_id: ReqID, tarjeta: TarjetaID, monto: f64, origen: NodoID) {
-        // Si el origen es un surtidor, recordar a quién responder.
-        self.pendientes.entry(req_id).or_insert(origen.clone());
-
-        if let Some(r) = self.tarjetas.get(&tarjeta) {
-            // --- Validación del límite de tarjeta ---
-            if r.saldo_usado + monto > r.limite_tarjeta {
-                let reply_to = self.pendientes.remove(&req_id).unwrap_or(origen);
-                enviar(reply_to, Mensaje::RespuestaCobro {
-                    req_id, ok: false, razon: "Límite de tarjeta alcanzado".into(), monto
-                });
-                return;
-            }
-
-            // Enviar al líder de esta tarjeta para validación global en NodoCuenta
-            enviar(r.lider_id.clone(), Mensaje::Cobrar {
-                req_id, tarjeta: tarjeta.clone(), monto, origen: self.id.clone()
-            });
-        } else {
-            // Tarjeta desconocida: dos caminos posibles (caso 1 o caso 3)
-
-            // (A) Propagar el intento de cobro a vecinos (caso 3: alguno conoce y responde Registro)
-            if !self.esperando_registro.contains(&req_id) {
-                self.esperando_registro.insert(req_id);
-                for v in &self.vecinos {
-                    enviar(v.clone(), Mensaje::Cobrar {
-                        req_id, tarjeta: tarjeta.clone(), monto, origen: self.id.clone()
-                    });
-                }
-                // (B) Si tras un timeout no llega Registro, asumir PRIMER USO (caso 1)
-                //     y auto-generar registro + líder + cuenta locales.
-                //     *Aquí lo modelamos como una función que se dispara luego de un timeout.*
-                programar_timeout(self.id.clone(), req_id, tarjeta.clone(), monto);
-            } else {
-                // Este suscriptor fue alcanzado por una propagación vecina.
-                // Si ÉL conoce la tarjeta (caso 3 lado vecino), responde con REGISTRO al origen.
-                if let Some(reg) = self.tarjetas.get(&tarjeta) {
-                    enviar(origen, Mensaje::Registro {
-                        req_id, tarjeta: tarjeta.clone(), registro: reg.clone()
-                    });
-                } else {
-                    // No conoce tampoco → continúa la propagación (evitar loops con TTL/visitados si se desea).
-                    for v in &self.vecinos {
-                        if v != &origen {
-                            enviar(v.clone(), Mensaje::Cobrar {
-                                req_id, tarjeta: tarjeta.clone(), monto, origen: self.id.clone()
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Llega un REGISTRO desde un vecino (caso 3)
-    fn handle_registro(&mut self, req_id: ReqID, tarjeta: TarjetaID, registro: RegistroTarjeta) {
-        self.esperando_registro.remove(&req_id);
-        self.tarjetas.insert(tarjeta.clone(), registro.clone());
-        // Suscribirse al líder de la tarjeta
-        enviar(registro.lider_id.clone(), Mensaje::Suscripcion { tarjeta: tarjeta.clone(), nodo: self.id.clone() });
-
-        // Validar límite de tarjeta y continuar el flujo normal hacia el líder
-        let monto_y_reply = self.pendientes.get(&req_id).cloned();
-        if let Some(_reply_to) = monto_y_reply {
-            // No guardamos monto acá, confiamos en que nos llega por Actualizacion y RespuestaCobro.
-        }
-
-        if let Some(r) = self.tarjetas.get(&tarjeta) {
-            enviar(r.lider_id.clone(), Mensaje::Cobrar {
-                req_id, tarjeta: tarjeta.clone(), monto: /* monto real del req_id */ recuperar_monto(req_id),
-                origen: self.id.clone()
-            });
-        }
-    }
-
-    // Llega la respuesta final del líder (éxito o rechazo)
-    fn handle_respuesta_cobro(&mut self, req_id: ReqID, ok: bool, razon: String, monto: f64) {
-        let reply_to = self.pendientes.remove(&req_id);
-        if let Some(dest) = reply_to {
-            enviar(dest, Mensaje::RespuestaCobro { req_id, ok, razon, monto });
-        }
-    }
-
-    // Replicación eventual: actualización del saldo local y manejo de TTL
-    fn handle_actualizacion(&mut self, tarjeta: TarjetaID, delta: f64) {
-        if let Some(r) = self.tarjetas.get_mut(&tarjeta) {
-            r.saldo_usado += delta;
-            r.ttl = r.ttl.saturating_sub(1);
-            if r.ttl == 0 {
+    // actualizar el registro de la tarjeta
+    fn handle_actualizacion(&mut self, tarjeta: TarjetaID, monto: f64) {
+        self.tarjeta.saldo_usado += monto;
+        if transaction.origin != self {
+            self.tarjeta.ttl -= 1;
+            if self.tarjeta.ttl == 0 {
                 self.tarjetas.remove(&tarjeta);
             }
         }
     }
 }
 
-// ======== Nodo Estación Líder ========
-
-struct NodoLider {
-    id: NodoID,
+// ======== Líder ========
+struct Lider {
+    id: ActorID,
     tarjeta: TarjetaID,
-    cuenta: CuentaID,
-    nodo_cuenta: NodoID,
-    suscriptores: Vec<NodoID>,
-    // req_id -> (origen_suscriptor, monto)
-    pendientes: HashMap<ReqID, (NodoID, f64)>,
+    cuenta: ActorID,
+    suscriptores: Vec<ActorID>,
+    pendientes: HashMap<TransactionID, (ActorID, f64)>,
 }
 
-impl NodoLider {
-    // Recibe Cobrar desde un suscriptor y lo reenvía al NodoCuenta
-    fn handle_cobrar(&mut self, req_id: ReqID, tarjeta: TarjetaID, monto: f64, origen: NodoID) {
-        self.pendientes.insert(req_id, (origen.clone(), monto));
-        enviar(self.nodo_cuenta.clone(), Mensaje::Cobrar {
-            req_id, tarjeta, monto, origen: self.id.clone()
-        });
+impl Lider {
+    // recibe Cobrar desde un suscriptor y lo reenvía a la cuenta
+    fn handle_cobrar(
+        &mut self,
+        transaction_id: TransactionID,
+        tarjeta: TarjetaID,
+        monto: f64,
+        origen: NodoID,
+    ) {
+        self.cuenta
+            .send(Mensaje::Cobrar::new(transaction_id, tarjeta, monto));
     }
 
-    // Recibe la decisión del NodoCuenta
-    fn handle_respuesta_cobro(&mut self, req_id: ReqID, ok: bool, razon: String, monto: f64) {
-        if let Some((origen_suscriptor, monto_guardado)) = self.pendientes.remove(&req_id) {
-            if ok {
-                // Propagar actualización a todos los suscriptores (incluido quien inició)
-                for s in &self.suscriptores {
-                    enviar(s.clone(), Mensaje::Actualizacion {
-                        tarjeta: self.tarjeta.clone(), delta: monto_guardado
-                    });
-                }
-            }
-            // Responder al suscriptor que inició el flujo
-            enviar(origen_suscriptor, Mensaje::RespuestaCobro { req_id, ok, razon, monto: monto_guardado });
-        }
-    }
+    // recibe la decisión de la cuenta
+    fn handle_respuesta_cobro(
+        &mut self,
+        transaction_id: TransactionID,
+        ok: bool,
+        razon: String,
+        monto: f64,
+    ) {
+        // responder al suscriptor que inició el flujo
+        origen_suscriptor.enviar(
+            origen_suscriptor,
+            Mensaje::RespuestaCobro {
+                transaction_id,
+                ok,
+                razon,
+                monto: monto_guardado,
+            },
+        );
 
-    fn handle_suscripcion(&mut self, tarjeta: TarjetaID, nodo: NodoID) {
-        if tarjeta == self.tarjeta && !self.suscriptores.contains(&nodo) {
-            self.suscriptores.push(nodo);
+        // actualizar al resto de suscriptores del clúster
+        for s in &self.suscriptores {
+            s.enviar(
+                Mensaje::Actualizacion::new(
+                    tarjeta: self.tarjeta.clone(),
+                    delta: monto_guardado,
+                )
+            );
         }
     }
 }
 
-// ======== Nodo Cuenta ========
-
-struct NodoCuenta {
+// ======== Cuenta ========
+struct Cuenta {
     id: NodoID,
     cuenta: CuentaID,
     limite: f64,
     consumo_total: f64,
 }
 
-impl NodoCuenta {
-    // Valida el límite global de la cuenta y decide el cobro
-    fn handle_cobrar(&mut self, req_id: ReqID, _tarjeta: TarjetaID, monto: f64, origen: NodoID) {
-        if self.consumo_total + monto <= self.limite {
-            self.consumo_total += monto;
-            enviar(origen, Mensaje::RespuestaCobro {
-                req_id, ok: true, razon: "".into(), monto
-            });
-        } else {
-            enviar(origen, Mensaje::RespuestaCobro {
-                req_id, ok: false, razon: "Límite de cuenta principal alcanzado".into(), monto
-            });
+impl Cuenta {
+    // valida el límite global de la cuenta y decide el cobro
+    fn handle_cobrar(
+        &mut self,
+        transaction_id: TransactionID,
+        _tarjeta: TarjetaID,
+        monto: f64,
+        origen: ActorID, // líder
+    ) {
+        if self.consumo_total + monto >= self.limite {
+            origen.enviar(
+                Mensaje::RespuestaCobro::new(
+                    transaction_id,
+                    ok: false,
+                    razon: ErrorCobro::LimiteCuenta;
+                    monto,
+                )
+            );
+
+            return;
         }
+
+        self.consumo_total += monto;
+        origen.enviar(
+            Mensaje::RespuestaCobro::new(
+                transaction_id,
+                ok: true,
+                razon: "".into(),
+                monto,
+            )
+        );
     }
 }
-
-// ======== Notas operativas ========
-// - programar_timeout: si expira y no llegó Registro, se asume "primer uso" y se crean
-//   RegistroTarjeta, NodoLider y NodoCuenta locales (caso 1), y se reintenta Cobrar.
-// - recuperar_monto(req_id): en una implementación real, el NodoSuscriptor guardaría req_id -> monto
-//   en un HashMap para enviar el monto correcto al reenviar tras recibir Registro.
-// - enviar(): primitiva de envío de mensajes entre actores (TCP).
-
 ```
-
-\newpage
-# Flujos de mensajes detallados con validaciones
-
-## Caso 1: Primer uso de la tarjeta
-
-1. **Surtidor → NodoSuscriptor:** `Cobrar(tarjeta, monto)`  
-2. **NodoSuscriptor → Vecinos:** `Cobrar(tarjeta, monto)`  
-    Ningún nodo responde → *primer uso detectado*  
-3. **NodoSuscriptor crea:** `RegistroTarjeta + NodoLíder + NodoCuenta`  
-4. **NodoSuscriptor** valida límite de tarjeta *(local = 0, OK)*  
-5. **NodoSuscriptor → NodoLíder:** `Cobrar(tarjeta, monto)`  
-6. **NodoLíder → NodoCuenta:** `Cobrar(tarjeta, monto)`  
-7. **NodoCuenta** valida límite de cuenta:  
-    Si **OK** → actualiza `consumo_total` y responde `(ok = true)`  
-    Si **excede** → responde `(ok = false, "Límite de cuenta principal")`  
-8. **NodoLíder** recibe respuesta:  
-    Si **OK** → envía `Actualización` a suscriptores *(propagando el cobro)*  
-    En cualquier caso → responde al **NodoSuscriptor**  
-9. **NodoSuscriptor** actualiza su registro local y `TTL`  
-10. **NodoSuscriptor → Surtidor:** `RespuestaCobro(ok)`
-
-## Caso 2: Uso en estación frecuente
-
-1. **Surtidor → NodoSuscriptor:** `Cobrar(tarjeta, monto)`  
-2. **NodoSuscriptor** valida límite de tarjeta:  
-    Si **excede** → responde `"Límite de tarjeta alcanzado"`  
-    Si **OK** → **NodoSuscriptor → NodoLíder:** `Cobrar(tarjeta, monto)`  
-3. **NodoLíder → NodoCuenta:** `Cobrar(tarjeta, monto)`  
-4. **NodoCuenta** valida límite global:  
-    Si **excede** → `RespuestaCobro(false)`  
-    Si **OK** → `RespuestaCobro(true)`  
-5. **NodoLíder** recibe la respuesta y:  
-    Si **OK** → `Actualización` a suscriptores *(saldo actualizado)*  
-6. **NodoLíder → NodoSuscriptor:** `RespuestaCobro(ok)`  
-7. **NodoSuscriptor** actualiza su registro + `TTL`  
-8. **NodoSuscriptor → Surtidor:** `RespuestaCobro(ok)`
-
-## Caso 3: Uso en nueva estación (ya conocida por otras)
-
-1. **Surtidor → NodoSuscriptor:** `Cobrar(tarjeta, monto)`  
-2. **NodoSuscriptor** no conoce la tarjeta → propaga a **vecinos**  
-3. **NodoVecino** con registro → responde con `Registro(tarjeta)`  
-4. **NodoSuscriptor** almacena el registro recibido  
-5. **NodoSuscriptor → NodoLíder:** `Suscripción`  
-6. **NodoSuscriptor** valida límite de tarjeta local:  
-    Si **excede** → `RespuestaCobro(false)`  
-    Si **OK** → **NodoSuscriptor → NodoLíder:** `Cobrar(tarjeta, monto)`  
-7. **NodoLíder → NodoCuenta:** `Cobrar(tarjeta, monto)`  
-8. **NodoCuenta** valida límite global:  
-    Si **excede** → `RespuestaCobro(false)`  
-    Si **OK** → `RespuestaCobro(true)`  
-9. **NodoLíder** envía `Actualización` a todos los suscriptores *(incluido el nuevo)*  
-10. **NodoLíder → NodoSuscriptor:** `RespuestaCobro(ok)`  
-11. **NodoSuscriptor** actualiza su `TTL` y registro  
-12. **NodoSuscriptor → Surtidor:** `RespuestaCobro(ok)`
 
 \newpage
 # Protocolo de comunicación
@@ -513,23 +395,30 @@ Por tratarse de un sistema distribuido, los nodos obviamente no comparten memori
 
 ## Protocolo de capa de aplicación
 Si bien los nodos tienen acceso al código de la implementación de las entidades del sistema, no comparten memoria, si no que se comunican enviando mensajes por red, y por tanto se hace necesario introducir un **protocolo** de *serialización* y *deserialización* de las tiras de bytes que se envían.  
-El protocolo es simple, todos los mensajes tienen 1 byte para el tipo de mensaje (disponibilidad para $2^{1\times 8}=256$ tipos de mensaje distintos), de manera tal que el resto de la deserialización se lleva a cabo según este tipo. Para los mensajes descriptos en la descripción del modelo de autores, se propone la siguiente estructura:
+El protocolo es simple, todos los mensajes tienen 1 byte para el tipo de mensaje (disponibilidad para $2^{1\times 8}=256$ tipos de mensaje distintos), de manera tal que el resto de la deserialización se lleva a cabo según este tipo. Además, cuando un actor quiere comunicarse con otro actor, delega esta comunicación a la abstracción de envío de mensajes entre actores en distintos nodos, por lo tanto todos los mensajes están *wrappeados* en un protocolo de más bajo nivel que contiene la información de la comunicación entre los nodos. Para los mensajes descriptos en la descripción del modelo de autores, se propone la siguiente estructura:
 
-- **`Cobrar`.** `req_id`: ID de un nodo, `tarjeta_id`: ID de una tarjeta, `monto`: doble precisión, `origen_id`: ID de un nodo.
-- **`RespuestaCobro`.** `req_id`: ID de un nodo, `ok`: booleano, `razon`: enum de tipos de error, `monto`: doble precisión.
-- **`RegistroCobro`.** `req_id`: ID de un nodo, `registro`: *registro de tarjeta*.
-- **`Suscripcion`.** `tarjeta`: ID de una tarjeta, `delta`: doble precisión.
+- **`Cobrar`.** `req_id`: ID de un actor, `tarjeta_id`: ID de una tarjeta, `monto`: doble precisión, `origen_id`: ID de un actor.
+- **`RespuestaCobro`.** `req_id`: ID de un actor, `ok`: booleano, `razon`: enum de tipos de error, `monto`: doble precisión.
+- **`RegistroCobro`.** `req_id`: ID de un actor, `registro`: *registro de tarjeta*.
 - **`Actualización`.** `tarjeta`: ID de una tarjeta, `delta`: doble precisión.
 
-El *registro de tarjeta* es **`RegistroTarjeta`:** `tarjeta`: ID de la tarjeta, `cuenta`: ID de la cuenta, `saldo_usado`: doble precisión, `limite_tarjeta`: doble precisión, `ttl`: entero positivo, `lider_id`: ID de un nodo.  
+El *registro de tarjeta* es **`RegistroTarjeta`:** `tarjeta`: ID de la tarjeta, `cuenta`: ID de la cuenta, `saldo_usado`: doble precisión, `limite_tarjeta`: doble precisión, `ttl`: entero positivo, `lider_id`: ID de un actor.  
 
 Por último, los campos están definidos de la siguiente manera:
 
-- **ID de un nodo.** Sabemos que hay 1600 nodos por lo que bastarían 11 bits para representarlos a todos. Para no hacer operaciones bit-wise y para tener margen para muchas más estaciones usamos 2 bytes. Los IDs podrían ser caracteres ascii o números enteros, es indistinto.
 - **ID de una tarjeta.** No sabemos cuántas tarjetas hay, por lo que usamos 4 bytes para representar sus IDs ($2^{4\times 8}$, más de 4 mil millones de IDs distintos).
+- **ID de un actor.** Debería haber más capacidad para actores que tarjetas en el sistema, por lo que se utilizan para definirlos 5 bytes.
 - **Doble precisión.** Usamos el estándar 754 de la IEEE de doble precisión para todos los números que representan montos y fracciones de tiempo. Son 8 bytes: 1 bit de signo, 11 bits para el exponente y el resto de los 52 bits para la mantisa. En Rust esto es un `f64`.
 - **Entero positivo.** Si sólo se usase para el TTL entonces bastaría con tener un byte para este campo.
 - **Enum de tipos de error.** Un sólo byte para poder representar hasta 256 tipos de erorres distintos. Luego durante la deserialización debería traducirse el tipo a un mensaje legible por el usuario (si es que no se trata de un error del sistema que pueda ser manejable por el mismo).
+
+### Wrapper de mensajes entre nodos
+Los headers de los mensajes a nivel sistema distribuido, es decir, comunicación entre nodos que intercomunican a los actores que ejecutan tienen la siguiente estructura:
+
+- **ID del nodo origen**: para identificar la dirección IP del de la estación involucrada en el mensaje. Sabemos que hay 1600 estaciones, por lo que bastarían 11 bits; para tener espacio para poder escalar a más estaciones se usan 2 bytes.
+- **ID del nodo destino**.
+
+Se podrían aceptar además campos del estilo **last-hop**, donde este campo serviría para definir el último interlocutor de la comunicación y no el origen de la misma, para realizar optimizaciones en la comunicación entre nodos.  
 
 ## Protocolo de capa de transporte
 En el sistema **YPF Ruta** se utiliza el protocolo **TCP (Transmission Control Protocol)** tanto para la comunicación local entre *surtidores*, como para la comunicación entre los distintos nodos distribuidos del sistema (*suscriptores, líderes y cuentas*).  
