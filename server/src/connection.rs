@@ -4,115 +4,136 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{tcp::OwnedReadHalf, tcp::OwnedWriteHalf, TcpStream};
+use tokio::net::{tcp::OwnedReadHalf, tcp::OwnedWriteHalf, TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
-/// ===== Config =====
-const IDLE_READ_TIMEOUT_SECS: u64 = 120; // timeout de lectura para cortar sockets "colgados"
+/// ===== Tunables =====
+const IDLE_READ_TIMEOUT_SECS: u64 = 120; // idle timeout for read loops
 
-/// Events coming from the Node (e.g., new accepted TCP connections)
-#[derive(Debug)]
-pub enum ConnEvent {
-    /// Incoming connection accepted by the Node (id, stream, peer_addr)
-    NewConn(u64, TcpStream, SocketAddr),
-
-    /// Connection closed (id)
-    ConnClosed(u64),
-}
-
-/// Commands sent to the ConnectionManager from outside (e.g., Node logic)
+/// Commands the outside world can send to the ConnectionManager
 #[derive(Debug)]
 pub enum ManagerCmd {
-    /// Send a message to a remote address (open connection if needed)
+    /// Send a text payload to a remote address (open or reuse a TCP connection)
     SendTo(SocketAddr, String),
-    /// (Reserved) Graceful shutdown if you ever need it
+    /// Ask the manager to shut down (optional)
     #[allow(dead_code)]
     Shutdown,
 }
 
-/// Represents one active TCP connection
+/// Events the ConnectionManager emits *to the outside* (your Node)
 #[derive(Debug)]
-pub struct ConnInfo {
-    pub addr: SocketAddr,
-    pub writer: Arc<Mutex<OwnedWriteHalf>>,
-    pub last_used: Instant,
-    pub handle: JoinHandle<()>, // task lectora asociada a esta conexión
+pub enum InboundEvent {
+    /// A line of text was read from a peer
+    Received { peer: SocketAddr, payload: String },
+    /// A connection was closed (peer or local)
+    ConnClosed { peer: SocketAddr },
 }
 
-/// Manages all active TCP connections (both incoming and outgoing)
+/// Internal record for an active connection
 #[derive(Debug)]
+struct ConnInfo {
+    addr: SocketAddr,
+    writer: Arc<Mutex<OwnedWriteHalf>>,
+    last_used: Instant,
+    reader_task: JoinHandle<()>, // the reader task that pumps this connection
+}
+
+/// The TCP service that owns the listener, active connections, and handles IO.
 pub struct ConnectionManager {
-    pub max_conns: usize,
-    pub active: HashMap<u64, ConnInfo>,
+    listen_addr: SocketAddr,
+    max_conns: usize,
 
-    /// Events from the Node (new incoming connections, closures)
-    pub rx: mpsc::Receiver<ConnEvent>,
-    pub tx: mpsc::Sender<ConnEvent>,
+    // active connections indexed by a synthetic id
+    active: HashMap<u64, ConnInfo>,
 
-    /// Commands from Node logic (send messages, etc.)
-    pub cmd_rx: mpsc::Receiver<ManagerCmd>,
-    pub cmd_tx: mpsc::Sender<ManagerCmd>,
+    // outbound commands (Node -> Manager)
+    cmd_rx: mpsc::Receiver<ManagerCmd>,
+
+    // inbound events (Manager -> Node)
+    inbound_tx: mpsc::Sender<InboundEvent>,
 }
 
 impl ConnectionManager {
-    pub fn new(
+    /// Create channels and spawn the ConnectionManager task (listener included).
+    ///
+    /// Returns:
+    /// - `ManagerCmd` sender for issuing send/shutdown commands
+    /// - `InboundEvent` receiver for consuming inbound messages and closures
+    pub fn start(
+        listen_addr: SocketAddr,
         max_conns: usize,
-        rx: mpsc::Receiver<ConnEvent>,
-        tx: mpsc::Sender<ConnEvent>,
-        cmd_rx: mpsc::Receiver<ManagerCmd>,
-        cmd_tx: mpsc::Sender<ManagerCmd>,
-    ) -> Self {
-        Self {
+    ) -> (mpsc::Sender<ManagerCmd>, mpsc::Receiver<InboundEvent>) {
+        // channel for commands coming from the Node
+        let (cmd_tx, cmd_rx) = mpsc::channel::<ManagerCmd>(128);
+        // channel for events going up to the Node
+        let (inbound_tx, inbound_rx) = mpsc::channel::<InboundEvent>(256);
+
+        // build the manager
+        let manager = Self {
+            listen_addr,
             max_conns,
             active: HashMap::new(),
-            rx,
-            tx,
             cmd_rx,
-            cmd_tx,
-        }
+            inbound_tx,
+        };
+
+        // spawn the manager task
+        tokio::spawn(manager.run());
+
+        (cmd_tx, inbound_rx)
     }
 
-    /// Main event loop: multiplex ConnEvent (from Node) and ManagerCmd (from Node logic)
-    pub async fn run(mut self) {
-        println!("[INFO] ConnectionManager running (max: {})", self.max_conns);
+    /// Main loop: binds the listener and multiplexes accept + command handling.
+    async fn run(mut self) {
+        let listener = match TcpListener::bind(self.listen_addr).await {
+            Ok(l) => {
+                println!(
+                    "[INFO] ConnectionManager listening on {} (max_conns={})",
+                    self.listen_addr, self.max_conns
+                );
+                l
+            }
+            Err(e) => {
+                eprintln!(
+                    "[FATAL] Failed to bind TCP listener on {}: {}",
+                    self.listen_addr, e
+                );
+                return;
+            }
+        };
 
         loop {
             tokio::select! {
-                // Events from Node (e.g., accepted connections)
-                maybe_evt = self.rx.recv() => {
-                    match maybe_evt {
-                        Some(ConnEvent::NewConn(id, stream, addr)) => {
-                            self.handle_new_conn(id, stream, addr).await;
+                // Accept new inbound connections
+                accept_res = listener.accept() => {
+                    match accept_res {
+                        Ok((stream, peer)) => {
+                            self.handle_new_inbound(stream, peer).await;
                         }
-                        Some(ConnEvent::ConnClosed(id)) => {
-                            // Si llegó un cierre desde el lector, removemos y abortamos por si sigue viva
-                            if let Some(info) = self.active.remove(&id) {
-                                info.handle.abort();
-                            }
-                            println!("[INFO] Connection #{} closed ({} remaining)", id, self.active.len());
-                        }
-                        None => {
-                            eprintln!("[WARN] ConnEvent channel closed; manager may continue handling commands");
+                        Err(e) => {
+                            eprintln!("[ERROR] accept() failed: {}", e);
+                            // keep running; transient accept errors can happen
                         }
                     }
                 }
 
-                // Commands from Node logic (e.g., send a message)
-                maybe_cmd = self.cmd_rx.recv() => {
-                    match maybe_cmd {
+                // Handle external commands (send/shutdown)
+                cmd_opt = self.cmd_rx.recv() => {
+                    match cmd_opt {
                         Some(ManagerCmd::SendTo(addr, msg)) => {
                             if let Err(e) = self.handle_send_to(addr, &msg).await {
                                 eprintln!("[WARN] SendTo {} failed: {}", addr, e);
                             }
                         }
                         Some(ManagerCmd::Shutdown) => {
-                            println!("[INFO] ConnectionManager received Shutdown");
+                            println!("[INFO] ConnectionManager: Shutdown requested");
                             break;
                         }
                         None => {
-                            eprintln!("[WARN] ManagerCmd channel closed; exiting manager loop");
+                            // All senders dropped — nothing more to do
+                            println!("[INFO] ConnectionManager: command channel closed");
                             break;
                         }
                     }
@@ -120,47 +141,54 @@ impl ConnectionManager {
             }
         }
 
-        // Abortamos cualquier lector que haya quedado vivo
+        // graceful-ish shutdown: abort reader tasks and drop writers
         for (_, info) in self.active.drain() {
-            info.handle.abort();
+            info.reader_task.abort();
+            let _ = self
+                .inbound_tx
+                .try_send(InboundEvent::ConnClosed { peer: info.addr });
         }
 
         println!("[INFO] ConnectionManager stopped");
     }
 
-    async fn handle_new_conn(&mut self, id: u64, stream: TcpStream, addr: SocketAddr) {
-        // Drop LRU if full (y abortá su task lectora)
+    /// Accept path: track the new inbound connection, spawn its reader, apply LRU if needed.
+    async fn handle_new_inbound(&mut self, stream: TcpStream, peer: SocketAddr) {
         self.evict_lru_if_full();
 
-        println!("[INFO] New connection #{} from {}", id, addr);
-
-        // Split into read/write halves
+        println!("[INFO] New inbound connection from {}", peer);
         let (reader, writer) = stream.into_split();
         let writer_arc = Arc::new(Mutex::new(writer));
+        let inbound_tx = self.inbound_tx.clone();
 
-        let tx_clone = self.tx.clone();
-        let handle = tokio::spawn(async move {
-            if let Err(e) = handle_connection(id, reader, tx_clone.clone()).await {
-                eprintln!("[ERROR] Connection #{} ended: {}", id, e);
+        // synthetic id for tracking
+        let id = rand::random::<u64>();
+
+        // spawn the reader
+        let reader_task = tokio::spawn(async move {
+            if let Err(e) = handle_reader(id, peer, reader, inbound_tx.clone()).await {
+                eprintln!("[ERROR] Reader #{} ({}): {}", id, peer, e);
             }
-            let _ = tx_clone.send(ConnEvent::ConnClosed(id)).await;
+            let _ = inbound_tx
+                .send(InboundEvent::ConnClosed { peer })
+                .await;
         });
 
         self.active.insert(
             id,
             ConnInfo {
-                addr,
+                addr: peer,
                 writer: writer_arc,
                 last_used: Instant::now(),
-                handle,
+                reader_task,
             },
         );
     }
 
-    /// Core send logic used by ManagerCmd::SendTo
+    /// Outbound path: reuse an existing connection by addr, or open a new one.
     async fn handle_send_to(&mut self, addr: SocketAddr, msg: &str) -> anyhow::Result<()> {
-        // Reuse if any existing connection targets `addr`
-        if let Some((id, info)) = self.active.iter_mut().find(|(_, i)| i.addr == addr) {
+        // Try to reuse an existing connection to this addr
+        if let Some((id, info)) = self.active.iter_mut().find(|(_, c)| c.addr == addr) {
             info.last_used = Instant::now();
             let mut writer = info.writer.lock().await;
             writer.write_all(msg.as_bytes()).await?;
@@ -169,22 +197,23 @@ impl ConnectionManager {
             return Ok(());
         }
 
-        // Otherwise connect (posible nueva conexión saliente)
+        // Otherwise open a fresh connection
         let stream = TcpStream::connect(addr).await?;
-        let id = rand::random::<u64>();
-
-        // Drop LRU if full (y abortá su task lectora)
-        self.evict_lru_if_full();
-
         let (reader, writer) = stream.into_split();
         let writer_arc = Arc::new(Mutex::new(writer));
 
-        let tx_clone = self.tx.clone();
-        let handle = tokio::spawn(async move {
-            if let Err(e) = handle_connection(id, reader, tx_clone.clone()).await {
-                eprintln!("[ERROR] Connection #{} ended: {}", id, e);
+        self.evict_lru_if_full();
+
+        let inbound_tx = self.inbound_tx.clone();
+        let id = rand::random::<u64>();
+
+        let reader_task = tokio::spawn(async move {
+            if let Err(e) = handle_reader(id, addr, reader, inbound_tx.clone()).await {
+                eprintln!("[ERROR] Reader #{} ({}): {}", id, addr, e);
             }
-            let _ = tx_clone.send(ConnEvent::ConnClosed(id)).await;
+            let _ = inbound_tx
+                .send(InboundEvent::ConnClosed { peer: addr })
+                .await;
         });
 
         self.active.insert(
@@ -193,11 +222,11 @@ impl ConnectionManager {
                 addr,
                 writer: writer_arc,
                 last_used: Instant::now(),
-                handle,
+                reader_task,
             },
         );
 
-        // Send initial payload
+        // Send the initial payload
         if let Some(info) = self.active.get(&id) {
             let mut writer = info.writer.lock().await;
             writer.write_all(msg.as_bytes()).await?;
@@ -208,29 +237,32 @@ impl ConnectionManager {
         Ok(())
     }
 
-    /// Expulsa la conexión LRU si superamos `max_conns`, y aborta su task lectora.
+    /// LRU eviction when the active set hits the configured limit.
     fn evict_lru_if_full(&mut self) {
         if self.active.len() >= self.max_conns {
-            if let Some((&old_id, _)) = self.active.iter().min_by_key(|(_, i)| i.last_used) {
+            if let Some((&old_id, _)) = self.active.iter().min_by_key(|(_, c)| c.last_used) {
                 if let Some(info) = self.active.remove(&old_id) {
                     println!(
-                        "[WARN] Connection limit reached ({}). Dropping oldest: {}",
+                        "[WARN] Connection limit ({}) reached. Dropping LRU: {}",
                         self.max_conns, info.addr
                     );
-                    info.handle.abort(); // cancelar lector asociado
+                    info.reader_task.abort();
+                    let _ = self
+                        .inbound_tx
+                        .try_send(InboundEvent::ConnClosed { peer: info.addr });
                 }
             }
         }
     }
 }
 
-/// Async reader for each connection.
-/// It listens for incoming data and logs messages.
-/// Posee timeout de inactividad para cortar conexiones "silenciosas".
-async fn handle_connection(
+/// Per-connection reader: reads newline-delimited frames and forwards them upstream.
+/// Includes an idle timeout to close silent sockets.
+async fn handle_reader(
     id: u64,
+    peer: SocketAddr,
     reader: OwnedReadHalf,
-    tx: mpsc::Sender<ConnEvent>,
+    inbound_tx: mpsc::Sender<InboundEvent>,
 ) -> anyhow::Result<()> {
     let mut lines = BufReader::new(reader).lines();
     let idle = Duration::from_secs(IDLE_READ_TIMEOUT_SECS);
@@ -239,21 +271,28 @@ async fn handle_connection(
         match timeout(idle, lines.next_line()).await {
             Ok(res) => match res? {
                 Some(line) => {
-                    println!("[CONN:{}] {}", id, line);
+                    // Push the payload to the Node for business handling
+                    let _ = inbound_tx
+                        .send(InboundEvent::Received {
+                            peer,
+                            payload: line,
+                        })
+                        .await;
                 }
                 None => {
-                    // EOF: peer cerró escritura
+                    // EOF from peer
                     break;
                 }
             },
             Err(_) => {
-                // timeout de inactividad
-                eprintln!("[CONN:{}] idle read timeout ({}s) -> closing", id, IDLE_READ_TIMEOUT_SECS);
+                eprintln!(
+                    "[CONN:{}][{}] idle read timeout ({}s) -> closing",
+                    id, peer, IDLE_READ_TIMEOUT_SECS
+                );
                 break;
             }
         }
     }
 
-    let _ = tx.send(ConnEvent::ConnClosed(id)).await;
     Ok(())
 }

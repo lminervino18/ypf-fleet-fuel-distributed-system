@@ -1,20 +1,19 @@
-use crate::connection::{ConnEvent, ConnectionManager, ManagerCmd};
+use crate::connection::{ConnectionManager, InboundEvent, ManagerCmd};
 use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-/// Represents a neighboring node in the distributed network
+/// A neighboring node in the distributed network
 #[derive(Debug, Clone)]
 pub struct NeighborNode {
     pub addr: String,
     pub coords: (f64, f64),
 }
 
-/// Represents a distributed node in the system
+/// A distributed node that owns business logic and delegates all TCP to ConnectionManager
 pub struct Node {
     pub id: u64,
     pub ip: String,
@@ -23,15 +22,14 @@ pub struct Node {
     pub neighbors: Vec<NeighborNode>,
     pub max_conns: usize,
 
-    /// Channel to notify the ConnectionManager about new accepted connections
-    pub conn_tx: mpsc::Sender<ConnEvent>,
-
-    /// Channel to command the ConnectionManager (e.g., send messages)
+    /// Commands → ConnectionManager (send, shutdown, etc.)
     pub manager_cmd: mpsc::Sender<ManagerCmd>,
+    /// Inbound events ← ConnectionManager (payloads, closures)
+    pub inbound_rx: mpsc::Receiver<InboundEvent>,
 }
 
 impl Node {
-    /// Initialize a new node and spawn its connection manager task
+    /// Build the node and start the TCP service inside ConnectionManager
     pub async fn new(
         ip: String,
         port: u16,
@@ -39,21 +37,8 @@ impl Node {
         neighbors: Vec<NeighborNode>,
         max_conns: usize,
     ) -> anyhow::Result<Self> {
-        // Events channel (Node -> Manager)
-        let (conn_tx, conn_rx) = mpsc::channel::<ConnEvent>(64);
-
-        // Commands channel (Node -> Manager)
-        let (cmd_tx, cmd_rx) = mpsc::channel::<ManagerCmd>(64);
-
-        // Manager's internal event echo channel (for readers to notify closures)
-        let (mgr_evt_tx, _mgr_evt_rx_dummy) = mpsc::channel::<ConnEvent>(1);
-        // We actually use `conn_rx` for incoming events from Node; `mgr_evt_tx` is cloned inside manager readers.
-
-        // Build manager
-        let manager = ConnectionManager::new(max_conns, conn_rx, mgr_evt_tx.clone(), cmd_rx, cmd_tx.clone());
-
-        // Spawn manager task (takes ownership safely)
-        tokio::spawn(manager.run());
+        let listen_addr: SocketAddr = format!("{}:{}", ip, port).parse()?;
+        let (manager_cmd, inbound_rx) = ConnectionManager::start(listen_addr, max_conns);
 
         Ok(Self {
             id: rand::random::<u64>(),
@@ -62,67 +47,66 @@ impl Node {
             coords,
             neighbors,
             max_conns,
-            conn_tx,
-            manager_cmd: cmd_tx,
+            manager_cmd,
+            inbound_rx,
         })
     }
 
-    /// Run the node: start listener and periodic random sender
-    pub async fn run(self) -> anyhow::Result<()> {
-        let addr: SocketAddr = format!("{}:{}", self.ip, self.port).parse()?;
-        let listener = TcpListener::bind(addr).await?;
+    /// Run the node:
+    /// 1) consume inbound messages from ConnectionManager
+    /// 2) periodically send a message to a random neighbor (demo)
+    pub async fn run(mut self) -> anyhow::Result<()> {
+        println!(
+            "[INFO] Node listening on {}:{} (max {} connections)",
+            self.ip, self.port, self.max_conns
+        );
+        println!(
+            "[INFO] Node {} booted. Known neighbors: {:?}",
+            self.id, self.neighbors
+        );
+        println!("[INFO] Press Ctrl+C to quit");
 
-        println!("[INFO] Node {} listening on {}:{}", self.id, self.ip, self.port);
-        println!("[INFO] Known neighbors: {:?}", self.neighbors);
-
-        // 🔹 Listener task: accept inbound TCP connections and forward them to the manager
-        let listener_task = {
-            let conn_tx = self.conn_tx.clone();
-            tokio::spawn(async move {
-                let mut next_id = 0u64;
-                println!("[LISTENER] TCP listener task started");
-
-                loop {
-                    match listener.accept().await {
-                        Ok((stream, peer)) => {
-                            next_id += 1;
-                            if let Err(e) = conn_tx.send(ConnEvent::NewConn(next_id, stream, peer)).await {
-                                eprintln!("[ERROR] Could not register incoming connection: {}", e);
-                            }
-                        }
-                        Err(e) => eprintln!("[ERROR] Failed to accept connection: {}", e),
+        // Task A: inbound consumer (messages from TCP → Node)
+        let mut inbound = self.inbound_rx;
+        let inbound_task = tokio::spawn(async move {
+            while let Some(evt) = inbound.recv().await {
+                match evt {
+                    InboundEvent::Received { peer, payload } => {
+                        // Here you can deserialize and dispatch to Gateway/actors later.
+                        println!("[INBOUND from {}] {}", peer, payload);
+                    }
+                    InboundEvent::ConnClosed { peer } => {
+                        println!("[INBOUND] Connection closed by {}", peer);
                     }
                 }
-            })
-        };
+            }
+            println!("[INBOUND] Channel closed; inbound consumer exiting");
+        });
 
-        // Sender task: periodically send a message to a random neighbor via the manager
-        let sender_task = {
-            let manager_cmd = self.manager_cmd.clone();
-            let neighbors = self.neighbors.clone();
-            let id = self.id;
+        // Task B: demo sender — ping a random neighbor every 5s
+        let neighbors = self.neighbors.clone();
+        let cmd_tx = self.manager_cmd.clone();
+        let id = self.id;
+        let sender_task = tokio::spawn(async move {
+            let mut rng = StdRng::from_entropy();
 
-            tokio::spawn(async move {
-                let mut rng = StdRng::from_entropy();
-
-                loop {
-                    if let Some(n) = neighbors.choose(&mut rng) {
-                        if let Ok(addr) = n.addr.parse::<SocketAddr>() {
-                            let msg = format!("hello from node {}\n", id);
-                            if let Err(e) = manager_cmd.send(ManagerCmd::SendTo(addr, msg)).await {
-                                eprintln!("[WARN] Failed to queue SendTo to {}: {}", addr, e);
-                            } else {
-                                println!("[SEND-REQ] Node {} requested send to {}", id, addr);
-                            }
+            loop {
+                if let Some(n) = neighbors.choose(&mut rng) {
+                    if let Ok(addr) = n.addr.parse::<SocketAddr>() {
+                        let msg = format!("hello from node {}\n", id);
+                        if let Err(e) = cmd_tx.send(ManagerCmd::SendTo(addr, msg)).await {
+                            eprintln!("[WARN] Failed to queue SendTo to {}: {}", addr, e);
+                        } else {
+                            println!("[SEND-REQ] Node {} requested send to {}", id, addr);
                         }
                     }
-
-                    sleep(Duration::from_secs(5)).await;
                 }
-            })
-        };
 
-        tokio::try_join!(listener_task, sender_task)?;
+                sleep(Duration::from_secs(5)).await;
+            }
+        });
+
+        tokio::try_join!(inbound_task, sender_task)?;
         Ok(())
     }
 }
