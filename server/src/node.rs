@@ -1,10 +1,11 @@
 use crate::connection::{ConnectionManager, InboundEvent, ManagerCmd};
-use rand::seq::SliceRandom;
-use rand::{rngs::StdRng, SeedableRng};
+use crate::actors::actor_router::ActorRouter;
+use crate::actors::types::RouterCmd;
+
+use actix::prelude::*;
+use std::future::pending;
 use std::net::SocketAddr;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::sleep;
+use tokio::sync::{mpsc, oneshot};
 
 /// A neighboring node in the distributed network
 #[derive(Debug, Clone)]
@@ -26,10 +27,13 @@ pub struct Node {
     pub manager_cmd: mpsc::Sender<ManagerCmd>,
     /// Inbound events ← ConnectionManager (payloads, closures)
     pub inbound_rx: mpsc::Receiver<InboundEvent>,
+
+    /// ActorRouter address (lives in its own Actix System thread)
+    pub router: Addr<ActorRouter>,
 }
 
 impl Node {
-    /// Build the node and start the TCP service inside ConnectionManager
+    /// Build the node, start TCP (ConnectionManager), and start the ActorRouter system.
     pub async fn new(
         ip: String,
         port: u16,
@@ -40,8 +44,36 @@ impl Node {
         let listen_addr: SocketAddr = format!("{}:{}", ip, port).parse()?;
         let (manager_cmd, inbound_rx) = ConnectionManager::start(listen_addr, max_conns);
 
+        let id = rand::random::<u64>();
+
+        // Spawn an Actix System on its own thread and get back the router address via oneshot.
+        let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
+        let manager_cmd_for_router = manager_cmd.clone();
+        let self_node_id = id;
+
+        std::thread::spawn(move || {
+            let sys = actix::System::new();
+
+            sys.block_on(async move {
+                // Start the router actor
+                let router = ActorRouter::new(self_node_id, manager_cmd_for_router).start();
+
+                // Send the Addr back to the creator
+                let _ = router_tx.send(router.clone());
+
+                // Bootstrap example: create a local Subscriber (change card_id as needed)
+                router.do_send(RouterCmd::CreateSubscriber { card_id: 1 });
+
+                // Keep the Actix System alive for the process lifetime
+                pending::<()>().await;
+            });
+        });
+
+        // Wait for the router address and store it on the Node
+        let router = router_rx.await?;
+
         Ok(Self {
-            id: rand::random::<u64>(),
+            id,
             ip,
             port,
             coords,
@@ -49,30 +81,30 @@ impl Node {
             max_conns,
             manager_cmd,
             inbound_rx,
+            router,
         })
     }
 
     /// Run the node:
-    /// 1) consume inbound messages from ConnectionManager
-    /// 2) periodically send a message to a random neighbor (demo)
+    /// 1) Consume inbound messages from the ConnectionManager (later forward to router)
     pub async fn run(mut self) -> anyhow::Result<()> {
         println!(
             "[INFO] Node listening on {}:{} (max {} connections)",
             self.ip, self.port, self.max_conns
         );
-        println!(
-            "[INFO] Node {} booted. Known neighbors: {:?}",
-            self.id, self.neighbors
-        );
+        println!("[INFO] Node {} booted. Known neighbors: {:?}", self.id, self.neighbors);
+        println!("[INFO] ActorRouter is ready at: {:?}", self.router);
         println!("[INFO] Press Ctrl+C to quit");
 
-        // Task A: inbound consumer (messages from TCP → Node)
+        // Inbound consumer: TCP → Node (when wire format is ready, forward to router)
         let mut inbound = self.inbound_rx;
-        let inbound_task = tokio::spawn(async move {
+        let router_addr = self.router.clone();
+        let _inbound_task = tokio::spawn(async move {
             while let Some(evt) = inbound.recv().await {
                 match evt {
                     InboundEvent::Received { peer, payload } => {
-                        // Here you can deserialize and dispatch to Gateway/actors later.
+                        // TODO: parse bytes → ProtocolMessage and forward to router:
+                        // router_addr.do_send(RouterCmd::NetIn { from: peer, bytes: payload.into_bytes() });
                         println!("[INBOUND from {}] {}", peer, payload);
                     }
                     InboundEvent::ConnClosed { peer } => {
@@ -83,30 +115,7 @@ impl Node {
             println!("[INBOUND] Channel closed; inbound consumer exiting");
         });
 
-        // Task B: demo sender — ping a random neighbor every 5s
-        let neighbors = self.neighbors.clone();
-        let cmd_tx = self.manager_cmd.clone();
-        let id = self.id;
-        let sender_task = tokio::spawn(async move {
-            let mut rng = StdRng::from_entropy();
-
-            loop {
-                if let Some(n) = neighbors.choose(&mut rng) {
-                    if let Ok(addr) = n.addr.parse::<SocketAddr>() {
-                        let msg = format!("hello from node {}\n", id);
-                        if let Err(e) = cmd_tx.send(ManagerCmd::SendTo(addr, msg)).await {
-                            eprintln!("[WARN] Failed to queue SendTo to {}: {}", addr, e);
-                        } else {
-                            println!("[SEND-REQ] Node {} requested send to {}", id, addr);
-                        }
-                    }
-                }
-
-                sleep(Duration::from_secs(5)).await;
-            }
-        });
-
-        tokio::try_join!(inbound_task, sender_task)?;
-        Ok(())
+        // Keep Node alive (replace with graceful shutdown if needed)
+        Ok(pending::<()>().await)
     }
 }
