@@ -9,6 +9,8 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
+use crate::errors::{AppError, AppResult};
+
 /// ===== Tunables =====
 const IDLE_READ_TIMEOUT_SECS: u64 = 120; // idle timeout for read loops
 
@@ -37,15 +39,15 @@ struct ConnInfo {
     addr: SocketAddr,
     writer: Arc<Mutex<OwnedWriteHalf>>,
     last_used: Instant,
-    reader_task: JoinHandle<()>, // the reader task that pumps this connection
+    reader_task: JoinHandle<()>,
 }
 
-/// The TCP service that owns the listener, active connections, and handles IO.
+/// TCP service that owns the listener, active connections, and handles I/O.
 pub struct ConnectionManager {
     listen_addr: SocketAddr,
     max_conns: usize,
 
-    // active connections indexed by a synthetic id
+    // active connections indexed by an internal ID
     active: HashMap<u64, ConnInfo>,
 
     // outbound commands (Node -> Manager)
@@ -65,12 +67,9 @@ impl ConnectionManager {
         listen_addr: SocketAddr,
         max_conns: usize,
     ) -> (mpsc::Sender<ManagerCmd>, mpsc::Receiver<InboundEvent>) {
-        // channel for commands coming from the Node
         let (cmd_tx, cmd_rx) = mpsc::channel::<ManagerCmd>(128);
-        // channel for events going up to the Node
         let (inbound_tx, inbound_rx) = mpsc::channel::<InboundEvent>(256);
 
-        // build the manager
         let manager = Self {
             listen_addr,
             max_conns,
@@ -79,9 +78,7 @@ impl ConnectionManager {
             inbound_tx,
         };
 
-        // spawn the manager task
         tokio::spawn(manager.run());
-
         (cmd_tx, inbound_rx)
     }
 
@@ -110,11 +107,12 @@ impl ConnectionManager {
                 accept_res = listener.accept() => {
                     match accept_res {
                         Ok((stream, peer)) => {
-                            self.handle_new_inbound(stream, peer).await;
+                            if let Err(e) = self.handle_new_inbound(stream, peer).await {
+                                eprintln!("[ERROR] Failed to handle new connection {}: {e}", peer);
+                            }
                         }
                         Err(e) => {
                             eprintln!("[ERROR] accept() failed: {}", e);
-                            // keep running; transient accept errors can happen
                         }
                     }
                 }
@@ -132,7 +130,6 @@ impl ConnectionManager {
                             break;
                         }
                         None => {
-                            // All senders dropped — nothing more to do
                             println!("[INFO] ConnectionManager: command channel closed");
                             break;
                         }
@@ -141,7 +138,7 @@ impl ConnectionManager {
             }
         }
 
-        // graceful-ish shutdown: abort reader tasks and drop writers
+        // Graceful-ish shutdown: abort reader tasks and drop writers
         for (_, info) in self.active.drain() {
             info.reader_task.abort();
             let _ = self
@@ -153,7 +150,7 @@ impl ConnectionManager {
     }
 
     /// Accept path: track the new inbound connection, spawn its reader, apply LRU if needed.
-    async fn handle_new_inbound(&mut self, stream: TcpStream, peer: SocketAddr) {
+    async fn handle_new_inbound(&mut self, stream: TcpStream, peer: SocketAddr) -> AppResult<()> {
         self.evict_lru_if_full();
 
         println!("[INFO] New inbound connection from {}", peer);
@@ -161,10 +158,8 @@ impl ConnectionManager {
         let writer_arc = Arc::new(Mutex::new(writer));
         let inbound_tx = self.inbound_tx.clone();
 
-        // synthetic id for tracking
         let id = rand::random::<u64>();
 
-        // spawn the reader
         let reader_task = tokio::spawn(async move {
             if let Err(e) = handle_reader(id, peer, reader, inbound_tx.clone()).await {
                 eprintln!("[ERROR] Reader #{} ({}): {}", id, peer, e);
@@ -183,22 +178,38 @@ impl ConnectionManager {
                 reader_task,
             },
         );
+
+        Ok(())
     }
 
-    /// Outbound path: reuse an existing connection by addr, or open a new one.
-    async fn handle_send_to(&mut self, addr: SocketAddr, msg: &str) -> anyhow::Result<()> {
-        // Try to reuse an existing connection to this addr
+    /// Outbound path: reuse an existing connection or open a new one.
+    async fn handle_send_to(&mut self, addr: SocketAddr, msg: &str) -> AppResult<()> {
+        // Try to reuse existing connection
         if let Some((id, info)) = self.active.iter_mut().find(|(_, c)| c.addr == addr) {
             info.last_used = Instant::now();
             let mut writer = info.writer.lock().await;
-            writer.write_all(msg.as_bytes()).await?;
-            writer.flush().await?;
+            writer
+                .write_all(msg.as_bytes())
+                .await
+                .map_err(|e| AppError::ConnectionIO {
+                    addr: addr.to_string(),
+                    source: e,
+                })?;
+            writer.flush().await.map_err(|e| AppError::ConnectionIO {
+                addr: addr.to_string(),
+                source: e,
+            })?;
             println!("[SEND] Reused connection #{} to {}", id, addr);
             return Ok(());
         }
 
-        // Otherwise open a fresh connection
-        let stream = TcpStream::connect(addr).await?;
+        // Otherwise, open a new connection
+        let stream = TcpStream::connect(addr)
+            .await
+            .map_err(|e| AppError::ConnectionRefused {
+                addr: addr.to_string(),
+            })?;
+
         let (reader, writer) = stream.into_split();
         let writer_arc = Arc::new(Mutex::new(writer));
 
@@ -229,15 +240,24 @@ impl ConnectionManager {
         // Send the initial payload
         if let Some(info) = self.active.get(&id) {
             let mut writer = info.writer.lock().await;
-            writer.write_all(msg.as_bytes()).await?;
-            writer.flush().await?;
+            writer
+                .write_all(msg.as_bytes())
+                .await
+                .map_err(|e| AppError::ConnectionIO {
+                    addr: addr.to_string(),
+                    source: e,
+                })?;
+            writer.flush().await.map_err(|e| AppError::ConnectionIO {
+                addr: addr.to_string(),
+                source: e,
+            })?;
         }
 
         println!("[SEND] Created new connection #{} to {}", id, addr);
         Ok(())
     }
 
-    /// LRU eviction when the active set hits the configured limit.
+    /// LRU eviction when connection limit is reached.
     fn evict_lru_if_full(&mut self) {
         if self.active.len() >= self.max_conns {
             if let Some((&old_id, _)) = self.active.iter().min_by_key(|(_, c)| c.last_used) {
@@ -263,15 +283,14 @@ async fn handle_reader(
     peer: SocketAddr,
     reader: OwnedReadHalf,
     inbound_tx: mpsc::Sender<InboundEvent>,
-) -> anyhow::Result<()> {
+) -> AppResult<()> {
     let mut lines = BufReader::new(reader).lines();
     let idle = Duration::from_secs(IDLE_READ_TIMEOUT_SECS);
 
     loop {
         match timeout(idle, lines.next_line()).await {
-            Ok(res) => match res? {
-                Some(line) => {
-                    // Push the payload to the Node for business handling
+            Ok(res) => match res {
+                Ok(Some(line)) => {
                     let _ = inbound_tx
                         .send(InboundEvent::Received {
                             peer,
@@ -279,9 +298,12 @@ async fn handle_reader(
                         })
                         .await;
                 }
-                None => {
-                    // EOF from peer
-                    break;
+                Ok(None) => break, // EOF
+                Err(e) => {
+                    return Err(AppError::ConnectionIO {
+                        addr: peer.to_string(),
+                        source: e,
+                    });
                 }
             },
             Err(_) => {
@@ -289,7 +311,9 @@ async fn handle_reader(
                     "[CONN:{}][{}] idle read timeout ({}s) -> closing",
                     id, peer, IDLE_READ_TIMEOUT_SECS
                 );
-                break;
+                return Err(AppError::ConnectionTimeout {
+                    addr: peer.to_string(),
+                });
             }
         }
     }

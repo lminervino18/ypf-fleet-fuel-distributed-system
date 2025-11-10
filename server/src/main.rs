@@ -1,15 +1,18 @@
-use anyhow::{Context, Result};
 use clap::{Parser, builder::TypedValueParser};
 use std::net::SocketAddr;
+use anyhow::Context; // still used at the very top-level for user-facing context
 
 mod connection;
 mod node;
 mod actors;
+mod errors; // ✅ new error module
+
 use node::{NeighborNode, Node};
+use errors::{AppError, AppResult};
 
 /// YPF Distributed Node
 ///
-/// Examples:
+/// Example:
 ///   server --ip 127.0.0.1 --port 9001 --coords -34.60 -58.38 \
 ///          --neighbors 127.0.0.1:9002 -34.61 -58.39 127.0.0.1:9003 -34.62 -58.40
 #[derive(Parser, Debug)]
@@ -32,10 +35,10 @@ struct Args {
 
     /// Neighbor nodes as repeating triplets: <ip:port> <lat> <lon>
     ///
-    /// Examples:
+    /// Example:
     ///   --neighbors 127.0.0.1:9002 -34.61 -58.39 127.0.0.1:9003 -34.62 -58.40
     ///
-    /// Tip: si tu shell confunde los negativos como flags, podés usar:
+    /// Tip: if your shell confuses negatives as flags, you can use:
     ///   --neighbors -- 127.0.0.1:9002 "-34.61" "-58.39" 127.0.0.1:9003 "-34.62" "-58.40"
     #[arg(long, num_args = 0.., allow_hyphen_values = true, value_name = "IP:PORT/LAT/LON")]
     neighbors: Vec<String>,
@@ -46,24 +49,39 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> anyhow::Result<()> {
+    if let Err(e) = run().await {
+        eprintln!("[FATAL] {e:?}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Core execution logic (returns structured `AppError`)
+async fn run() -> AppResult<()> {
     let args = Args::parse();
 
-    // Parse self coordinates
-    let coords = (
-        *args
-            .coords
-            .get(0)
-            .context("coords requires 2 values: <lat> <lon> (missing lat)")?,
-        *args
-            .coords
-            .get(1)
-            .context("coords requires 2 values: <lat> <lon> (missing lon)")?,
-    );
+    // --- Parse coordinates ---
+    let lat = *args
+        .coords
+        .get(0)
+        .ok_or_else(|| AppError::InvalidCoords {
+            lat: f64::NAN,
+            lon: f64::NAN,
+        })?;
 
-    // Parse neighbors: triplets (ip:port, lat, lon) con validación estricta
-    let neighbors = parse_neighbors(&args.neighbors)
-        .context("failed to parse --neighbors triplets <ip:port> <lat> <lon>")?;
+    let lon = *args
+        .coords
+        .get(1)
+        .ok_or_else(|| AppError::InvalidCoords {
+            lat,
+            lon: f64::NAN,
+        })?;
+
+    let coords = (lat, lon);
+
+    // --- Parse neighbors with strict validation ---
+    let neighbors = parse_neighbors(&args.neighbors)?;
 
     println!(
         "[BOOT] ip={}:{} coords=({:.5}, {:.5}) max_conns={} neighbors={}",
@@ -83,7 +101,9 @@ async fn main() -> Result<()> {
         args.max_conns,
     )
     .await
-    .context("failed to construct Node")?;
+    .map_err(|e| AppError::ActorSystem {
+        details: format!("failed to construct Node: {e}"),
+    })?;
 
     println!(
         "[INFO] Node listening on {}:{} (max {} connections)",
@@ -91,21 +111,26 @@ async fn main() -> Result<()> {
     );
     println!("[INFO] Press Ctrl+C to quit");
 
-    node.run().await.context("node run failed")?;
+    node.run().await.map_err(|e| AppError::ActorSystem {
+        details: format!("node run failed: {e}"),
+    })?;
+
     Ok(())
 }
 
-/// Parses the neighbors vector into structured data (triplets).
-fn parse_neighbors(raw: &[String]) -> Result<Vec<NeighborNode>> {
+/// Parses the neighbors vector into structured triplets (ip:port, lat, lon)
+fn parse_neighbors(raw: &[String]) -> AppResult<Vec<NeighborNode>> {
     if raw.is_empty() {
         return Ok(Vec::new());
     }
 
     if raw.len() % 3 != 0 {
-        anyhow::bail!(
-            "Invalid neighbor list: must be triplets of <ip:port> <lat> <lon>. Got {} items.",
-            raw.len()
-        );
+        return Err(AppError::InvalidNeighbor {
+            details: format!(
+                "Invalid neighbor list: must be triplets <ip:port> <lat> <lon>. Got {} items.",
+                raw.len()
+            ),
+        });
     }
 
     let mut out = Vec::with_capacity(raw.len() / 3);
@@ -116,18 +141,25 @@ fn parse_neighbors(raw: &[String]) -> Result<Vec<NeighborNode>> {
         let lat_str = &raw[i + 1];
         let lon_str = &raw[i + 2];
 
-        // valida ip:port
+        // Validate ip:port
         let _addr_parsed: SocketAddr = addr_str
             .parse()
-            .with_context(|| format!("invalid neighbor address '{}'", addr_str))?;
+            .map_err(|_| AppError::InvalidNeighbor {
+                details: format!("invalid neighbor address '{}'", addr_str),
+            })?;
 
-        // valida lat/lon
+        // Validate lat/lon
         let lat: f64 = lat_str
             .parse()
-            .with_context(|| format!("invalid latitude '{}'", lat_str))?;
+            .map_err(|_| AppError::InvalidNeighbor {
+                details: format!("invalid latitude '{}'", lat_str),
+            })?;
+
         let lon: f64 = lon_str
             .parse()
-            .with_context(|| format!("invalid longitude '{}'", lon_str))?;
+            .map_err(|_| AppError::InvalidNeighbor {
+                details: format!("invalid longitude '{}'", lon_str),
+            })?;
 
         out.push(NeighborNode {
             addr: addr_str.clone(),

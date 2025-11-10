@@ -25,3 +25,5 @@ env_logger = "0.11"
 
 # Tu crate compartido
 common = { path = "../common" }
+thiserror = "2.0.17"
+serde_json = "1.0.145"
