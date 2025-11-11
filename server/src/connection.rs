@@ -1,3 +1,18 @@
+//! TCP connection manager used by a Node.
+//!
+//! Responsibilities:
+//! - Bind a TCP listener and accept inbound connections.
+//! - Maintain a small pool of active TCP connections (LRU eviction).
+//! - Spawn per-connection reader tasks that forward newline-delimited frames
+//!   to the owning Node via an mpsc channel.
+//! - Expose a command channel to send text payloads to remote peers, reusing
+//!   connections when available.
+//!
+//! Design notes:
+//! - The manager runs on the Tokio runtime and is intentionally lightweight;
+//!   it bridges raw socket IO to higher-level processing elsewhere in the app.
+//! - Errors are mapped to `AppError` so callers can uniformly handle failures.
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -12,9 +27,14 @@ use tokio::time::{timeout, Duration};
 use crate::errors::{AppError, AppResult};
 
 /// ===== Tunables =====
+/// Idle timeout for per-connection read loops. If no line is received within
+/// this period the connection is closed to avoid leaking resources.
 const IDLE_READ_TIMEOUT_SECS: u64 = 120; // idle timeout for read loops
 
-/// Commands the outside world can send to the ConnectionManager
+/// Commands sent to the ConnectionManager.
+///
+/// Use `SendTo` to request a best-effort delivery of a text payload to a
+/// remote peer. The manager will reuse an existing connection when possible.
 #[derive(Debug)]
 pub enum ManagerCmd {
     /// Send a text payload to a remote address (open or reuse a TCP connection)
@@ -24,16 +44,22 @@ pub enum ManagerCmd {
     Shutdown,
 }
 
-/// Events the ConnectionManager emits *to the outside* (your Node)
+/// Events emitted by the ConnectionManager to the Node.
+///
+/// The Node consumes these events to process inbound application frames and
+/// to observe connection lifecycle events.
 #[derive(Debug)]
 pub enum InboundEvent {
-    /// A line of text was read from a peer
+    /// A single line (frame) was read from a peer.
     Received { peer: SocketAddr, payload: String },
-    /// A connection was closed (peer or local)
+    /// Notification that a connection was closed.
     ConnClosed { peer: SocketAddr },
 }
 
-/// Internal record for an active connection
+/// Internal record for an active connection.
+///
+/// Contains the peer address, a locked writer for serialized writes, a
+/// timestamp used for LRU eviction and the reader task handle.
 #[derive(Debug)]
 struct ConnInfo {
     addr: SocketAddr,
@@ -43,6 +69,10 @@ struct ConnInfo {
 }
 
 /// TCP service that owns the listener, active connections, and handles I/O.
+///
+/// The manager is single-owner: it receives `ManagerCmd` requests and emits
+/// `InboundEvent` notifications. It is intentionally minimal and focused on
+/// reliable, line-oriented TCP transport.
 pub struct ConnectionManager {
     listen_addr: SocketAddr,
     max_conns: usize,
@@ -82,7 +112,11 @@ impl ConnectionManager {
         (cmd_tx, inbound_rx)
     }
 
-    /// Main loop: binds the listener and multiplexes accept + command handling.
+    /// Main loop: bind the listener and multiplex accept + command handling.
+    ///
+    /// Uses `tokio::select!` to accept new inbound connections and process
+    /// commands from the node. On shutdown it aborts reader tasks and emits
+    /// final `ConnClosed` events.
     async fn run(mut self) {
         let listener = match TcpListener::bind(self.listen_addr).await {
             Ok(l) => {
@@ -149,7 +183,11 @@ impl ConnectionManager {
         println!("[INFO] ConnectionManager stopped");
     }
 
-    /// Accept path: track the new inbound connection, spawn its reader, apply LRU if needed.
+    /// Accept path: track the new inbound connection, spawn its reader,
+    /// and apply LRU eviction when needed.
+    ///
+    /// Spawns a reader task that sends `InboundEvent::Received` for each
+    /// newline-delimited frame and a `ConnClosed` when the reader ends.
     async fn handle_new_inbound(&mut self, stream: TcpStream, peer: SocketAddr) -> AppResult<()> {
         self.evict_lru_if_full();
 
@@ -183,6 +221,10 @@ impl ConnectionManager {
     }
 
     /// Outbound path: reuse an existing connection or open a new one.
+    ///
+    /// If a connection to `addr` exists the manager writes to it under a
+    /// mutex. Otherwise it opens a new TCP connection, starts its reader task,
+    /// and then writes the initial payload.
     async fn handle_send_to(&mut self, addr: SocketAddr, msg: &str) -> AppResult<()> {
         // Try to reuse existing connection
         if let Some((id, info)) = self.active.iter_mut().find(|(_, c)| c.addr == addr) {
@@ -257,7 +299,10 @@ impl ConnectionManager {
         Ok(())
     }
 
-    /// LRU eviction when connection limit is reached.
+    /// LRU eviction when the connection limit is reached.
+    ///
+    /// Removes the least-recently-used connection, aborts its reader task,
+    /// and notifies the owner with `InboundEvent::ConnClosed`.
     fn evict_lru_if_full(&mut self) {
         if self.active.len() >= self.max_conns {
             if let Some((&old_id, _)) = self.active.iter().min_by_key(|(_, c)| c.last_used) {
@@ -277,7 +322,10 @@ impl ConnectionManager {
 }
 
 /// Per-connection reader: reads newline-delimited frames and forwards them upstream.
-/// Includes an idle timeout to close silent sockets.
+///
+/// The reader enforces an idle timeout and maps IO errors to `AppError` so
+/// callers can distinguish read-timeouts from other failures. On EOF the
+/// function returns Ok(()) allowing graceful shutdown.
 async fn handle_reader(
     id: u64,
     peer: SocketAddr,

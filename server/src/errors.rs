@@ -1,9 +1,24 @@
+//! Application error types for the YPF Ruta server.
+//!
+//! This module defines a single application-level error enum (`AppError`) and
+//! a convenience result alias (`AppResult<T>`). Prefer returning `AppError`
+//! from higher-level functions and use `#[from]` conversions where appropriate
+//! to map lower-level errors (IO, parsing, serialization) into `AppError`.
+//!
+//! The enum groups common error categories (configuration, networking,
+//! actor/messaging, serialization/protocol, and unexpected failures) to
+//! simplify error handling and logging across the codebase.
+
 use thiserror::Error;
 use std::io;
 use std::net::AddrParseError;
 use tokio::task::JoinError;
 
 /// Unified application-level error type.
+///
+/// Variants are grouped by concern (configuration, networking, actor/messaging,
+/// protocol/serialization, fallback). Many variants use `#[from]` to allow
+/// ergonomic `?` propagation from underlying error types.
 #[derive(Error, Debug)]
 pub enum AppError {
     // ---- Config / CLI ----
@@ -82,4 +97,7 @@ pub enum AppError {
 }
 
 /// Standard application-wide Result type.
+///
+/// Use `AppResult<T>` as the return type for functions that may fail with
+/// `AppError`. This keeps signatures concise and consistent across modules.
 pub type AppResult<T> = Result<T, AppError>;

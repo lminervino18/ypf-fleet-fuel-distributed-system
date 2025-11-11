@@ -1,103 +1,86 @@
+//! Actor router module.
+//!
+//! The ActorRouter manages local account actors and forwards or replicates
+//! messages to known replicas. Actor hierarchy (conceptually):
+//! ```text
+//! ActorRouter (node root)
+//!  └── AccountActor (one per account)
+//!       └── CardActor (one per card)
+//! ```
+//!
+//! The router bridges network events (via ConnectionManager) and local actors.
+
 use actix::prelude::*;
-use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use tokio::sync::mpsc;
 
 use crate::connection::ManagerCmd;
 use crate::errors::{AppError, AppResult};
-use tokio::sync::mpsc;
+use super::account::AccountActor;
+use super::types::{RouterCmd, ActorMsg};
 
-use super::types::*;
-use super::{Account, LeaderCard, Subscriber};
-
-/// ActorRouter:
-/// - Keeps local registries (actors hosted by this node)
-/// - Routes messages locally or to remote nodes via TCP (ManagerCmd)
-/// - Maintains routing table: node_id -> SocketAddr
+/// Router actor that owns and routes to AccountActor instances.
+///
+/// Responsibilities:
+/// - create or lookup local AccountActor instances,
+/// - route messages to accounts/cards,
+/// - replicate payloads to configured replica addresses via the ConnectionManager.
 pub struct ActorRouter {
-    pub accounts: HashMap<u64, Addr<Account>>,
-    pub leaders: HashMap<u64, Addr<LeaderCard>>,
-    pub subs: HashMap<u64, Addr<Subscriber>>,
-    pub remote_subs: HashMap<u64, HashSet<u64>>,
-    pub manager_cmd_tx: mpsc::Sender<ManagerCmd>,
-    pub self_node: u64,
-    pub routing: HashMap<u64, SocketAddr>,
+    /// Map: account_id -> AccountActor address
+    pub accounts: HashMap<u64, Addr<AccountActor>>,
+
+    /// Channel to the ConnectionManager to send network messages (to replicas).
+    pub manager_cmd: mpsc::Sender<ManagerCmd>,
+
+    /// Replica addresses as "IP:PORT" strings.
+    pub replicas: Vec<String>,
 }
 
 impl ActorRouter {
-    pub fn new(self_node: u64, manager_cmd_tx: mpsc::Sender<ManagerCmd>) -> Self {
+    pub fn new(manager_cmd: mpsc::Sender<ManagerCmd>, replicas: Vec<String>) -> Self {
         Self {
             accounts: HashMap::new(),
-            leaders: HashMap::new(),
-            subs: HashMap::new(),
-            remote_subs: HashMap::new(),
-            manager_cmd_tx,
-            self_node,
-            routing: HashMap::new(),
+            manager_cmd,
+            replicas,
         }
     }
 
-    /// Helper: asynchronously send a string message to a remote node via TCP.
-    fn send_tcp(&self, addr: SocketAddr, msg: &str) -> AppResult<()> {
-        let tx = self.manager_cmd_tx.clone();
-        let msg_owned = msg.to_string();
-        actix::spawn(async move {
-            if let Err(e) = tx.send(ManagerCmd::SendTo(addr, msg_owned)).await {
-                eprintln!(
-                    "[Router][WARN] Failed to enqueue TCP send to {}: {}",
-                    addr, e
-                );
-            }
-        });
-        Ok(())
+    /// Return an existing AccountActor or create a new one.
+    fn get_or_create_account(&mut self, account_id: u64, ctx: &mut Context<Self>) -> Addr<AccountActor> {
+        if let Some(addr) = self.accounts.get(&account_id) {
+            return addr.clone();
+        }
+
+        println!("[Router] Creating new local account id={}", account_id);
+        let addr = AccountActor::new(account_id, ctx.address()).start();
+        self.accounts.insert(account_id, addr.clone());
+        addr
     }
 
-    /// Parses a simple wire message like: `MSG <from_id> PING` or `MSG <from_id> PONG`
-    fn parse_wire_message(msg: &str) -> AppResult<(u64, String)> {
-        let parts: Vec<&str> = msg.split_whitespace().collect();
-        if parts.len() < 3 || parts[0] != "MSG" {
-            return Err(AppError::ProtocolParse {
-                details: format!("Invalid wire message: '{}'", msg),
+    /// Send `payload` to all configured replicas asynchronously.
+    ///
+    /// Each replica string is parsed into a SocketAddr and a ManagerCmd::SendTo
+    /// is sent via the manager_cmd channel. Failures are logged but do not
+    /// affect the caller.
+    fn replicate_to_replicas(&self, payload: &str) {
+        for replica in &self.replicas {
+            let target_str = replica.clone();
+            let msg = payload.to_string();
+            let tx = self.manager_cmd.clone();
+
+            tokio::spawn(async move {
+                match target_str.parse::<std::net::SocketAddr>() {
+                    Ok(addr) => {
+                        if let Err(e) = tx.send(ManagerCmd::SendTo(addr, msg)).await {
+                            eprintln!("[Router][WARN] Failed to send to replica {}: {e}", addr);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[Router][WARN] Invalid replica address '{}': {}", target_str, e);
+                    }
+                }
             });
         }
-
-        let from_id = parts[1].parse::<u64>().map_err(|_| AppError::ProtocolParse {
-            details: format!("Invalid sender ID in message: '{}'", msg),
-        })?;
-
-        let payload = parts[2].to_string();
-        Ok((from_id, payload))
-    }
-
-    /// Handles a raw inbound frame coming from the network.
-    fn handle_net_in(&self, from: SocketAddr, bytes: Vec<u8>) -> AppResult<()> {
-        let msg = String::from_utf8(bytes.clone()).map_err(|_| AppError::ProtocolParse {
-            details: "Invalid UTF-8 in inbound message".to_string(),
-        })?;
-
-        println!("[Router] NetIn from {}: '{}'", from, msg.trim());
-
-        // Parse and react to protocol messages
-        if msg.starts_with("MSG") {
-            let (from_id, payload) = Self::parse_wire_message(&msg)?;
-
-            println!("[Router] Got '{}' from {}", payload, from_id);
-
-            if payload == "PING" {
-                // Reply with a PONG
-                let reply = format!("MSG {} PONG\n", self.self_node);
-                self.send_tcp(from, &reply)?;
-            } else if payload == "PONG" {
-                println!("[Router] Received PONG from {}", from_id);
-            } else {
-                println!("[Router] Unknown payload '{}' from {}", payload, from_id);
-            }
-        } else {
-            return Err(AppError::ProtocolParse {
-                details: format!("Unsupported message format: '{}'", msg.trim()),
-            });
-        }
-
-        Ok(())
     }
 }
 
@@ -106,11 +89,9 @@ impl Actor for ActorRouter {
 
     fn started(&mut self, _ctx: &mut Self::Context) {
         println!(
-            "[Router] Started (node_id={}, local: acc={}, leaders={}, subs={})",
-            self.self_node,
+            "[Router] ActorRouter started with {} accounts and {} replicas",
             self.accounts.len(),
-            self.leaders.len(),
-            self.subs.len()
+            self.replicas.len()
         );
     }
 }
@@ -118,51 +99,50 @@ impl Actor for ActorRouter {
 impl Handler<RouterCmd> for ActorRouter {
     type Result = ();
 
-    fn handle(&mut self, msg: RouterCmd, ctx: &mut Self::Context) -> Self::Result {
-        if let Err(e) = self.try_handle(msg, ctx) {
-            eprintln!("[Router][ERROR] {}", e);
-        }
-    }
-}
-
-impl ActorRouter {
-    /// Inner version of handler that returns structured AppError instead of swallowing them.
-    fn try_handle(&mut self, msg: RouterCmd, ctx: &mut Context<Self>) -> AppResult<()> {
+    fn handle(&mut self, msg: RouterCmd, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
-            // --- Create local subscriber ---
-            RouterCmd::CreateSubscriber { card_id } => {
-                if self.subs.contains_key(&card_id) {
-                    println!("[Router] Subscriber({}) already exists", card_id);
-                    return Ok(());
-                }
-                let addr = Subscriber::new(card_id, ctx.address()).start();
-                self.subs.insert(card_id, addr);
-                println!("[Router] Created local Subscriber({})", card_id);
+            // Create or forward a message to an account
+            RouterCmd::SendToAccount { account_id, msg } => {
+                let acc = self.get_or_create_account(account_id, ctx);
+                acc.do_send(msg);
             }
 
-            // --- Handle inbound TCP frame ---
+            // Send a message to a specific card within an account
+            RouterCmd::SendToCard { account_id, card_id, msg } => {
+                let acc = self.get_or_create_account(account_id, ctx);
+                acc.do_send(ActorMsg::CardMessage { card_id, msg });
+            }
+
+            // Replicate payload to cluster replicas
+            RouterCmd::Replicate { payload } => {
+                println!(
+                    "[Router] Replicating update to {} replicas",
+                    self.replicas.len()
+                );
+                self.replicate_to_replicas(&payload);
+            }
+
+            // Handle incoming network bytes forwarded from ConnectionManager
             RouterCmd::NetIn { from, bytes } => {
-                self.handle_net_in(from, bytes)?;
+                // Attempt to decode payload as UTF-8
+                let payload = String::from_utf8_lossy(&bytes);
+                println!("[Router][NetIn] Message received from {}: {}", from, payload);
+
+                // Simple example processing: classify replication or generic messages.
+                if payload.starts_with("REPL:") {
+                    println!("[Router] Replication message from {}", from);
+                    // TODO: parse and apply replication payload to local state.
+                } else if payload.starts_with("MSG") {
+                    println!("[Router] Generic MSG payload: {}", payload);
+                } else {
+                    println!("[Router] Unknown payload: {}", payload);
+                }
             }
 
-            // --- Other commands (placeholders) ---
-            RouterCmd::CreateAccount { account_id } => {
-                let addr = Account::new(account_id, ctx.address()).start();
-                self.accounts.insert(account_id, addr);
-                println!("[Router] Created local Account({})", account_id);
-            }
-
-            RouterCmd::CreateLeaderCard { card_id } => {
-                let addr = LeaderCard::new(card_id, ctx.address()).start();
-                self.leaders.insert(card_id, addr);
-                println!("[Router] Created local LeaderCard({})", card_id);
-            }
-
-            RouterCmd::Send { to, msg } => {
-                println!("[Router] Route send → {:?} with {:?}", to, msg);
-                // Future: route between nodes
+            // List active local accounts
+            RouterCmd::ListAccounts => {
+                println!("[Router] Local accounts: {:?}", self.accounts.keys());
             }
         }
-        Ok(())
     }
 }

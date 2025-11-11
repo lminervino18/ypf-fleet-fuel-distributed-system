@@ -1,14 +1,31 @@
-//! Actors module root: exports submodules and convenient re-exports.
+//! Root module for all Actix actors used by a distributed YPF Ruta node.
+//!
+//! This module organizes actors that implement the node's local application
+//! logic. Each actor encapsulates a unit of concurrency and state, following
+//! the Actix actor model.
+//!
+//! Typical hierarchy:
+//! ```text
+//! ActorRouter (node root)
+//!  └── AccountActor (one per account)
+//!       └── CardActor (one per card)
+//! ```
+//!
+//! Responsibilities:
+//! - ActorRouter: entry point for routing messages between network and local actors.
+//! - AccountActor: manages account-level state, limits and aggregation for its cards.
+//! - CardActor: manages a single card's record, TTL, and local updates.
+//!
+//! Public types and actors are re-exported here for convenient imports.
 
 pub mod types;
 pub mod actor_router;
 pub mod account;
-pub mod leader_card;
-pub mod subscriber;
+pub mod card;
 
-// Re-exports so you can `use crate::actors::Account` etc.
+// Re-exports to simplify imports from other modules:
+// Example: `use crate::actors::ActorRouter;`
 pub use types::*;
 pub use actor_router::ActorRouter;
-pub use account::Account;
-pub use leader_card::LeaderCard;
-pub use subscriber::Subscriber;
+pub use account::AccountActor;
+pub use card::CardActor;

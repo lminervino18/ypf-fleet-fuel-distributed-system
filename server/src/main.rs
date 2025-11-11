@@ -1,55 +1,54 @@
-use clap::{Parser, builder::TypedValueParser};
+use clap::Parser;
 use std::net::SocketAddr;
-use anyhow::Context; // still used at the very top-level for user-facing context
-
 mod connection;
 mod node;
 mod actors;
-mod errors; // ✅ new error module
+mod errors;
 
-use node::{NeighborNode, Node};
+use node::{Node, NodeRole};
 use errors::{AppError, AppResult};
 
-/// YPF Distributed Node
+/// YPF Ruta — Distributed server binary
 ///
-/// Example:
-///   server --ip 127.0.0.1 --port 9001 --coords -34.60 -58.38 \
-///          --neighbors 127.0.0.1:9002 -34.61 -58.39 127.0.0.1:9003 -34.62 -58.40
+/// Launch a single node participating in the distributed YPF Ruta system.
+/// Nodes may run in one of three roles: leader, replica or station.
+/// Use `--help` to view command-line options and examples.
 #[derive(Parser, Debug)]
 #[command(name = "ypf_server")]
-#[command(about = "Base distributed node for the YPF Ruta system")]
+#[command(about = "Distributed node for the YPF Ruta system")]
 struct Args {
-    /// IP address to listen on (e.g. 0.0.0.0 or 127.0.0.1)
+    /// Node role to run. Allowed values: "leader", "replica", "station".
+    #[arg(long)]
+    role: String,
+
+    /// IP address for the node to bind or use as its source address.
     #[arg(long)]
     ip: String,
 
-    /// Port to bind (e.g. 9001)
+    /// TCP port to bind/connect on (1-65535).
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     port: u16,
 
-    /// Coordinates (latitude, longitude). Exactly two values are required.
-    ///
-    /// Example: --coords -34.60 -58.38
+    /// Coordinates as two floats: latitude then longitude.
     #[arg(long, num_args = 2, value_names = ["LAT", "LON"])]
     coords: Vec<f64>,
 
-    /// Neighbor nodes as repeating triplets: <ip:port> <lat> <lon>
-    ///
-    /// Example:
-    ///   --neighbors 127.0.0.1:9002 -34.61 -58.39 127.0.0.1:9003 -34.62 -58.40
-    ///
-    /// Tip: if your shell confuses negatives as flags, you can use:
-    ///   --neighbors -- 127.0.0.1:9002 "-34.61" "-58.39" 127.0.0.1:9003 "-34.62" "-58.40"
-    #[arg(long, num_args = 0.., allow_hyphen_values = true, value_name = "IP:PORT/LAT/LON")]
-    neighbors: Vec<String>,
+    /// Leader address (required for replica and station roles).
+    #[arg(long)]
+    leader: Option<String>,
 
-    /// Maximum simultaneous TCP connections
+    /// Zero or more replica addresses (only used when running as leader).
+    #[arg(long, num_args = 0.., value_name = "IP:PORT")]
+    replicas: Vec<String>,
+
+    /// Maximum number of simultaneous TCP connections (leader only).
     #[arg(long, default_value_t = 16)]
     max_conns: usize,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Run the application and exit with a non-zero code on fatal error.
     if let Err(e) = run().await {
         eprintln!("[FATAL] {e:?}");
         std::process::exit(1);
@@ -57,117 +56,75 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Core execution logic (returns structured `AppError`)
 async fn run() -> AppResult<()> {
     let args = Args::parse();
 
-    // --- Parse coordinates ---
-    let lat = *args
-        .coords
-        .get(0)
-        .ok_or_else(|| AppError::InvalidCoords {
-            lat: f64::NAN,
-            lon: f64::NAN,
-        })?;
+    // Parse and validate coordinates: expect exactly two values (lat, lon).
+    if args.coords.len() != 2 {
+        return Err(AppError::InvalidCoords { lat: f64::NAN, lon: f64::NAN });
+    }
+    let coords = (args.coords[0], args.coords[1]);
 
-    let lon = *args
-        .coords
-        .get(1)
-        .ok_or_else(|| AppError::InvalidCoords {
-            lat,
-            lon: f64::NAN,
-        })?;
+    // Interpret the role argument into the NodeRole enum.
+    let role = match args.role.as_str() {
+        "leader" => NodeRole::Leader,
+        "replica" => NodeRole::Replica,
+        "station" => NodeRole::Station,
+        other => return Err(AppError::Config(format!("Invalid role: {}", other))),
+    };
 
-    let coords = (lat, lon);
+    // Validate and parse the optional leader address when required.
+    let leader_addr = match (&role, &args.leader) {
+        (NodeRole::Leader, _) => None,
+        (_, Some(addr_str)) => {
+            let addr: SocketAddr = addr_str.parse().map_err(|_| AppError::Config(format!(
+                "Invalid leader address '{}'", addr_str
+            )))?;
+            Some(addr)
+        }
+        (_, None) => {
+            // Replica and station roles must specify --leader.
+            return Err(AppError::Config(
+                "Missing --leader argument for replica/station".to_string(),
+            ));
+        }
+    };
 
-    // --- Parse neighbors with strict validation ---
-    let neighbors = parse_neighbors(&args.neighbors)?;
+    // For leaders, parse replica addresses and warn on invalid entries.
+    let replica_addrs: Vec<SocketAddr> = if role == NodeRole::Leader {
+        if args.replicas.is_empty() {
+            println!("[WARN] Leader started with no replicas");
+        }
+        args.replicas
+            .iter()
+            .filter_map(|s| match s.parse::<SocketAddr>() {
+                Ok(addr) => Some(addr),
+                Err(_) => {
+                    eprintln!("[WARN] Skipping invalid replica address '{}'", s);
+                    None
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     println!(
-        "[BOOT] ip={}:{} coords=({:.5}, {:.5}) max_conns={} neighbors={}",
-        args.ip,
-        args.port,
-        coords.0,
-        coords.1,
-        args.max_conns,
-        neighbors.len()
+        "[BOOT] role={:?} ip={}:{} coords=({:.5}, {:.5}) max_conns={} replicas={:?} leader={:?}",
+        role, args.ip, args.port, coords.0, coords.1, args.max_conns, replica_addrs, leader_addr
     );
 
+    // Construct the Node with the validated configuration and run it.
     let node = Node::new(
+        role,
         args.ip.clone(),
         args.port,
         coords,
-        neighbors,
+        leader_addr,
+        replica_addrs,
         args.max_conns,
     )
-    .await
-    .map_err(|e| AppError::ActorSystem {
-        details: format!("failed to construct Node: {e}"),
-    })?;
+    .await?;
 
-    println!(
-        "[INFO] Node listening on {}:{} (max {} connections)",
-        args.ip, args.port, args.max_conns
-    );
-    println!("[INFO] Press Ctrl+C to quit");
-
-    node.run().await.map_err(|e| AppError::ActorSystem {
-        details: format!("node run failed: {e}"),
-    })?;
-
-    Ok(())
-}
-
-/// Parses the neighbors vector into structured triplets (ip:port, lat, lon)
-fn parse_neighbors(raw: &[String]) -> AppResult<Vec<NeighborNode>> {
-    if raw.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    if raw.len() % 3 != 0 {
-        return Err(AppError::InvalidNeighbor {
-            details: format!(
-                "Invalid neighbor list: must be triplets <ip:port> <lat> <lon>. Got {} items.",
-                raw.len()
-            ),
-        });
-    }
-
-    let mut out = Vec::with_capacity(raw.len() / 3);
-    let mut i = 0;
-
-    while i < raw.len() {
-        let addr_str = &raw[i];
-        let lat_str = &raw[i + 1];
-        let lon_str = &raw[i + 2];
-
-        // Validate ip:port
-        let _addr_parsed: SocketAddr = addr_str
-            .parse()
-            .map_err(|_| AppError::InvalidNeighbor {
-                details: format!("invalid neighbor address '{}'", addr_str),
-            })?;
-
-        // Validate lat/lon
-        let lat: f64 = lat_str
-            .parse()
-            .map_err(|_| AppError::InvalidNeighbor {
-                details: format!("invalid latitude '{}'", lat_str),
-            })?;
-
-        let lon: f64 = lon_str
-            .parse()
-            .map_err(|_| AppError::InvalidNeighbor {
-                details: format!("invalid longitude '{}'", lon_str),
-            })?;
-
-        out.push(NeighborNode {
-            addr: addr_str.clone(),
-            coords: (lat, lon),
-        });
-
-        i += 3;
-    }
-
-    Ok(out)
+    node.run().await
 }
