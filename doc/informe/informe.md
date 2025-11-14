@@ -31,7 +31,8 @@ De esta manera todos los nodos necesitan un único socket para comunicarse con e
 A continuación se explican más en profundidad cada uno de los tipos de clúster que se mencionaron.
 
 ### Clúster de surtidores.
-Los surtidores en una estaicón se conectan directamente al servidor que ejecuta la funcionalidad de nodo en el sistema global-los surtidores no son computadoras, son hardware que envía I/O al servidor de la estación-, por lo que la concurrencia en éste clúster es a nivel memoria. Para prevenir las race conditions que surgen del acceso concurrente de lecto escritura a memoria, se utiliza el modelo de actores.
+Los surtidores en una estaicón se conectan directamente al servidor que ejecuta la funcionalidad de nodo en el sistema global-los surtidores no son computadoras, son hardware que envía I/O al servidor de la estación-, por lo que la concurrencia en éste clúster es a nivel memoria. Para prevenir las race conditions que surgen del acceso concurrente de lecto escritura a memoria, se utiliza el modelo de programación asincrónica.  
+Dado que este programa no se va a ejecutar en una estación YPF real, para simular éste funcionamiento, las entradas van a ser simuladas por I/O del teclado.
 
 ### Clúster de consenso
 El clúster de consenso está conformado por un único nodo líder y $N$ réplicas de la información que éste contiene. Si el líder deja de funcionar, las réplicas lo detectan y inician la re-elección mediante un *bully-algorithm*.  
@@ -106,189 +107,119 @@ Si fuera el nodo líder el que perdió la conexión, entonces cuando la recupera
 
 | Mensaje | Descripción |
 |----------|-------------|
-| **Cobrar** | Solicitud de cobro iniciada por un surtidor o reenviada entre nodos |
-| **RespuestaCobro** | Confirmación o rechazo del cobro (por límite de tarjeta o de cuenta) |
-| **Actualización** | Propagada a todos las réplicas del clúster de consenso después de un cobro exitoso |
+| **COBRAR** | Solicitud de cobro iniciada por un surtidor o reenviada entre nodos |
+| **RESPUESTA_COBRO** | Confirmación o rechazo del cobro (por límite de tarjeta o de cuenta) |
+| **ACCEPT** | Guardar la operación en el log |
+| **LEARN** | Confirmar el guardado de la operación, listo para ejecutar |
+| **COMMIT** | Aplicar la operación en el log (se envía el id) |
+| **ELECTION** | Iniciar elección de líder entre los nodos del consenso |
+| **OK_LEADER** | Asumo la responsabilidad de propagar la elección de líder |
+| **LEADER** | Anuncio de líder |
 
 \newpage
 ## Representación en pseudocódigo Rust
 
 ```rust
-enum ErrorCobro {
-    // ...
+// ======== ActorRouter ========
+struct ActorRouter {
+    cards: HashMap<CardId, ActorAddr>,
+    wx_node: Channel,
 }
 
-// ======== Mensajes ========
-enum Mensaje {
-    // flujo principal
-    Cobrar {
-        // suscriptor -> líder tarjeta & líder tarjeta -> cuenta
-        transaction_id: TransactionID,
-        tarjeta: TarjetaID,
-        monto: f64,
-        origen: ActorID,
-        destino: ActorID,
-    },
-    RespuestaCobro {
-        // líder tarjeta -> suscriptor & cuenta -> líder tarjeta
-        transaction_id: TransactionID,
-        ok: bool,
-        razon: ErrorCobro,
-        monto: f64,
-    },
-    Actualizacion {
-        // actualizaciones de límites de tarjetas/cuentas
-    },
-}
-
-// ======== Estructura de los registros ========
-struct RegistroTarjeta {
-    tarjeta: TarjetaID,
-    cuenta: CuentaID,
-    saldo_usado: f64,
-    limite_tarjeta: f64,
-    ttl: u8,          // tiempo de vida de la suscripción
-    lider_id: NodoID, // líder de la tarjeta
-}
-
-// ======== Suscriptor ========
-struct Suscriptor {
-    id: ActorID,
-    tarjeta: RegistroTarjeta,
-    pendientes: HashMap<TransactionID, f64>,
-}
-
-impl Suscriptor {
-    // entrada del cobro en un surtidor a un suscriptor que contiene el nodo
-    fn handle_cobrar(&mut self, transaction_id: TransactionID, tarjeta: TarjetaID, monto: f64) {
-        tarjeta.ttl = INITIAL_TTL;
-        if monto + tarjeta.gastado > tarjeta.limite {
-            // no puedo cobrar
+impl ActorRouter {
+    // para el nodo
+    fn handle_send(msg: ActorMessage, card: AccountId) {
+        if not card in self.accounts {
+            // create account
         }
 
-        self.lider
-            .send(Mensaje::Cobrar::new(transaction_id, tarjeta, monto));
+        self.accounts.get(card).send(msg)
     }
 
-    fn handle_respuesta_cobro(
-        &mut self,
-        transaction_id: TransactionID,
-        ok: bool,
-        razon: String,
+    fn handle_send(msg: ActorMessage, card: CardId) {
+        if not card in self.cards {
+            // create card
+            // create card's account
+        }
+
+        self.cards.get(card).send(msg)
+    }
+
+    fn handle_actor_messages(result: ActorMessage) {
+        wx_node.send(result);
+    }
+}
+
+// ======== Tarjeta ========
+struct Tarjeta {
+    id: TarjetaId,
+    cuenta: CuentaAddr,
+    limite: f64,
+    consumo_total: f64,
+    router: ActorRouterAddr,
+}
+
+impl Tarjeta {
+    fn handle_cobrar(
         monto: f64,
     ) {
-        if ok {
-            // se puede cargar nafta
+        self.cuenta.send(Cobrar(monto));
+        self.consumo_total += monto;
+    }
+
+    fn handle_update(new_limit: f64) {
+        self.limit = new_limit;
+    }
+
+    fn handle_check_limit(
+        monto: f64,
+        origen: ActorID,
+    ) {
+        if self.consumo_total + monto >= self.limite {
+            origen.enviar(Mensaje::NotOk);
             return;
         }
 
-        // no se puede cargar nafta
+        self.cuenta.send(CheckLimit(monto));
     }
 
-    // actualizar el registro de la tarjeta
-    fn handle_actualizacion(&mut self, tarjeta: TarjetaID, monto: f64) {
-        self.tarjeta.saldo_usado += monto;
-        if transaction.origin != self {
-            self.tarjeta.ttl -= 1;
-            if self.tarjeta.ttl == 0 {
-                self.tarjetas.remove(&tarjeta);
-            }
+    fn handle_ok_not_ok() {
+        if ok {
+            router.enviar(OK);
+            return;
         }
-    }
-}
 
-// ======== Líder ========
-struct Lider {
-    id: ActorID,
-    tarjeta: TarjetaID,
-    cuenta: ActorID,
-    suscriptores: Vec<ActorID>,
-    pendientes: HashMap<TransactionID, (ActorID, f64)>,
-}
-
-impl Lider {
-    // recibe Cobrar desde un suscriptor y lo reenvía a la cuenta
-    fn handle_cobrar(
-        &mut self,
-        transaction_id: TransactionID,
-        tarjeta: TarjetaID,
-        monto: f64,
-        origen: NodoID,
-    ) {
-        self.cuenta
-            .send(Mensaje::Cobrar::new(transaction_id, tarjeta, monto));
-    }
-
-    // recibe la decisión de la cuenta
-    fn handle_respuesta_cobro(
-        &mut self,
-        transaction_id: TransactionID,
-        ok: bool,
-        razon: String,
-        monto: f64,
-    ) {
-        // responder al suscriptor que inició el flujo
-        origen_suscriptor.enviar(
-            origen_suscriptor,
-            Mensaje::RespuestaCobro {
-                transaction_id,
-                ok,
-                razon,
-                monto: monto_guardado,
-            },
-        );
-
-        // actualizar al resto de suscriptores del clúster
-        for s in &self.suscriptores {
-            s.enviar(
-                Mensaje::Actualizacion::new(
-                    tarjeta: self.tarjeta.clone(),
-                    delta: monto_guardado,
-                )
-            );
-        }
+        router.enviar(NotOK)
     }
 }
 
 // ======== Cuenta ========
 struct Cuenta {
-    id: NodoID,
-    cuenta: CuentaID,
+    id: CuentaID,
     limite: f64,
     consumo_total: f64,
 }
 
 impl Cuenta {
-    // valida el límite global de la cuenta y decide el cobro
     fn handle_cobrar(
-        &mut self,
-        transaction_id: TransactionID,
-        _tarjeta: TarjetaID,
         monto: f64,
-        origen: ActorID, // líder
+    ) {
+        self.consumo_total += monto;
+    }
+
+    fn handle_update(new_limit: f64) {
+        self.limit = new_limit;
+    }
+
+    fn handle_check_limit(
+        monto: f64,
+        origen: ActorID,
     ) {
         if self.consumo_total + monto >= self.limite {
-            origen.enviar(
-                Mensaje::RespuestaCobro::new(
-                    transaction_id,
-                    ok: false,
-                    razon: ErrorCobro::LimiteCuenta;
-                    monto,
-                )
-            );
-
-            return;
+            origen.enviar(Mensaje::NotOk);
+        } else {
+            origen.enviar(Mensaje::OK);
         }
-
-        self.consumo_total += monto;
-        origen.enviar(
-            Mensaje::RespuestaCobro::new(
-                transaction_id,
-                ok: true,
-                razon: "".into(),
-                monto,
-            )
-        );
     }
 }
 ```
