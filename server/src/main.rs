@@ -4,6 +4,10 @@ mod actors;
 mod connection_manager;
 mod errors;
 mod node;
+mod node_message;
+mod operation;
+mod serial_error;
+mod serializer;
 
 use errors::{AppError, AppResult};
 use node::{Node, NodeRole};
@@ -118,7 +122,7 @@ async fn run() -> AppResult<()> {
     );
 
     // Construct the Node with the validated configuration and run it.
-    let node = Node::new(
+    let mut node = Node::new(
         role,
         args.ip.clone(),
         args.port,

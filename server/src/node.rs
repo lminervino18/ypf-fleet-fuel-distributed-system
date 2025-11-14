@@ -1,9 +1,12 @@
 use crate::actors::actor_router::ActorRouter;
 use crate::actors::types::RouterCmd;
-use crate::connection::{ConnectionManager, InboundEvent, ManagerCmd};
+use crate::connection_manager::{ConnectionManager, InboundEvent, ManagerCmd};
 use crate::errors::{AppError, AppResult};
+use crate::node_message::NodeMessage;
+use crate::operation::Operation;
 
 use actix::prelude::*;
+use std::collections::HashMap;
 use std::future::pending;
 use std::net::SocketAddr;
 use tokio::sync::{mpsc, oneshot};
@@ -41,6 +44,9 @@ pub struct Node {
     // Networking
     pub leader_addr: Option<SocketAddr>,
     pub replicas: Vec<SocketAddr>,
+
+    // Operations
+    pub operations: HashMap<u8, Operation>,
 
     // Communication primitives
     pub manager_cmd: mpsc::Sender<ManagerCmd>,
@@ -106,80 +112,74 @@ impl Node {
             max_conns,
             leader_addr,
             replicas,
+            operations: HashMap::new(),
             manager_cmd,
             inbound_rx,
             router,
         })
     }
 
-    /// Run the node's main logic.
-    ///
-    /// This method:
-    /// 1. Spawns a Tokio task to forward inbound network events to the ActorRouter.
-    /// 2. Performs role-specific initialization (leader/replica/station).
-    /// 3. Awaits forever (the node process is long-lived).
-    ///
-    /// Returns an AppResult that only errors on fatal misconfiguration or startup failure.
-    pub async fn run(self) -> AppResult<()> {
+    pub async fn handle_accept(&mut self, op: Operation) {
+        let Some(leader_addr) = self.leader_addr else {
+            // TODO: si soy líder ignoro, pero si no es un error, y por lo tanto debería inciciar
+            // elección
+            return;
+        };
+
+        if self.operations.contains_key(&op.id) {
+            // ya me lo habían mandado
+        }
+
+        let id = op.id;
+        self.operations.insert(id, op.clone());
+
+        self.manager_cmd
+            .send(ManagerCmd::SendTo(
+                leader_addr,
+                NodeMessage::Learn(op).into(),
+            ))
+            .await
+            .unwrap()
+    }
+
+    pub fn handle_learn(&mut self, op: Operation) {
+        // para el líder
+        // a las réplicas no les llega
+        // cuando al líder le llegan todos los learn (o la mayoría) aplica la operación
+    }
+
+    pub async fn handle_msg(&mut self, msg: NodeMessage) {
+        match msg {
+            NodeMessage::Accept(op) => {
+                self.handle_accept(op).await;
+            }
+            NodeMessage::Learn(op) => {
+                self.handle_learn(op);
+            }
+            _ => {}
+        }
+    }
+
+    pub async fn run(&mut self) -> AppResult<()> {
         println!(
             "[INFO] Node {} ({:?}) listening on {}:{} (max {} conns)",
             self.id, self.role, self.ip, self.port, self.max_conns
         );
 
-        // ---- 1. Handle inbound messages from ConnectionManager ----
-        // Spawn a background task that receives inbound network events from
-        // the ConnectionManager and forwards them to the ActorRouter actor.
-        let mut inbound = self.inbound_rx;
-        let router_addr = self.router.clone();
-        let manager_cmd = self.manager_cmd.clone();
-        let role = self.role.clone();
-        let replicas = self.replicas.clone();
-        let leader_addr = self.leader_addr;
-        let node_id = self.id;
-
-        tokio::spawn(async move {
-            while let Some(evt) = inbound.recv().await {
-                match evt {
-                    InboundEvent::Received { peer, payload } => {
-                        // Forward raw bytes to the ActorRouter for higher-level processing.
-                        // println!("[INBOUND from {}] {}", peer, payload);
-                        router_addr.do_send(RouterCmd::NetIn {
-                            from: peer,
-                            bytes: payload,
-                        });
-                    }
-                    InboundEvent::ConnClosed { peer } => {
-                        // Connection teardown notification; application may react or ignore.
-                        println!("[INFO] Connection closed by {}", peer);
-                    }
+        while let Some(evt) = self.inbound_rx.recv().await {
+            match evt {
+                InboundEvent::Received { peer, payload } => {
+                    // TODO: handle this error
+                    self.handle_msg(payload.try_into().unwrap()).await;
                 }
-            }
-        });
-
-        // ---- 2. Role-specific initialization ----
-        // Delegate to small helpers which encapsulate role behaviour and side-effects.
-        match role {
-            NodeRole::Leader => {
-                Self::run_as_leader(manager_cmd, replicas, node_id).await?;
-            }
-            NodeRole::Replica => {
-                if let Some(leader) = leader_addr {
-                    Self::run_as_replica(manager_cmd, leader, node_id).await?;
-                } else {
-                    return Err(AppError::Config("Replica missing leader address".into()));
-                }
-            }
-            NodeRole::Station => {
-                if let Some(leader) = leader_addr {
-                    Self::run_as_station(manager_cmd, leader, node_id).await?;
-                } else {
-                    return Err(AppError::Config("Station missing leader address".into()));
+                InboundEvent::ConnClosed { peer } => {
+                    println!("[INFO] Connection closed by {}", peer);
                 }
             }
         }
 
-        // Keep the node alive indefinitely; callers expect this process to run forever.
-        Ok(pending::<()>().await)
+        pending::<()>().await;
+        Ok(())
     }
 
     // ==========================
