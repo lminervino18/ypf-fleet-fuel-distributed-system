@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::net::SocketAddr;
 mod actors;
-mod connection;
+mod connection_manager;
 mod errors;
 mod node;
 

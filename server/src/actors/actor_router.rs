@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 
 use super::account::AccountActor;
 use super::types::{ActorMsg, RouterCmd};
-use crate::connection::ManagerCmd;
+use crate::connection_manager::ManagerCmd;
 
 /// Router actor that owns and routes to AccountActor instances.
 ///

@@ -10,11 +10,7 @@
 //!
 //! Design notes:
 //! - The manager runs on the Tokio runtime and is intentionally lightweight;
-//!   it bridges raw socket IO to higher-level processing elsewhere in the app.
-//! - Errors are mapped to `AppError` so callers can uniformly handle failures.
-
-use std::collections::HashMap;
-use std::net::SocketAddr;
+//!   it bridges raw socket IO to higher-level processing elsewhere in the app. - Errors are mapped to `AppError` so callers can uniformly handle failures. use std::collections::HashMap; use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -25,6 +21,8 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
 use crate::errors::{AppError, AppResult};
+use std::collections::HashMap;
+use std::net::SocketAddr;
 
 /// ===== Tunables =====
 /// Idle timeout for per-connection read loops. If no line is received within
@@ -504,10 +502,7 @@ mod tests {
             inbound_tx,
         };
 
-        let err = mgr
-            .handle_send_to(addr, &b"ping\n".to_vec())
-            .await
-            .unwrap_err();
+        let err = mgr.handle_send_to(addr, b"ping\n").await.unwrap_err();
         match err {
             AppError::ConnectionRefused { addr: s } => {
                 assert_eq!(s, addr.to_string());
@@ -577,12 +572,12 @@ mod tests {
         let mut got_closed = false;
         let start = std::time::Instant::now();
         while start.elapsed() < StdDuration::from_secs(2) {
-            if let Some(ev) = recv_with_timeout(&mut inbound_rx, Duration::from_millis(100)).await {
-                if let InboundEvent::ConnClosed { peer } = ev {
-                    if peer == c1_local {
-                        got_closed = true;
-                        break;
-                    }
+            if let Some(InboundEvent::ConnClosed { peer }) =
+                recv_with_timeout(&mut inbound_rx, Duration::from_millis(100)).await
+            {
+                if peer == c1_local {
+                    got_closed = true;
+                    break;
                 }
             }
         }
