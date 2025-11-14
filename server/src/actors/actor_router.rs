@@ -14,10 +14,9 @@ use actix::prelude::*;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-use crate::connection::ManagerCmd;
-use crate::errors::{AppError, AppResult};
 use super::account::AccountActor;
-use super::types::{RouterCmd, ActorMsg};
+use super::types::{ActorMsg, RouterCmd};
+use crate::connection::ManagerCmd;
 
 /// Router actor that owns and routes to AccountActor instances.
 ///
@@ -46,7 +45,11 @@ impl ActorRouter {
     }
 
     /// Return an existing AccountActor or create a new one.
-    fn get_or_create_account(&mut self, account_id: u64, ctx: &mut Context<Self>) -> Addr<AccountActor> {
+    fn get_or_create_account(
+        &mut self,
+        account_id: u64,
+        ctx: &mut Context<Self>,
+    ) -> Addr<AccountActor> {
         if let Some(addr) = self.accounts.get(&account_id) {
             return addr.clone();
         }
@@ -55,32 +58,6 @@ impl ActorRouter {
         let addr = AccountActor::new(account_id, ctx.address()).start();
         self.accounts.insert(account_id, addr.clone());
         addr
-    }
-
-    /// Send `payload` to all configured replicas asynchronously.
-    ///
-    /// Each replica string is parsed into a SocketAddr and a ManagerCmd::SendTo
-    /// is sent via the manager_cmd channel. Failures are logged but do not
-    /// affect the caller.
-    fn replicate_to_replicas(&self, payload: &str) {
-        for replica in &self.replicas {
-            let target_str = replica.clone();
-            let msg = payload.to_string();
-            let tx = self.manager_cmd.clone();
-
-            tokio::spawn(async move {
-                match target_str.parse::<std::net::SocketAddr>() {
-                    Ok(addr) => {
-                        if let Err(e) = tx.send(ManagerCmd::SendTo(addr, msg)).await {
-                            eprintln!("[Router][WARN] Failed to send to replica {}: {e}", addr);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[Router][WARN] Invalid replica address '{}': {}", target_str, e);
-                    }
-                }
-            });
-        }
     }
 }
 
@@ -108,25 +85,23 @@ impl Handler<RouterCmd> for ActorRouter {
             }
 
             // Send a message to a specific card within an account
-            RouterCmd::SendToCard { account_id, card_id, msg } => {
+            RouterCmd::SendToCard {
+                account_id,
+                card_id,
+                msg,
+            } => {
                 let acc = self.get_or_create_account(account_id, ctx);
                 acc.do_send(ActorMsg::CardMessage { card_id, msg });
-            }
-
-            // Replicate payload to cluster replicas
-            RouterCmd::Replicate { payload } => {
-                println!(
-                    "[Router] Replicating update to {} replicas",
-                    self.replicas.len()
-                );
-                self.replicate_to_replicas(&payload);
             }
 
             // Handle incoming network bytes forwarded from ConnectionManager
             RouterCmd::NetIn { from, bytes } => {
                 // Attempt to decode payload as UTF-8
                 let payload = String::from_utf8_lossy(&bytes);
-                println!("[Router][NetIn] Message received from {}: {}", from, payload);
+                println!(
+                    "[Router][NetIn] Message received from {}: {}",
+                    from, payload
+                );
 
                 // Simple example processing: classify replication or generic messages.
                 if payload.starts_with("REPL:") {

@@ -20,13 +20,14 @@ pub enum RouterCmd {
     SendToAccount { account_id: u64, msg: ActorMsg },
 
     /// Enviar mensaje a una tarjeta (dentro de una cuenta)
-    SendToCard { account_id: u64, card_id: u64, msg: Box<ActorMsg> },
-
-    /// Replicar una actualización del estado a todas las réplicas del clúster
-    Replicate { payload: String },
+    SendToCard {
+        account_id: u64,
+        card_id: u64,
+        msg: Box<ActorMsg>,
+    },
 
     /// Mensaje de red recibido (desde el ConnectionManager)
-    /// 
+    ///
     /// `from`: dirección del peer que envió el mensaje  
     /// `bytes`: payload crudo recibido (ya en bytes)
     NetIn { from: SocketAddr, bytes: Vec<u8> },

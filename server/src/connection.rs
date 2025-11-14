@@ -38,7 +38,7 @@ const IDLE_READ_TIMEOUT_SECS: u64 = 120; // idle timeout for read loops
 #[derive(Debug)]
 pub enum ManagerCmd {
     /// Send a text payload to a remote address (open or reuse a TCP connection)
-    SendTo(SocketAddr, String),
+    SendTo(SocketAddr, Vec<u8>),
     /// Ask the manager to shut down (optional)
     #[allow(dead_code)]
     Shutdown,
@@ -51,7 +51,7 @@ pub enum ManagerCmd {
 #[derive(Debug)]
 pub enum InboundEvent {
     /// A single line (frame) was read from a peer.
-    Received { peer: SocketAddr, payload: String },
+    Received { peer: SocketAddr, payload: Vec<u8> },
     /// Notification that a connection was closed.
     ConnClosed { peer: SocketAddr },
 }
@@ -202,9 +202,7 @@ impl ConnectionManager {
             if let Err(e) = handle_reader(id, peer, reader, inbound_tx.clone()).await {
                 eprintln!("[ERROR] Reader #{} ({}): {}", id, peer, e);
             }
-            let _ = inbound_tx
-                .send(InboundEvent::ConnClosed { peer })
-                .await;
+            let _ = inbound_tx.send(InboundEvent::ConnClosed { peer }).await;
         });
 
         self.active.insert(
@@ -225,13 +223,13 @@ impl ConnectionManager {
     /// If a connection to `addr` exists the manager writes to it under a
     /// mutex. Otherwise it opens a new TCP connection, starts its reader task,
     /// and then writes the initial payload.
-    async fn handle_send_to(&mut self, addr: SocketAddr, msg: &str) -> AppResult<()> {
+    async fn handle_send_to(&mut self, addr: SocketAddr, msg: &[u8]) -> AppResult<()> {
         // Try to reuse existing connection
         if let Some((id, info)) = self.active.iter_mut().find(|(_, c)| c.addr == addr) {
             info.last_used = Instant::now();
             let mut writer = info.writer.lock().await;
             writer
-                .write_all(msg.as_bytes())
+                .write_all(msg)
                 .await
                 .map_err(|e| AppError::ConnectionIO {
                     addr: addr.to_string(),
@@ -283,7 +281,7 @@ impl ConnectionManager {
         if let Some(info) = self.active.get(&id) {
             let mut writer = info.writer.lock().await;
             writer
-                .write_all(msg.as_bytes())
+                .write_all(msg)
                 .await
                 .map_err(|e| AppError::ConnectionIO {
                     addr: addr.to_string(),
@@ -342,7 +340,7 @@ async fn handle_reader(
                     let _ = inbound_tx
                         .send(InboundEvent::Received {
                             peer,
-                            payload: line,
+                            payload: line.as_bytes().to_vec(),
                         })
                         .await;
                 }
@@ -375,8 +373,8 @@ async fn handle_reader(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{sleep, Duration};
     use std::time::Duration as StdDuration;
+    use tokio::time::{sleep, Duration};
 
     /// Pick a free ephemeral port by binding to 0 and returning it.
     fn pick_free_port() -> u16 {
@@ -411,7 +409,13 @@ mod tests {
     }
 
     /// Start a manager on a free port, returning (cmd_tx, inbound_rx, addr).
-    fn start_manager_on_free_port(max_conns: usize) -> (mpsc::Sender<ManagerCmd>, mpsc::Receiver<InboundEvent>, SocketAddr) {
+    fn start_manager_on_free_port(
+        max_conns: usize,
+    ) -> (
+        mpsc::Sender<ManagerCmd>,
+        mpsc::Receiver<InboundEvent>,
+        SocketAddr,
+    ) {
         let port = pick_free_port();
         let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
         let (cmd_tx, inbound_rx) = ConnectionManager::start(addr, max_conns);
@@ -425,10 +429,7 @@ mod tests {
         // Wait until the listener is really accepting and reuse the stream as client.
         let mut client = connect_with_retry(addr, 100, Duration::from_millis(10)).await;
 
-        client
-            .write_all(b"hello-one\n")
-            .await
-            .expect("write line");
+        client.write_all(b"hello-one\n").await.expect("write line");
         client.flush().await.expect("flush");
 
         // The manager should emit InboundEvent::Received
@@ -437,7 +438,7 @@ mod tests {
             .expect("expected inbound event");
         match evt {
             InboundEvent::Received { peer: _, payload } => {
-                assert_eq!(payload, "hello-one");
+                assert_eq!(payload, b"hello-one");
             }
             other => panic!("unexpected event: {:?}", other),
         }
@@ -456,11 +457,11 @@ mod tests {
         let (a_cmd, _a_inbound, _a_addr) = start_manager_on_free_port(16);
 
         a_cmd
-            .send(ManagerCmd::SendTo(b_addr, "hi-1\n".to_string()))
+            .send(ManagerCmd::SendTo(b_addr, b"hi-1\n".to_vec()))
             .await
             .expect("send cmd");
         a_cmd
-            .send(ManagerCmd::SendTo(b_addr, "hi-2\n".to_string()))
+            .send(ManagerCmd::SendTo(b_addr, b"hi-2\n".to_vec()))
             .await
             .expect("send cmd");
 
@@ -480,8 +481,8 @@ mod tests {
             _ => panic!("unexpected event 2"),
         };
 
-        assert_eq!(p1, "hi-1");
-        assert_eq!(p2, "hi-2");
+        assert_eq!(p1, b"hi-1".to_vec());
+        assert_eq!(p2, b"hi-2".to_vec());
         assert_eq!(a1, a2, "same peer indicates connection reuse");
     }
 
@@ -503,7 +504,10 @@ mod tests {
             inbound_tx,
         };
 
-        let err = mgr.handle_send_to(addr, "ping\n").await.unwrap_err();
+        let err = mgr
+            .handle_send_to(addr, &b"ping\n".to_vec())
+            .await
+            .unwrap_err();
         match err {
             AppError::ConnectionRefused { addr: s } => {
                 assert_eq!(s, addr.to_string());
@@ -542,7 +546,7 @@ mod tests {
         match ev {
             InboundEvent::Received { peer: p, payload } => {
                 assert_eq!(p, peer);
-                assert_eq!(payload, "line-1");
+                assert_eq!(payload, b"line-1".to_vec());
             }
             other => panic!("unexpected event: {:?}", other),
         }
@@ -582,7 +586,10 @@ mod tests {
                 }
             }
         }
-        assert!(got_closed, "expected ConnClosed for first client due to LRU eviction");
+        assert!(
+            got_closed,
+            "expected ConnClosed for first client due to LRU eviction"
+        );
     }
 
     /// Shutdown should stop the loop and close the inbound channel.
@@ -590,7 +597,10 @@ mod tests {
     async fn shutdown_closes_inbound_channel() {
         let (cmd_tx, mut inbound_rx, _addr) = start_manager_on_free_port(16);
 
-        cmd_tx.send(ManagerCmd::Shutdown).await.expect("send shutdown");
+        cmd_tx
+            .send(ManagerCmd::Shutdown)
+            .await
+            .expect("send shutdown");
 
         // When manager exits, it drops the inbound sender; rx should end (None).
         let closed = tokio::time::timeout(Duration::from_secs(2), async {
@@ -618,11 +628,11 @@ mod tests {
         let (a_cmd, _a_inbound, _a_addr) = start_manager_on_free_port(16);
 
         a_cmd
-            .send(ManagerCmd::SendTo(b_addr, "one\n".to_string()))
+            .send(ManagerCmd::SendTo(b_addr, b"one\n".to_vec()))
             .await
             .expect("send1");
         a_cmd
-            .send(ManagerCmd::SendTo(b_addr, "two\n".to_string()))
+            .send(ManagerCmd::SendTo(b_addr, b"two\n".to_vec()))
             .await
             .expect("send2");
 
@@ -642,8 +652,8 @@ mod tests {
             _ => panic!("unexpected ev2"),
         };
 
-        assert_eq!(p1, "one");
-        assert_eq!(p2, "two");
+        assert_eq!(p1, b"one");
+        assert_eq!(p2, b"two");
         assert_eq!(peer1, peer2, "same TCP peer implies connection reuse");
     }
 }

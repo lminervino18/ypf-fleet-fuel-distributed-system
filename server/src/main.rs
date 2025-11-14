@@ -1,12 +1,12 @@
 use clap::Parser;
 use std::net::SocketAddr;
-mod connection;
-mod node;
 mod actors;
+mod connection;
 mod errors;
+mod node;
 
-use node::{Node, NodeRole};
 use errors::{AppError, AppResult};
+use node::{Node, NodeRole};
 
 /// YPF Ruta — Distributed server binary
 ///
@@ -61,7 +61,10 @@ async fn run() -> AppResult<()> {
 
     // Parse and validate coordinates: expect exactly two values (lat, lon).
     if args.coords.len() != 2 {
-        return Err(AppError::InvalidCoords { lat: f64::NAN, lon: f64::NAN });
+        return Err(AppError::InvalidCoords {
+            lat: f64::NAN,
+            lon: f64::NAN,
+        });
     }
     let coords = (args.coords[0], args.coords[1]);
 
@@ -77,9 +80,9 @@ async fn run() -> AppResult<()> {
     let leader_addr = match (&role, &args.leader) {
         (NodeRole::Leader, _) => None,
         (_, Some(addr_str)) => {
-            let addr: SocketAddr = addr_str.parse().map_err(|_| AppError::Config(format!(
-                "Invalid leader address '{}'", addr_str
-            )))?;
+            let addr: SocketAddr = addr_str
+                .parse()
+                .map_err(|_| AppError::Config(format!("Invalid leader address '{}'", addr_str)))?;
             Some(addr)
         }
         (_, None) => {

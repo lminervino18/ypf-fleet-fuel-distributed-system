@@ -1,6 +1,6 @@
-use crate::connection::{ConnectionManager, InboundEvent, ManagerCmd};
 use crate::actors::actor_router::ActorRouter;
 use crate::actors::types::RouterCmd;
+use crate::connection::{ConnectionManager, InboundEvent, ManagerCmd};
 use crate::errors::{AppError, AppResult};
 
 use actix::prelude::*;
@@ -142,10 +142,10 @@ impl Node {
                 match evt {
                     InboundEvent::Received { peer, payload } => {
                         // Forward raw bytes to the ActorRouter for higher-level processing.
-                        println!("[INBOUND from {}] {}", peer, payload);
+                        // println!("[INBOUND from {}] {}", peer, payload);
                         router_addr.do_send(RouterCmd::NetIn {
                             from: peer,
-                            bytes: payload.into_bytes(),
+                            bytes: payload,
                         });
                     }
                     InboundEvent::ConnClosed { peer } => {
@@ -200,18 +200,6 @@ impl Node {
             replicas
         );
 
-        // Fire-and-forget task: attempt to contact replicas to verify connectivity.
-        tokio::spawn(async move {
-            sleep(Duration::from_secs(3)).await;
-            for replica in replicas {
-                let msg = format!("MSG {} PING_FROM_LEADER\n", node_id);
-                println!("[LEADER] Pinging replica {}", replica);
-                if let Err(e) = manager_cmd.send(ManagerCmd::SendTo(replica, msg)).await {
-                    eprintln!("[WARN] Failed to ping replica {}: {}", replica, e);
-                }
-            }
-        });
-
         Ok(())
     }
 
@@ -223,15 +211,6 @@ impl Node {
     ) -> AppResult<()> {
         println!("[ROLE] Replica connecting to leader at {}", leader);
 
-        // Send a single hello message; errors map to channel errors.
-        let msg = format!("MSG {} HELLO_FROM_REPLICA\n", node_id);
-        manager_cmd
-            .send(ManagerCmd::SendTo(leader, msg))
-            .await
-            .map_err(|e| AppError::Channel {
-                details: e.to_string(),
-            })?;
-
         Ok(())
     }
 
@@ -242,15 +221,6 @@ impl Node {
         node_id: u64,
     ) -> AppResult<()> {
         println!("[ROLE] Station connecting to leader at {}", leader);
-
-        // Send a single hello message; errors map to channel errors.
-        let msg = format!("MSG {} HELLO_FROM_STATION\n", node_id);
-        manager_cmd
-            .send(ManagerCmd::SendTo(leader, msg))
-            .await
-            .map_err(|e| AppError::Channel {
-                details: e.to_string(),
-            })?;
 
         Ok(())
     }
