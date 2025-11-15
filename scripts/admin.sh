@@ -4,7 +4,7 @@ set -euo pipefail
 # Default server address (can be overridden with env var SERVER)
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-DEFAULT_SERVER="${SERVER:-127.0.0.1:7000}"
+DEFAULT_SERVER="${SERVER:-127.0.0.1:9000}"
 
 # If user already passed a --server flag, do not prepend.
 contains_server=false

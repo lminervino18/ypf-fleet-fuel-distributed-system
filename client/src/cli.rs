@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 #[command(about = "YPF Ruta client - admin CLI")]
 pub struct Cli {
     /// Server address
-    #[arg(long, default_value = "127.0.0.1:7000")]
+    #[arg(long, default_value = "127.0.0.1:9000")]
     pub server: String,
 
     #[command(subcommand)]
