@@ -21,18 +21,23 @@ Ejecutar el siguiente comando en la terminal para ejecutar el lado del servidor
 
 Y para el administrador de tarjetas (cliente) se debe ejecutar por ejemplo:
 ```bash
-cd client
+# especificar el servidor, en caso contrario utiliza el default
+./scripts/admin.sh --server localhost:7070 limit-account --amount 100.50
 
 # Limitar los montos disponibles en la cuenta
-cargo run -- limit-account --amount 100.50
+./scripts/admin.sh limit-account --amount 100.50
+
 # Limitar el monto disponible de una tarjeta en particular
-cargo run -- limit-card --card-id card123 --amount 50.0
+./scripts/admin.sh limit-card --card-id card123 --amount 50.0
+
 # Consultar el saldo de la cuenta
-cargo run -- query-account
+./scripts/admin.sh query-account
+
 # Consultar los saldos de las tarjetas de la cuenta
-cargo run -- query-cards
+./scripts/admin.sh query-cards
+
 # Realizar la facturación de la cuenta
-cargo run -- bill --period 2025-10
+./scripts/admin.sh bill --period 2025-10
 ```
 
 
