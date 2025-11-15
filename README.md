@@ -12,6 +12,30 @@ Enunciado disponible en [este enlace](https://concurrentes-fiuba.github.io/2025_
 | [Lorenzo Minervino](https://github.com/lminervino18) | 107863 |
 | [Alejandro Paff](https://github.com/AlePaff) | 103376 |
 
+
+## Levantar proyecto
+Ejecutar el siguiente comando en la terminal para ejecutar el lado del servidor
+```bash
+./scripts/launch.sh <N_replicas> <M_estaciones>
+```
+
+Y para el administrador de tarjetas (cliente) se debe ejecutar por ejemplo:
+```bash
+cd client
+
+# Limitar los montos disponibles en la cuenta
+cargo run -- limit-account --amount 100.50
+# Limitar el monto disponible de una tarjeta en particular
+cargo run -- limit-card --card-id card123 --amount 50.0
+# Consultar el saldo de la cuenta
+cargo run -- query-account
+# Consultar los saldos de las tarjetas de la cuenta
+cargo run -- query-cards
+# Realizar la facturación de la cuenta
+cargo run -- bill --period 2025-10
+```
+
+
 ## Informe
 El informe que se presenta a continuación está disponible en formato PDF $\LaTeX{}$ en [docs/informe.pdf](docs/informe/informe.pdf).
 
