@@ -1,46 +1,34 @@
 //! Actor router module.
 //!
-//! The ActorRouter manages local account actors and forwards or replicates
-//! messages to known replicas. Actor hierarchy (conceptually):
+//! The ActorRouter manages local account actors and forwards relevant
+//! messages to the node it's running on. Actor hierarchy (conceptually):
 //! ```text
 //! ActorRouter (node root)
 //!  └── AccountActor (one per account)
 //!       └── CardActor (one per card)
 //! ```
-//!
-//! The router bridges network events (via ConnectionManager) and local actors.
 
 use actix::prelude::*;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
 
 use super::account::AccountActor;
 use super::types::{ActorMsg, RouterCmd};
-use crate::connection_manager::ManagerCmd;
 
 /// Router actor that owns and routes to AccountActor instances.
 ///
 /// Responsibilities:
 /// - create or lookup local AccountActor instances,
 /// - route messages to accounts/cards,
-/// - replicate payloads to configured replica addresses via the ConnectionManager.
+/// - communicate business logic to the node
 pub struct ActorRouter {
     /// Map: account_id -> AccountActor address
     pub accounts: HashMap<u64, Addr<AccountActor>>,
-
-    /// Channel to the ConnectionManager to send network messages (to replicas).
-    pub manager_cmd: mpsc::Sender<ManagerCmd>,
-
-    /// Replica addresses as "IP:PORT" strings.
-    pub replicas: Vec<String>,
 }
 
 impl ActorRouter {
-    pub fn new(manager_cmd: mpsc::Sender<ManagerCmd>, replicas: Vec<String>) -> Self {
+    pub fn new() -> Self {
         Self {
             accounts: HashMap::new(),
-            manager_cmd,
-            replicas,
         }
     }
 
@@ -66,9 +54,8 @@ impl Actor for ActorRouter {
 
     fn started(&mut self, _ctx: &mut Self::Context) {
         println!(
-            "[Router] ActorRouter started with {} accounts and {} replicas",
+            "[Router] ActorRouter started with {} accounts",
             self.accounts.len(),
-            self.replicas.len()
         );
     }
 }
@@ -92,26 +79,6 @@ impl Handler<RouterCmd> for ActorRouter {
             } => {
                 let acc = self.get_or_create_account(account_id, ctx);
                 acc.do_send(ActorMsg::CardMessage { card_id, msg });
-            }
-
-            // Handle incoming network bytes forwarded from ConnectionManager
-            RouterCmd::NetIn { from, bytes } => {
-                // Attempt to decode payload as UTF-8
-                let payload = String::from_utf8_lossy(&bytes);
-                println!(
-                    "[Router][NetIn] Message received from {}: {}",
-                    from, payload
-                );
-
-                // Simple example processing: classify replication or generic messages.
-                if payload.starts_with("REPL:") {
-                    println!("[Router] Replication message from {}", from);
-                    // TODO: parse and apply replication payload to local state.
-                } else if payload.starts_with("MSG") {
-                    println!("[Router] Generic MSG payload: {}", payload);
-                } else {
-                    println!("[Router] Unknown payload: {}", payload);
-                }
             }
 
             // List active local accounts

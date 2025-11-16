@@ -1,5 +1,4 @@
 use crate::actors::actor_router::ActorRouter;
-use crate::actors::types::RouterCmd;
 use crate::connection_manager::{ConnectionManager, InboundEvent, ManagerCmd};
 use crate::errors::{AppError, AppResult};
 use crate::node_message::NodeMessage;
@@ -10,7 +9,6 @@ use std::collections::HashMap;
 use std::future::pending;
 use std::net::SocketAddr;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{sleep, Duration};
 
 /// Role of a node in the YPF Ruta distributed system.
 ///
@@ -40,17 +38,11 @@ pub struct Node {
     pub port: u16,
     pub coords: (f64, f64),
     pub max_conns: usize,
-
-    // Networking
     pub leader_addr: Option<SocketAddr>,
     pub replicas: Vec<SocketAddr>,
-
-    // Operations
     pub operations: HashMap<u8, Operation>,
-
-    // Communication primitives
-    pub manager_cmd: mpsc::Sender<ManagerCmd>,
-    pub inbound_rx: mpsc::Receiver<InboundEvent>,
+    pub connection_tx: mpsc::Sender<ManagerCmd>,
+    pub connection_rx: mpsc::Receiver<InboundEvent>,
     pub router: Addr<ActorRouter>,
 }
 
@@ -73,24 +65,13 @@ impl Node {
             .parse()
             .map_err(|e| AppError::AddrParse { source: e })?;
 
-        // --- Initialize TCP layer ---
-        let (manager_cmd, inbound_rx) = ConnectionManager::start(listen_addr, max_conns);
-
+        let (connection_tx, connection_rx) = ConnectionManager::start(listen_addr, max_conns);
         let id = rand::random::<u64>();
-
-        // Convertir réplicas a String para pasarlas al router
-        let replicas_str: Vec<String> = replicas.iter().map(|addr| addr.to_string()).collect();
-
-        // --- Spawn ActorRouter in Actix system ---
         let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
-        let manager_cmd_for_router = manager_cmd.clone();
-
         std::thread::spawn(move || {
             let sys = actix::System::new();
-
             sys.block_on(async move {
-                let router = ActorRouter::new(manager_cmd_for_router, replicas_str).start();
-
+                let router = ActorRouter::new().start();
                 if router_tx.send(router.clone()).is_err() {
                     eprintln!("[ERROR] Failed to send router address to Node");
                 }
@@ -113,8 +94,8 @@ impl Node {
             leader_addr,
             replicas,
             operations: HashMap::new(),
-            manager_cmd,
-            inbound_rx,
+            connection_tx,
+            connection_rx,
             router,
         })
     }
@@ -132,8 +113,7 @@ impl Node {
 
         let id = op.id;
         self.operations.insert(id, op.clone());
-
-        self.manager_cmd
+        self.connection_tx
             .send(ManagerCmd::SendTo(
                 leader_addr,
                 NodeMessage::Learn(op).into(),
@@ -148,7 +128,7 @@ impl Node {
         // cuando al líder le llegan todos los learn (o la mayoría) aplica la operación
     }
 
-    pub async fn handle_msg(&mut self, msg: NodeMessage) {
+    pub async fn handle_node_msg(&mut self, msg: NodeMessage) {
         match msg {
             NodeMessage::Accept(op) => {
                 self.handle_accept(op).await;
@@ -166,11 +146,10 @@ impl Node {
             self.id, self.role, self.ip, self.port, self.max_conns
         );
 
-        while let Some(evt) = self.inbound_rx.recv().await {
+        while let Some(evt) = self.connection_rx.recv().await {
             match evt {
                 InboundEvent::Received { peer, payload } => {
-                    // TODO: handle this error
-                    self.handle_msg(payload.try_into().unwrap()).await;
+                    self.handle_node_msg(payload.try_into().unwrap()).await;
                 }
                 InboundEvent::ConnClosed { peer } => {
                     println!("[INFO] Connection closed by {}", peer);
@@ -179,49 +158,6 @@ impl Node {
         }
 
         pending::<()>().await;
-        Ok(())
-    }
-
-    // ==========================
-    // ==== Role Behaviors ======
-    // ==========================
-
-    /// Leader behaviour: periodically check replica reachability and perform leader-only setup.
-    ///
-    /// Currently sends a simple ping message to each configured replica after a short delay.
-    async fn run_as_leader(
-        manager_cmd: mpsc::Sender<ManagerCmd>,
-        replicas: Vec<SocketAddr>,
-        node_id: u64,
-    ) -> AppResult<()> {
-        println!(
-            "[ROLE] Leader initialized with {} replicas: {:?}",
-            replicas.len(),
-            replicas
-        );
-
-        Ok(())
-    }
-
-    /// Replica startup behaviour: announce presence to the leader.
-    async fn run_as_replica(
-        manager_cmd: mpsc::Sender<ManagerCmd>,
-        leader: SocketAddr,
-        node_id: u64,
-    ) -> AppResult<()> {
-        println!("[ROLE] Replica connecting to leader at {}", leader);
-
-        Ok(())
-    }
-
-    /// Station startup behaviour: announce presence to the leader.
-    async fn run_as_station(
-        manager_cmd: mpsc::Sender<ManagerCmd>,
-        leader: SocketAddr,
-        node_id: u64,
-    ) -> AppResult<()> {
-        println!("[ROLE] Station connecting to leader at {}", leader);
-
         Ok(())
     }
 }
