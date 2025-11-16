@@ -1,5 +1,5 @@
-//! CLI parser for the client
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use crate::commands::Commands;
 
 /// YPF client
 #[derive(Parser, Debug)]
@@ -14,35 +14,33 @@ pub struct Cli {
     pub command: Commands,
 }
 
-#[derive(Subcommand, Debug)]
-pub enum Commands {
-    /// Limit the amounts available in the account
-    LimitAccount {
-        /// Amount limit (decimal)
-        #[arg(long)]
-        amount: f64,
-    },
+impl Cli {
+    /// Create a new CLI instance from command line arguments
+    pub fn new() -> Self {
+        let cli = Cli::parse();
+        println!("[CLIENT] parsed command: {:?}", cli.command);
+        println!("[CLIENT] parsed server: {:?}", cli.server);
+        cli
+    }
 
-    /// Limit the amounts available on a specific card
-    LimitCard {
-        /// Card identifier
-        #[arg(long)]
-        card_id: String,
-        /// Amount limit (decimal)
-        #[arg(long)]
-        amount: f64,
-    },
+    /// Connect to the server specified in the CLI arguments
+    pub fn connect(&self) -> anyhow::Result<std::net::TcpStream> {
+        let addr: std::net::SocketAddr = self
+            .server
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid server address '{}': {e}", self.server))?;
 
-    /// Query the account balance
-    QueryAccount,
+        println!("[CLIENT] connecting to server at {addr}");
+        // Connect to server
+        let tcp_stream = std::net::TcpStream::connect(addr)
+            .map_err(|e| anyhow::anyhow!("failed to connect to server at {addr}: {e}"))?;
+        println!("[CLIENT] successfully connected to server at {addr}");
+        Ok(tcp_stream)
+    }
 
-    /// Query balances of all cards for the account.
-    QueryCards,
-
-    /// Perform billing for the account.
-    Bill {
-        /// Optional billing period (ej. "2025-10").
-        #[arg(long)]
-        period: Option<String>,
-    },
+    pub fn send_command(&self, _tcp_stream: &mut std::net::TcpStream) -> anyhow::Result<()> {
+        println!("[CLIENT] sending command: {:?}", self.command);
+        // Here you would serialize the command and send it over the tcp_stream
+        Ok(())
+    }
 }
