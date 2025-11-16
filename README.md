@@ -36,8 +36,8 @@ Para el administrador de tarjetas (cliente) se pueden ejecutar los siguientes co
 # Consultar los saldos de las tarjetas de la cuenta
 ./scripts/admin.sh query-cards
 
-# Realizar la facturación de la cuenta
-./scripts/admin.sh bill --period <año-mes>
+# Realizar la facturación de la cuenta (en su totalidad o en un periodo)
+./scripts/admin.sh bill [--period <año-mes>]
 ```
 
 Ejemplos de uso:
@@ -57,7 +57,10 @@ Ejemplos de uso:
 # Consultar los saldos de las tarjetas de la cuenta
 ./scripts/admin.sh query-cards
 
-# Realizar la facturación de la cuenta
+# Realizar la facturación de la cuenta (sin aclarar periodo, muestra la totalidad)
+./scripts/admin.sh bill
+
+# Realizar la facturación de la cuenta (aclarando periodo, muestra solo en ese periodo)
 ./scripts/admin.sh bill --period 2025-10
 ```
 
