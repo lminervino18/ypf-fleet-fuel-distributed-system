@@ -19,7 +19,28 @@ Ejecutar el siguiente comando en la terminal para ejecutar el lado del servidor
 ./scripts/launch.sh <N_replicas> <M_estaciones>
 ```
 
-Y para el administrador de tarjetas (cliente) se debe ejecutar por ejemplo:
+Para el administrador de tarjetas (cliente) se pueden ejecutar los siguientes comandos en la terminal
+```bash
+# Especificar el servidor, en caso contrario utiliza el default
+./scripts/admin.sh --server <direccion_servidor> limit-account --amount <monto>
+
+# Limitar los montos disponibles en la cuenta
+./scripts/admin.sh limit-account --amount <monto>
+
+# Limitar el monto disponible de una tarjeta en particular
+./scripts/admin.sh limit-card --card-id <id_tarjeta> --amount <monto>
+
+# Consultar el saldo de la cuenta
+./scripts/admin.sh query-account
+
+# Consultar los saldos de las tarjetas de la cuenta
+./scripts/admin.sh query-cards
+
+# Realizar la facturación de la cuenta
+./scripts/admin.sh bill --period <año-mes>
+```
+
+Ejemplos de uso:
 ```bash
 # especificar el servidor, en caso contrario utiliza el default
 ./scripts/admin.sh --server localhost:7070 limit-account --amount 100.50
