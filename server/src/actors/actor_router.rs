@@ -1,38 +1,49 @@
 //! Actor router module.
 //!
-//! The ActorRouter manages local account actors and forwards relevant
-//! messages to the node it's running on. Actor hierarchy (conceptually):
-//! ```text
-//! ActorRouter (node root)
-//!  └── AccountActor (one per account)
-//!       └── CardActor (one per card)
-//! ```
+//! Flows:
+//! - Node → ActorRouter : `RouterCmd`
+//! - ActorRouter → CardActor : `CardMsg` (for CheckLimit, ApplyCharge, card limit updates)
+//! - ActorRouter → AccountActor : `AccountMsg` (for account limit updates)
+//! - CardActor → AccountActor : `AccountMsg::CheckAccountLimit` (when card passes)
+//! - AccountActor / CardActor → ActorRouter : `RouterInternalMsg`
+//! - ActorRouter → Node : `ActorEvent` (via mpsc channel)
 
 use actix::prelude::*;
 use std::collections::HashMap;
+use tokio::sync::mpsc;
 
 use super::account::AccountActor;
-use super::types::{ActorMsg, RouterCmd};
+use super::card::CardActor;
+use super::types::{
+    AccountMsg, ActorEvent, CardMsg, RouterCmd, RouterInternalMsg,
+};
 
-/// Router actor that owns and routes to AccountActor instances.
-///
-/// Responsibilities:
-/// - create or lookup local AccountActor instances,
-/// - route messages to accounts/cards,
-/// - communicate business logic to the node
+/// Router actor that owns and routes to AccountActor and CardActor instances.
 pub struct ActorRouter {
-    /// Map: account_id -> AccountActor address
+    /// account_id -> AccountActor address
     pub accounts: HashMap<u64, Addr<AccountActor>>,
+    /// card_id -> CardActor address
+    pub cards: HashMap<u64, Addr<CardActor>>,
+
+    /// Channel ActorRouter → Node
+    pub event_tx: mpsc::Sender<ActorEvent>,
 }
 
 impl ActorRouter {
-    pub fn new() -> Self {
+    pub fn new(event_tx: mpsc::Sender<ActorEvent>) -> Self {
         Self {
             accounts: HashMap::new(),
+            cards: HashMap::new(),
+            event_tx,
         }
     }
 
-    /// Return an existing AccountActor or create a new one.
+    /// Helper to emit an event to the Node.
+    fn emit(&self, ev: ActorEvent) {
+        let _ = self.event_tx.try_send(ev);
+    }
+
+    /// Return or create an AccountActor.
     fn get_or_create_account(
         &mut self,
         account_id: u64,
@@ -42,9 +53,37 @@ impl ActorRouter {
             return addr.clone();
         }
 
-        println!("[Router] Creating new local account id={}", account_id);
+        println!("[Router] Creating local account {}", account_id);
+
         let addr = AccountActor::new(account_id, ctx.address()).start();
         self.accounts.insert(account_id, addr.clone());
+        addr
+    }
+
+    /// Return or create a CardActor.
+    ///
+    /// A card always belongs to an account, so we ensure the account exists first.
+    fn get_or_create_card(
+        &mut self,
+        account_id: u64,
+        card_id: u64,
+        ctx: &mut Context<Self>,
+    ) -> Addr<CardActor> {
+        if let Some(addr) = self.cards.get(&card_id) {
+            return addr.clone();
+        }
+
+        let account_addr = self.get_or_create_account(account_id, ctx);
+
+        println!(
+            "[Router] Creating card {} for account {}",
+            card_id, account_id
+        );
+
+        let addr =
+            CardActor::new(card_id, account_id, ctx.address(), account_addr).start();
+
+        self.cards.insert(card_id, addr.clone());
         addr
     }
 }
@@ -54,36 +93,148 @@ impl Actor for ActorRouter {
 
     fn started(&mut self, _ctx: &mut Self::Context) {
         println!(
-            "[Router] ActorRouter started with {} accounts",
+            "[Router] Started with {} accounts and {} cards",
             self.accounts.len(),
+            self.cards.len()
         );
     }
 }
 
+/// Handle commands sent from Node → ActorRouter
 impl Handler<RouterCmd> for ActorRouter {
     type Result = ();
 
     fn handle(&mut self, msg: RouterCmd, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
-            // Create or forward a message to an account
-            RouterCmd::SendToAccount { account_id, msg } => {
-                let acc = self.get_or_create_account(account_id, ctx);
-                acc.do_send(msg);
-            }
-
-            // Send a message to a specific card within an account
-            RouterCmd::SendToCard {
+            RouterCmd::AuthorizeCharge {
                 account_id,
                 card_id,
-                msg,
+                amount,
+                request_id,
             } => {
-                let acc = self.get_or_create_account(account_id, ctx);
-                acc.do_send(ActorMsg::CardMessage { card_id, msg });
+                // IMPORTANT: optimization path
+                // We go directly to the CardActor, not the account.
+                let card = self.get_or_create_card(account_id, card_id, ctx);
+
+                card.do_send(CardMsg::CheckLimit {
+                    amount,
+                    request_id,
+                    account_id,
+                    card_id,
+                });
             }
 
-            // List active local accounts
+            RouterCmd::ApplyCharge {
+                account_id,
+                card_id,
+                amount,
+                timestamp,
+                op_id,
+                request_id: _,
+            } => {
+                // Start from the card: card updates its own usage,
+                // then the account updates account-wide usage and emits ChargeApplied.
+                let card = self.get_or_create_card(account_id, card_id, ctx);
+                card.do_send(CardMsg::ApplyCharge { amount });
+
+                let account = self.get_or_create_account(account_id, ctx);
+                account.do_send(AccountMsg::ApplyCharge {
+                    card_id,
+                    amount,
+                    request_id: 0, // correlation can be done via op_id/timestamp if needed
+                    timestamp,
+                    op_id,
+                });
+            }
+
+            RouterCmd::UpdateCardLimit {
+                account_id,
+                card_id,
+                new_limit,
+                request_id,
+            } => {
+                let card = self.get_or_create_card(account_id, card_id, ctx);
+
+                card.do_send(CardMsg::UpdateLimit {
+                    new_limit,
+                    request_id,
+                });
+            }
+
+            RouterCmd::UpdateAccountLimit {
+                account_id,
+                new_limit,
+                request_id,
+            } => {
+                let account = self.get_or_create_account(account_id, ctx);
+
+                account.do_send(AccountMsg::UpdateAccountLimit {
+                    new_limit,
+                    request_id,
+                });
+            }
+
             RouterCmd::ListAccounts => {
-                println!("[Router] Local accounts: {:?}", self.accounts.keys());
+                println!("[Router] Accounts: {:?}", self.accounts.keys());
+            }
+        }
+    }
+}
+
+/// Handle messages from AccountActor / CardActor → ActorRouter
+impl Handler<RouterInternalMsg> for ActorRouter {
+    type Result = ();
+
+    fn handle(&mut self, msg: RouterInternalMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        match msg {
+            RouterInternalMsg::LimitCheckResult {
+                request_id,
+                allowed,
+                error,
+            } => {
+                self.emit(ActorEvent::LimitCheckResult {
+                    request_id,
+                    allowed,
+                    error,
+                });
+            }
+
+            RouterInternalMsg::ChargeApplied { operation } => {
+                self.emit(ActorEvent::ChargeApplied { operation });
+            }
+
+            RouterInternalMsg::LimitUpdated {
+                scope,
+                account_id,
+                card_id,
+                new_limit,
+            } => {
+                self.emit(ActorEvent::LimitUpdated {
+                    scope,
+                    account_id,
+                    card_id,
+                    new_limit,
+                });
+            }
+
+            RouterInternalMsg::LimitUpdateFailed {
+                scope,
+                account_id,
+                card_id,
+                request_id,
+                error,
+            } => {
+                self.emit(ActorEvent::LimitUpdateFailed {
+                    scope,
+                    account_id,
+                    card_id,
+                    request_id,
+                    error,
+                });
+            }
+
+            RouterInternalMsg::Debug(msg) => {
+                self.emit(ActorEvent::Debug(msg));
             }
         }
     }

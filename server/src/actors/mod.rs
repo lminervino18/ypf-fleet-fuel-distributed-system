@@ -18,14 +18,14 @@
 //!
 //! Public types and actors are re-exported here for convenient imports.
 
-pub mod types;
-pub mod actor_router;
 pub mod account;
+pub mod actor_router;
 pub mod card;
+pub mod types;
 
 // Re-exports to simplify imports from other modules:
 // Example: `use crate::actors::ActorRouter;`
-pub use types::*;
-pub use actor_router::ActorRouter;
 pub use account::AccountActor;
+pub use actor_router::ActorRouter;
 pub use card::CardActor;
+pub use types::*;

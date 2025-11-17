@@ -5,7 +5,7 @@ use super::{
     operation::Operation,
 };
 use crate::{
-    actors::{ActorRouter, RouterCmd},
+    actors::{ActorEvent, ActorRouter, RouterCmd},
     errors::{AppError, AppResult},
 };
 use actix::{Actor, Addr};
@@ -20,6 +20,7 @@ pub struct Leader {
     operations: HashMap<u32, (usize, Operation)>,
     connection_tx: mpsc::Sender<ManagerCmd>,
     connection_rx: mpsc::Receiver<InboundEvent>,
+    actor_rx: mpsc::Receiver<ActorEvent>,
     router: Addr<ActorRouter>,
 }
 
@@ -52,7 +53,7 @@ impl Node for Leader {
     }
 
     async fn recv_node_msg(&mut self) -> Option<InboundEvent> {
-        todo!();
+        self.connection_rx.recv().await
     }
 }
 
@@ -64,13 +65,14 @@ impl Leader {
         max_conns: usize,
     ) -> AppResult<()> {
         let (connection_tx, connection_rx) = ConnectionManager::start(address, max_conns);
+        let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
         let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
         std::thread::spawn(move || {
             let sys = actix::System::new();
             sys.block_on(async move {
-                let router = ActorRouter::new().start();
+                let router = ActorRouter::new(actor_tx).start();
                 if router_tx.send(router.clone()).is_err() {
-                    eprintln!("[ERROR] Failed to send router address to Node");
+                    eprintln!("[ERROR] Failed to deliver ActorRouter addr to Leader");
                 }
 
                 pending::<()>().await;
@@ -85,8 +87,9 @@ impl Leader {
             operations: HashMap::new(),
             connection_tx,
             connection_rx,
+            actor_rx,
             router: router_rx.await.map_err(|e| AppError::ActorSystem {
-                details: format!("failed to receive router address: {e}"),
+                details: format!("failed to receive ActorRouter address: {e}"),
             })?,
         };
 

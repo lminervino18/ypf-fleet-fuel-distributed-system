@@ -1,8 +1,10 @@
 use super::{
     connection_manager::{ConnectionManager, InboundEvent, ManagerCmd},
     node::Node,
+    node_message::NodeMessage,
     operation::Operation,
 };
+use crate::actors::types::ActorEvent;
 use crate::{
     actors::ActorRouter,
     errors::{AppError, AppResult},
@@ -20,6 +22,7 @@ pub struct Replica {
     operations: HashMap<u8, Operation>,
     connection_tx: mpsc::Sender<ManagerCmd>,
     connection_rx: mpsc::Receiver<InboundEvent>,
+    actor_rx: mpsc::Receiver<ActorEvent>,
     router: Addr<ActorRouter>,
 }
 
@@ -36,7 +39,7 @@ impl Node for Replica {
     }
 
     async fn recv_node_msg(&mut self) -> Option<InboundEvent> {
-        todo!()
+        self.connection_rx.recv().await
     }
 }
 
@@ -49,20 +52,21 @@ impl Replica {
         max_conns: usize,
     ) -> AppResult<()> {
         let (connection_tx, connection_rx) = ConnectionManager::start(address, max_conns);
+        let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
         let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
         std::thread::spawn(move || {
             let sys = actix::System::new();
             sys.block_on(async move {
-                let router = ActorRouter::new().start();
+                let router = ActorRouter::new(actor_tx).start();
                 if router_tx.send(router.clone()).is_err() {
-                    eprintln!("[ERROR] Failed to send router address to Node");
+                    eprintln!("[ERROR] Failed to send router address to Replica");
                 }
 
                 pending::<()>().await;
             });
         });
 
-        let mut leader = Self {
+        let mut replica = Self {
             id: rand::random::<u64>(),
             coords,
             max_conns,
@@ -71,11 +75,12 @@ impl Replica {
             operations: HashMap::new(),
             connection_tx,
             connection_rx,
+            actor_rx,
             router: router_rx.await.map_err(|e| AppError::ActorSystem {
                 details: format!("failed to receive router address: {e}"),
             })?,
         };
 
-        leader.run().await
+        replica.run().await
     }
 }

@@ -3,10 +3,6 @@ use crate::errors::AppResult;
 use std::future::pending;
 
 /// Role of a node in the YPF Ruta distributed system.
-///
-/// - Leader: coordinates replicas and accepts connections from stations/replicas.
-/// - Replica: connects to a leader and acts as a passive replica.
-/// - Station: edge node that represents a physical station and forwards requests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeRole {
     Leader,
@@ -21,8 +17,8 @@ pub enum NodeRole {
 /// - a local ActorRouter (Actix) for application logic,
 /// - role-specific behaviour (leader, replica, station).
 ///
-/// The Node is responsible for wiring background tasks that bridge the async
-/// Tokio runtime (network IO) and the Actix actor system (application logic).
+/// The trait delegates the main execution to `run_loop()`,
+/// which is implemented by each concrete node type.
 pub trait Node {
     async fn handle_request(&mut self, op: Operation);
     async fn handle_log(&mut self, op: Operation);
