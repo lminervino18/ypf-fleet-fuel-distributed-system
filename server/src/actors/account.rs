@@ -7,9 +7,9 @@
 use actix::prelude::*;
 use std::collections::HashMap;
 
-use crate::errors::{AppError, AppResult};
 use super::card::CardActor;
 use super::types::ActorMsg;
+use crate::errors::{AppError, AppResult};
 
 /// Represents a local YPF Ruta account.
 ///
@@ -36,7 +36,10 @@ impl AccountActor {
         if let Some(addr) = self.cards.get(&card_id) {
             return addr.clone();
         }
-        println!("[Account {}] Creating new card {}", self.account_id, card_id);
+        println!(
+            "[Account {}] Creating new card {}",
+            self.account_id, card_id
+        );
         let addr = CardActor::new(card_id, self.account_id, self.router.clone()).start();
         self.cards.insert(card_id, addr.clone());
         addr
@@ -66,4 +69,3 @@ impl Handler<ActorMsg> for AccountActor {
         }
     }
 }
-

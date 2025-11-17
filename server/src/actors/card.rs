@@ -4,9 +4,9 @@
 //! belonging to an account. It receives authorization, debit and update messages
 //! and coordinates with the router or parent account actor as needed.
 
-use actix::prelude::*;
-use crate::errors::{AppError, AppResult};
 use super::types::ActorMsg;
+use crate::errors::{AppError, AppResult};
+use actix::prelude::*;
 
 /// Represents a card (physical or logical) belonging to an account.
 ///
@@ -21,7 +21,11 @@ pub struct CardActor {
 
 impl CardActor {
     /// Construct a new CardActor bound to `card_id` and `account_id`.
-    pub fn new(card_id: u64, account_id: u64, router: Addr<super::actor_router::ActorRouter>) -> Self {
+    pub fn new(
+        card_id: u64,
+        account_id: u64,
+        router: Addr<super::actor_router::ActorRouter>,
+    ) -> Self {
         Self {
             card_id,
             account_id,

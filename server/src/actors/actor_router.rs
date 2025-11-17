@@ -1,38 +1,50 @@
 //! Actor router module.
 //!
-//! The ActorRouter manages local account actors and forwards relevant
-//! messages to the node it's running on. Actor hierarchy (conceptually):
-//! ```text
-//! ActorRouter (node root)
-//!  └── AccountActor (one per account)
-//!       └── CardActor (one per card)
-//! ```
+//! ActorRouter → Node via channel
+//! AccountActor → ActorRouter via Actix messages
+//! CardActor → AccountActor → ActorRouter via Actix messages
 
 use actix::prelude::*;
 use std::collections::HashMap;
 
+use tokio::sync::mpsc;
+
 use super::account::AccountActor;
-use super::types::{ActorMsg, RouterCmd};
+use super::types::{ActorEvent, ActorMsg, Operation, RouterCmd};
+
+/// Internal messages coming from AccountActor or CardActor back to ActorRouter.
+/// These are NOT seen by the Node directly.
+#[derive(Debug, Message)]
+#[rtype(result = "()")]
+pub enum RouterInternalMsg {
+    OperationReady(Operation),
+    CardUpdated { card_id: u64, delta: f64 },
+    Debug(String),
+}
 
 /// Router actor that owns and routes to AccountActor instances.
-///
-/// Responsibilities:
-/// - create or lookup local AccountActor instances,
-/// - route messages to accounts/cards,
-/// - communicate business logic to the node
 pub struct ActorRouter {
-    /// Map: account_id -> AccountActor address
+    /// account_id -> AccountActor address
     pub accounts: HashMap<u64, Addr<AccountActor>>,
+
+    /// Channel ActorRouter → Node
+    pub event_tx: mpsc::Sender<ActorEvent>,
 }
 
 impl ActorRouter {
-    pub fn new() -> Self {
+    pub fn new(event_tx: mpsc::Sender<ActorEvent>) -> Self {
         Self {
             accounts: HashMap::new(),
+            event_tx,
         }
     }
 
-    /// Return an existing AccountActor or create a new one.
+    /// Helper to emit an event to the Node.
+    fn emit(&self, ev: ActorEvent) {
+        let _ = self.event_tx.try_send(ev);
+    }
+
+    /// Return or create an AccountActor.
     fn get_or_create_account(
         &mut self,
         account_id: u64,
@@ -42,8 +54,11 @@ impl ActorRouter {
             return addr.clone();
         }
 
-        println!("[Router] Creating new local account id={}", account_id);
+        println!("[Router] Creating local account {}", account_id);
+
+        // AccountActor receives the router address (NOT the channel)
         let addr = AccountActor::new(account_id, ctx.address()).start();
+
         self.accounts.insert(account_id, addr.clone());
         addr
     }
@@ -53,25 +68,21 @@ impl Actor for ActorRouter {
     type Context = Context<Self>;
 
     fn started(&mut self, _ctx: &mut Self::Context) {
-        println!(
-            "[Router] ActorRouter started with {} accounts",
-            self.accounts.len(),
-        );
+        println!("[Router] Started with {} accounts", self.accounts.len());
     }
 }
 
+/// Handle commands sent from Node → Router
 impl Handler<RouterCmd> for ActorRouter {
     type Result = ();
 
     fn handle(&mut self, msg: RouterCmd, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
-            // Create or forward a message to an account
             RouterCmd::SendToAccount { account_id, msg } => {
                 let acc = self.get_or_create_account(account_id, ctx);
                 acc.do_send(msg);
             }
 
-            // Send a message to a specific card within an account
             RouterCmd::SendToCard {
                 account_id,
                 card_id,
@@ -81,9 +92,29 @@ impl Handler<RouterCmd> for ActorRouter {
                 acc.do_send(ActorMsg::CardMessage { card_id, msg });
             }
 
-            // List active local accounts
             RouterCmd::ListAccounts => {
-                println!("[Router] Local accounts: {:?}", self.accounts.keys());
+                println!("[Router] Accounts: {:?}", self.accounts.keys());
+            }
+        }
+    }
+}
+
+/// Handle messages from AccountActor / CardActor → ActorRouter
+impl Handler<RouterInternalMsg> for ActorRouter {
+    type Result = ();
+
+    fn handle(&mut self, msg: RouterInternalMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        match msg {
+            RouterInternalMsg::OperationReady(op) => {
+                self.emit(ActorEvent::OperationReady { operation: op });
+            }
+
+            RouterInternalMsg::CardUpdated { card_id, delta } => {
+                self.emit(ActorEvent::CardUpdated { card_id, delta });
+            }
+
+            RouterInternalMsg::Debug(s) => {
+                self.emit(ActorEvent::Debug(s));
             }
         }
     }
