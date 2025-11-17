@@ -8,25 +8,69 @@ use crate::actors::types::{ActorEvent, RouterCmd};
 use crate::{
     actors::ActorRouter,
     errors::{AppError, AppResult},
+    node::station::{NodeToStationMsg, StationToNodeMsg},
 };
 use actix::{Actor, Addr};
 use std::{collections::HashMap, future::pending, net::SocketAddr};
 use tokio::sync::{mpsc, oneshot};
 
+/// Internal state associated with a charge request coming from a station pump.
+///
+/// We store this so that:
+/// - after a successful limit check we can build `ApplyCharge`,
+/// - after `ChargeApplied` we know which original request_id to confirm
+///   back to the station.
+#[derive(Debug, Clone)]
+struct StationPendingCharge {
+    account_id: u64,
+    card_id: u64,
+    amount: f64,
+}
+
+/// Leader node.
+///
+/// The Leader wires together:
+/// - the TCP ConnectionManager (network),
+/// - the local ActorRouter (Actix),
+/// - the station simulator (stdin-driven pumps).
+///
+/// Flow for a charge coming from a pump:
+/// 1. Station sends `StationToNodeMsg::ChargeRequest`.
+/// 2. Leader stores `StationPendingCharge` keyed by `request_id`.
+/// 3. Leader sends `RouterCmd::AuthorizeCharge` to ActorRouter.
+/// 4. Actor layer emits:
+///    - `ActorEvent::LimitCheckResult` (allowed / denied),
+///      and if allowed:
+///    - `ActorEvent::ChargeApplied` when the charge is actually applied.
+/// 5. Leader converts these actor events into a single `NodeToStationMsg::ChargeResult`
+///    back to the station.
 pub struct Leader {
     id: u64,
     coords: (f64, f64),
     max_conns: usize,
     replicas: Vec<SocketAddr>,
+
+    /// Consensus operations (not really used yet, but kept for future logic).
     operations: HashMap<u8, Operation>,
 
-    // Network
+    // ===== Network (ConnectionManager) =====
     connection_tx: mpsc::Sender<ManagerCmd>,
     connection_rx: mpsc::Receiver<InboundEvent>,
 
-    // ActorRouter → Leader
+    // ===== ActorRouter → Leader =====
     actor_rx: mpsc::Receiver<ActorEvent>,
 
+    // ===== Station ↔ Leader =====
+    // Station → Leader (commands from pumps)
+    station_cmd_rx: mpsc::Receiver<StationToNodeMsg>,
+    // Leader → Station (final results)
+    station_result_tx: mpsc::Sender<NodeToStationMsg>,
+
+    /// In-flight charge requests coming from the station.
+    /// Key = `request_id` chosen by the station simulator.
+    station_requests: HashMap<u64, StationPendingCharge>,
+
+    /// Actix ActorRouter handle.
     router: Addr<ActorRouter>,
 }
 
@@ -36,7 +80,7 @@ impl Node for Leader {
     // ==========================
     async fn handle_accept(&mut self, op: Operation) {
         println!("[Leader] handle_accept({:?})", op);
-        // TODO
+        // TODO: integrate with real consensus protocol.
     }
 
     async fn handle_learn(&mut self, op: Operation) {
@@ -73,29 +117,111 @@ impl Node for Leader {
     // ==========================
     async fn handle_actor_event(&mut self, event: ActorEvent) {
         match event {
+            // ---- Limit check result (authorization) ----
             ActorEvent::LimitCheckResult {
                 request_id,
                 allowed,
                 error,
-            } => match error {
-                None => {
-                    println!(
-                        "[Leader][actor] LimitCheckResult: request_id={} allowed={}",
-                        request_id, allowed
-                    );
-                }
-                Some(err) => {
-                    println!(
-                        "[Leader][actor] LimitCheckResult: request_id={} allowed={} error={:?}",
-                        request_id, allowed, err
-                    );
-                }
-            },
+            } => {
+                // Is this a request coming from the station?
+                let pending = match self.station_requests.get(&request_id) {
+                    Some(p) => p.clone(),
+                    None => {
+                        // Could be an internal / admin request not related to pumps.
+                        match &error {
+                            None => {
+                                println!(
+                                    "[Leader][actor] LimitCheckResult (non-station): request_id={} allowed={}",
+                                    request_id, allowed
+                                );
+                            }
+                            Some(err) => {
+                                println!(
+                                    "[Leader][actor] LimitCheckResult (non-station): request_id={} allowed={} error={:?}",
+                                    request_id, allowed, err
+                                );
+                            }
+                        }
+                        return;
+                    }
+                };
 
-            ActorEvent::ChargeApplied { operation } => {
-                println!("[Leader][actor] ChargeApplied: operation={:?}", operation);
+                if !allowed {
+                    println!(
+                        "[Leader][actor→station] request_id={} -> DENIED (error={:?})",
+                        request_id, error
+                    );
+
+                    // We stop here (no ApplyCharge). Reply to station and forget the request.
+                    self.station_requests.remove(&request_id);
+
+                    let msg = NodeToStationMsg::ChargeResult {
+                        request_id,
+                        allowed: false,
+                        error,
+                    };
+
+                    if let Err(e) = self.station_result_tx.send(msg).await {
+                        eprintln!(
+                            "[Leader][actor→station][ERROR] failed to send DENIED result: {}",
+                            e
+                        );
+                    }
+                } else {
+                    println!(
+                        "[Leader][actor] LimitCheckResult: request_id={} allowed=true -> ApplyCharge",
+                        request_id
+                    );
+
+                    // Build ApplyCharge from the pending state we stored when the pump requested.
+                    self.router.do_send(RouterCmd::ApplyCharge {
+                        account_id: pending.account_id,
+                        card_id: pending.card_id,
+                        amount: pending.amount,
+                        timestamp: 0,      // TODO: real timestamp if needed
+                        op_id: request_id, // correlate op_id == request_id
+                        request_id,
+                    });
+                    // We DO NOT reply to station yet:
+                    // wait for ChargeApplied to confirm that the state mutation actually happened.
+                }
             }
 
+            // ---- Charge was effectively applied on actors side ----
+            ActorEvent::ChargeApplied { operation } => {
+                println!("[Leader][actor] ChargeApplied: operation={:?}", operation);
+
+                // Only care if `op_id` matches a station request.
+                if let crate::actors::types::Operation::Charge { op_id, .. } = operation {
+                    if self.station_requests.remove(&op_id).is_some() {
+                        println!(
+                            "[Leader][actor→station] request_id={} -> CHARGE CONFIRMED",
+                            op_id
+                        );
+                        let msg = NodeToStationMsg::ChargeResult {
+                            request_id: op_id,
+                            allowed: true,
+                            error: None,
+                        };
+                        if let Err(e) = self.station_result_tx.send(msg).await {
+                            eprintln!(
+                                "[Leader][actor→station][ERROR] failed to send OK result: {}",
+                                e
+                            );
+                        }
+                    } else {
+                        // ChargeApplied not initiated by the station (or already cleaned up).
+                        println!(
+                            "[Leader][actor] ChargeApplied with op_id={} not tracked as station request",
+                            op_id
+                        );
+                    }
+                } else {
+                    println!("[Leader][actor] ChargeApplied with non-Charge operation");
+                }
+            }
+
+            // ---- Other actor events (limits, debug, etc.) ----
             ActorEvent::LimitUpdated {
                 scope,
                 account_id,
@@ -133,8 +259,10 @@ impl Node for Leader {
     async fn run_loop(&mut self) -> AppResult<()> {
         let mut net_open = true;
         let mut actors_open = true;
+        let mut station_open = true;
 
-        while net_open || actors_open {
+        while net_open || actors_open || station_open {
+            // Build futures without borrowing &mut self multiple times.
             let net_fut = if net_open {
                 Some(self.connection_rx.recv())
             } else {
@@ -147,9 +275,15 @@ impl Node for Leader {
                 None
             };
 
+            let station_fut = if station_open {
+                Some(self.station_cmd_rx.recv())
+            } else {
+                None
+            };
+
             tokio::select! {
                 // ======================
-                // Network event
+                // Network events
                 // ======================
                 maybe_evt = async {
                     match net_fut {
@@ -163,7 +297,8 @@ impl Node for Leader {
                                 InboundEvent::Received { peer: _, payload } => {
                                     match NodeMessage::try_from(payload) {
                                         Ok(msg) => self.handle_node_msg(msg).await,
-                                        Err(e) => eprintln!("[WARN][Leader] invalid msg: {:?}", e),
+                                        Err(e) =>
+                                            eprintln!("[WARN][Leader] invalid msg from network: {:?}", e),
                                     }
                                 }
                                 InboundEvent::ConnClosed { peer } => {
@@ -179,7 +314,7 @@ impl Node for Leader {
                 }
 
                 // ======================
-                // Actor event
+                // Actor events
                 // ======================
                 maybe_event = async {
                     match actor_fut {
@@ -195,6 +330,24 @@ impl Node for Leader {
                         }
                     }
                 }
+
+                // ======================
+                // Station → Leader events
+                // ======================
+                maybe_station = async {
+                    match station_fut {
+                        Some(fut) => fut.await,
+                        None => None
+                    }
+                }, if station_open => {
+                    match maybe_station {
+                        Some(msg) => self.handle_station_msg(msg).await,
+                        None => {
+                            println!("[Leader] Station command channel closed");
+                            station_open = false;
+                        }
+                    }
+                }
             }
         }
 
@@ -203,106 +356,96 @@ impl Node for Leader {
 }
 
 impl Leader {
-    /// Send some test commands to the ActorRouter on startup.
+    /// Handle a message coming from the station (pump simulator).
     ///
-    /// This is just a synthetic workload to exercise:
-    /// - account/card creation,
-    /// - limit updates,
-    /// - limit checks that pass/fail,
-    /// - charge application.
-    async fn send_smoke_test_commands(&self) {
-        // Fixed ids for testing
-        let account1 = 1;
-        let account2 = 2;
+    /// Currently we only support `ChargeRequest`, which represents:
+    /// "please authorize + apply this charge for (account, card, amount)".
+    async fn handle_station_msg(&mut self, msg: StationToNodeMsg) {
+        match msg {
+            StationToNodeMsg::ChargeRequest {
+                pump_id,
+                account_id,
+                card_id,
+                amount,
+                request_id,
+            } => {
+                println!(
+                    "[Leader][station] pump={} -> ChargeRequest(account={}, card={}, amount={}, request_id={})",
+                    pump_id, account_id, card_id, amount, request_id
+                );
 
-        let card_a1_1 = 10;
-        let card_a1_2 = 11;
-        let card_a2_1 = 20;
+                // Store the pending charge so we can:
+                // - build ApplyCharge after LimitCheckResult,
+                // - know what to confirm back when ChargeApplied fires.
+                self.station_requests.insert(
+                    request_id,
+                    StationPendingCharge {
+                        account_id,
+                        card_id,
+                        amount,
+                    },
+                );
 
-        // 1) Set an account-wide limit for account1
-        self.router.do_send(RouterCmd::UpdateAccountLimit {
-            account_id: account1,
-            new_limit: Some(1_000.0),
-            request_id: 1,
-        });
-
-        // 2) Set a card limit for card_a1_1 (account1)
-        self.router.do_send(RouterCmd::UpdateCardLimit {
-            account_id: account1,
-            card_id: card_a1_1,
-            new_limit: Some(300.0),
-            request_id: 2,
-        });
-
-        // 3) Authorization that SHOULD PASS (100 <= 300 and within account limit)
-        self.router.do_send(RouterCmd::AuthorizeCharge {
-            account_id: account1,
-            card_id: card_a1_1,
-            amount: 100.0,
-            request_id: 3,
-        });
-
-        // 4) Authorization that SHOULD FAIL on CARD LIMIT (400 > 300)
-        self.router.do_send(RouterCmd::AuthorizeCharge {
-            account_id: account1,
-            card_id: card_a1_1,
-            amount: 400.0,
-            request_id: 4,
-        });
-
-        // 5) Apply a charge directly (no limit check here, just state mutation)
-        self.router.do_send(RouterCmd::ApplyCharge {
-            account_id: account1,
-            card_id: card_a1_1,
-            amount: 50.0,
-            timestamp: 0,   // you can plug real timestamps later
-            op_id: 42,
-            request_id: 5,
-        });
-
-        // 6) Try to set an account limit BELOW already consumed (should fail later)
-        self.router.do_send(RouterCmd::UpdateAccountLimit {
-            account_id: account1,
-            new_limit: Some(10.0),
-            request_id: 6,
-        });
-
-        // 7) Exercise a second account + card (no limits → always allowed)
-        self.router.do_send(RouterCmd::AuthorizeCharge {
-            account_id: account2,
-            card_id: card_a2_1,
-            amount: 500.0,
-            request_id: 7,
-        });
-
-        // 8) Another card on account1, no card limit explicitly set (only account limit applies)
-        self.router.do_send(RouterCmd::AuthorizeCharge {
-            account_id: account1,
-            card_id: card_a1_2,
-            amount: 200.0,
-            request_id: 8,
-        });
-
-        // 9) List accounts to see what got created
-        self.router.do_send(RouterCmd::ListAccounts);
+                // Trigger limit check in the actor system.
+                self.router.do_send(RouterCmd::AuthorizeCharge {
+                    account_id,
+                    card_id,
+                    amount,
+                    request_id,
+                });
+            }
+        }
     }
 
+    /// Start a Leader node:
+    ///
+    /// - boots the ConnectionManager (TCP),
+    /// - boots the ActorRouter in a dedicated Actix system thread,
+    /// - spawns the station simulator with `pumps` pumps on stdin,
+    /// - then enters the main async event loop.
     pub async fn start(
         address: SocketAddr,
         coords: (f64, f64),
         replicas: Vec<SocketAddr>,
         max_conns: usize,
+        pumps: usize,
     ) -> AppResult<()> {
-        // Start the ConnectionManager
+        // -------------------------
+        // 1) Network (ConnectionManager)
+        // -------------------------
         let (connection_tx, connection_rx) = ConnectionManager::start(address, max_conns);
 
-        // Create ActorRouter → Leader channel
+        // -------------------------
+        // 2) ActorRouter → Leader channel
+        // -------------------------
         let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
 
-        // oneshot to retrieve router address
+        // -------------------------
+        // 3) Station ↔ Leader channels
+        // -------------------------
+        let (station_cmd_tx, station_cmd_rx) = mpsc::channel::<StationToNodeMsg>(128);
+        let (station_result_tx, station_result_rx) = mpsc::channel::<NodeToStationMsg>(128);
+
+        // Spawn the station simulator (stdin-driven pumps).
+        // `pumps` is the number of independent pump IDs allowed.
+        let station_cmd_tx_for_station = station_cmd_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::node::station::run_station_simulator(
+                pumps,
+                station_cmd_tx_for_station,
+                station_result_rx,
+            )
+            .await
+            {
+                eprintln!("[Station] simulator error: {e:?}");
+            }
+        });
+
+        // -------------------------
+        // 4) Launch Actix + ActorRouter on a separate OS thread
+        // -------------------------
         let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
 
-        // Spawn Actix system
         std::thread::spawn(move || {
             let sys = actix::System::new();
             sys.block_on(async move {
@@ -316,7 +459,9 @@ impl Leader {
             });
         });
 
-        // Construct Leader
+        // -------------------------
+        // 5) Build Leader
+        // -------------------------
         let mut leader = Self {
             id: rand::random::<u64>(),
             coords,
@@ -329,15 +474,16 @@ impl Leader {
 
             actor_rx,
 
+            station_cmd_rx,
+            station_result_tx,
+            station_requests: HashMap::new(),
+
             router: router_rx.await.map_err(|e| AppError::ActorSystem {
                 details: format!("failed to receive ActorRouter address: {e}"),
             })?,
         };
 
-        // === Synthetic smoke-test traffic to the ActorRouter ===
-        leader.send_smoke_test_commands().await;
-
-        // Start event loop
+        // Enter main event loop.
         leader.run().await
     }
 }
