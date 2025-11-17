@@ -1,19 +1,11 @@
 use clap::Parser;
 use std::net::SocketAddr;
 mod actors;
-mod connection_manager;
 mod errors;
-mod leader;
 mod node;
-mod node_message;
-mod node_role;
-mod operation;
-mod replica;
-mod serial_error;
 
 use errors::{AppError, AppResult};
-use leader::Leader;
-use node::{Node, NodeRole};
+use node::{Leader, NodeRole, Replica};
 
 /// YPF Ruta — Distributed server binary
 ///
@@ -119,8 +111,10 @@ async fn run() -> AppResult<()> {
     match role {
         NodeRole::Leader => Leader::start(address, coords, replica_addrs, args.max_conns).await,
         NodeRole::Replica => {
-            todo!()
+            // FIXME: leader_addr won't ever be none if a replica is started!
+            Replica::start(address, coords, leader_addr, replica_addrs, args.max_conns).await
         }
+
         NodeRole::Station => {
             todo!()
         }

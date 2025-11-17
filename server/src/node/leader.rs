@@ -1,5 +1,5 @@
+/* use super::connection_manager::{ConnectionManager, InboundEvent, ManagerCmd};
 use crate::actors::ActorRouter;
-use crate::connection_manager::{ConnectionManager, InboundEvent, ManagerCmd};
 use crate::errors::{AppError, AppResult};
 use crate::node::Node;
 use crate::operation::Operation;
@@ -7,17 +7,17 @@ use actix::{Actor, Addr};
 use std::collections::HashMap;
 use std::future::pending;
 use std::net::SocketAddr;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot}; */
 
 pub struct Leader {
-    pub id: u64,
-    pub coords: (f64, f64),
-    pub max_conns: usize,
-    pub replicas: Vec<SocketAddr>,
-    pub operations: HashMap<u8, Operation>,
-    pub connection_tx: mpsc::Sender<ManagerCmd>,
-    pub connection_rx: mpsc::Receiver<InboundEvent>,
-    pub router: Addr<ActorRouter>,
+    id: u64,
+    coords: (f64, f64),
+    max_conns: usize,
+    replicas: Vec<SocketAddr>,
+    operations: HashMap<u8, Operation>,
+    connection_tx: mpsc::Sender<ManagerCmd>,
+    connection_rx: mpsc::Receiver<InboundEvent>,
+    router: Addr<ActorRouter>,
 }
 
 impl Node for Leader {
