@@ -1,10 +1,16 @@
 use super::{
     connection_manager::{ConnectionManager, InboundEvent, ManagerCmd},
     node::Node,
-    operation::Operation,
     node_message::NodeMessage,
+    operation::Operation,
 };
-use crate::actors::types::ActorEvent;
+use crate::actors::types::{
+    ActorEvent,
+    LimitCheckError,
+    LimitScope,
+    LimitUpdateError,
+    RouterCmd,
+};
 use crate::{
     actors::ActorRouter,
     errors::{AppError, AppResult},
@@ -73,15 +79,56 @@ impl Node for Leader {
     // ==========================
     async fn handle_actor_event(&mut self, event: ActorEvent) {
         match event {
-            ActorEvent::OperationReady { operation } => {
-                println!("[Leader] OperationReady from ActorRouter: {:?}", operation);
-                // TODO: Charge → accept, CheckLimit → respond locally
+            ActorEvent::LimitCheckResult {
+                request_id,
+                allowed,
+                error,
+            } => match error {
+                None => {
+                    println!(
+                        "[Leader][actor] LimitCheckResult: request_id={} allowed={}",
+                        request_id, allowed
+                    );
+                }
+                Some(err) => {
+                    println!(
+                        "[Leader][actor] LimitCheckResult: request_id={} allowed={} error={:?}",
+                        request_id, allowed, err
+                    );
+                }
+            },
+
+            ActorEvent::ChargeApplied { operation } => {
+                println!("[Leader][actor] ChargeApplied: operation={:?}", operation);
             }
-            ActorEvent::CardUpdated { card_id, delta } => {
-                println!("[Leader] CardUpdated card={} delta={}", card_id, delta);
+
+            ActorEvent::LimitUpdated {
+                scope,
+                account_id,
+                card_id,
+                new_limit,
+            } => {
+                println!(
+                    "[Leader][actor] LimitUpdated: scope={:?} account_id={} card_id={:?} new_limit={:?}",
+                    scope, account_id, card_id, new_limit
+                );
             }
+
+            ActorEvent::LimitUpdateFailed {
+                scope,
+                account_id,
+                card_id,
+                request_id,
+                error,
+            } => {
+                println!(
+                    "[Leader][actor] LimitUpdateFailed: scope={:?} account_id={} card_id={:?} request_id={} error={:?}",
+                    scope, account_id, card_id, request_id, error
+                );
+            }
+
             ActorEvent::Debug(msg) => {
-                println!("[Leader][actor] {msg}");
+                println!("[Leader][actor][debug] {}", msg);
             }
         }
     }
@@ -90,86 +137,168 @@ impl Node for Leader {
     // MAIN LOOP IMPLEMENTATION
     // ==========================
     async fn run_loop(&mut self) -> AppResult<()> {
-    let mut net_open = true;
-    let mut actors_open = true;
+        let mut net_open = true;
+        let mut actors_open = true;
 
-    while net_open || actors_open {
-        let net_fut = if net_open {
-            Some(self.connection_rx.recv())
-        } else {
-            None
-        };
+        while net_open || actors_open {
+            let net_fut = if net_open {
+                Some(self.connection_rx.recv())
+            } else {
+                None
+            };
 
-        let actor_fut = if actors_open {
-            Some(self.actor_rx.recv())
-        } else {
-            None
-        };
+            let actor_fut = if actors_open {
+                Some(self.actor_rx.recv())
+            } else {
+                None
+            };
 
-        tokio::select! {
-            // ======================
-            // Network event
-            // ======================
-            maybe_evt = async {
-                match net_fut {
-                    Some(fut) => fut.await,
-                    None => None
-                }
-            }, if net_open => {
-                match maybe_evt {
-                    Some(evt) => {
-                        match evt {
-                            InboundEvent::Received { peer: _, payload } => {
-                                match NodeMessage::try_from(payload) {
-                                    Ok(msg) => self.handle_node_msg(msg).await,
-                                    Err(e) => eprintln!("[WARN][Leader] invalid msg: {:?}", e),
+            tokio::select! {
+                // ======================
+                // Network event
+                // ======================
+                maybe_evt = async {
+                    match net_fut {
+                        Some(fut) => fut.await,
+                        None => None
+                    }
+                }, if net_open => {
+                    match maybe_evt {
+                        Some(evt) => {
+                            match evt {
+                                InboundEvent::Received { peer: _, payload } => {
+                                    match NodeMessage::try_from(payload) {
+                                        Ok(msg) => self.handle_node_msg(msg).await,
+                                        Err(e) => eprintln!("[WARN][Leader] invalid msg: {:?}", e),
+                                    }
+                                }
+                                InboundEvent::ConnClosed { peer } => {
+                                    println!("[Leader] Connection closed by {}", peer);
                                 }
                             }
-                            InboundEvent::ConnClosed { peer } => {
-                                println!("[Leader] Connection closed by {}", peer);
-                            }
+                        }
+                        None => {
+                            println!("[Leader] Network channel closed");
+                            net_open = false;
                         }
                     }
-                    None => {
-                        println!("[Leader] Network channel closed");
-                        net_open = false;
-                    }
                 }
-            }
 
-            // ======================
-            // Actor event
-            // ======================
-            maybe_event = async {
-                match actor_fut {
-                    Some(fut) => fut.await,
-                    None => None
-                }
-            }, if actors_open => {
-                match maybe_event {
-                    Some(evt) => self.handle_actor_event(evt).await,
-                    None => {
-                        println!("[Leader] Actor event channel closed");
-                        actors_open = false;
+                // ======================
+                // Actor event
+                // ======================
+                maybe_event = async {
+                    match actor_fut {
+                        Some(fut) => fut.await,
+                        None => None
+                    }
+                }, if actors_open => {
+                    match maybe_event {
+                        Some(evt) => self.handle_actor_event(evt).await,
+                        None => {
+                            println!("[Leader] Actor event channel closed");
+                            actors_open = false;
+                        }
                     }
                 }
             }
         }
+
+        Ok(())
     }
-
-    Ok(())
-}
-
 }
 
 impl Leader {
+    /// Send some test commands to the ActorRouter on startup.
+    ///
+    /// This is just a synthetic workload to exercise:
+    /// - account/card creation,
+    /// - limit updates,
+    /// - limit checks that pass/fail,
+    /// - charge application.
+    async fn send_smoke_test_commands(&self) {
+        // Fixed ids for testing
+        let account1 = 1;
+        let account2 = 2;
+
+        let card_a1_1 = 10;
+        let card_a1_2 = 11;
+        let card_a2_1 = 20;
+
+        // 1) Set an account-wide limit for account1
+        self.router.do_send(RouterCmd::UpdateAccountLimit {
+            account_id: account1,
+            new_limit: Some(1_000.0),
+            request_id: 1,
+        });
+
+        // 2) Set a card limit for card_a1_1 (account1)
+        self.router.do_send(RouterCmd::UpdateCardLimit {
+            account_id: account1,
+            card_id: card_a1_1,
+            new_limit: Some(300.0),
+            request_id: 2,
+        });
+
+        // 3) Authorization that SHOULD PASS (100 <= 300 and within account limit)
+        self.router.do_send(RouterCmd::AuthorizeCharge {
+            account_id: account1,
+            card_id: card_a1_1,
+            amount: 100.0,
+            request_id: 3,
+        });
+
+        // 4) Authorization that SHOULD FAIL on CARD LIMIT (400 > 300)
+        self.router.do_send(RouterCmd::AuthorizeCharge {
+            account_id: account1,
+            card_id: card_a1_1,
+            amount: 400.0,
+            request_id: 4,
+        });
+
+        // 5) Apply a charge directly (no limit check here, just state mutation)
+        self.router.do_send(RouterCmd::ApplyCharge {
+            account_id: account1,
+            card_id: card_a1_1,
+            amount: 50.0,
+            timestamp: 0,   // you can plug real timestamps later
+            op_id: 42,
+            request_id: 5,
+        });
+
+        // 6) Try to set an account limit BELOW already consumed (should fail later)
+        self.router.do_send(RouterCmd::UpdateAccountLimit {
+            account_id: account1,
+            new_limit: Some(10.0),
+            request_id: 6,
+        });
+
+        // 7) Exercise a second account + card (no limits → always allowed)
+        self.router.do_send(RouterCmd::AuthorizeCharge {
+            account_id: account2,
+            card_id: card_a2_1,
+            amount: 500.0,
+            request_id: 7,
+        });
+
+        // 8) Another card on account1, no card limit explicitly set (only account limit applies)
+        self.router.do_send(RouterCmd::AuthorizeCharge {
+            account_id: account1,
+            card_id: card_a1_2,
+            amount: 200.0,
+            request_id: 8,
+        });
+
+        // 9) List accounts to see what got created
+        self.router.do_send(RouterCmd::ListAccounts);
+    }
+
     pub async fn start(
         address: SocketAddr,
         coords: (f64, f64),
         replicas: Vec<SocketAddr>,
         max_conns: usize,
     ) -> AppResult<()> {
-
         // Start the ConnectionManager
         let (connection_tx, connection_rx) = ConnectionManager::start(address, max_conns);
 
@@ -210,6 +339,9 @@ impl Leader {
                 details: format!("failed to receive ActorRouter address: {e}"),
             })?,
         };
+
+        // === Synthetic smoke-test traffic to the ActorRouter ===
+        leader.send_smoke_test_commands().await;
 
         // Start event loop
         leader.run().await

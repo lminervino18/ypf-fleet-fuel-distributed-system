@@ -1,16 +1,16 @@
 use super::{
     connection_manager::{ConnectionManager, InboundEvent, ManagerCmd},
     node::Node,
-    operation::Operation,
     node_message::NodeMessage,
+    operation::Operation,
 };
-use crate::actors::types::ActorEvent;
+use crate::actors::types::{ActorEvent, LimitCheckError, LimitScope, LimitUpdateError};
 use crate::{
     actors::ActorRouter,
     errors::{AppError, AppResult},
 };
 use actix::{Actor, Addr};
-    use std::{collections::HashMap, future::pending, net::SocketAddr};
+use std::{collections::HashMap, future::pending, net::SocketAddr};
 use tokio::sync::{mpsc, oneshot};
 
 pub struct Replica {
@@ -65,15 +65,56 @@ impl Node for Replica {
 
     async fn handle_actor_event(&mut self, event: ActorEvent) {
         match event {
-            ActorEvent::OperationReady { operation } => {
-                println!("[Replica] OperationReady {:?}", operation);
-                // TODO: usually replicas forward replicated ops to leader
+            ActorEvent::LimitCheckResult {
+                request_id,
+                allowed,
+                error,
+            } => match error {
+                None => {
+                    println!(
+                        "[Leader][actor] LimitCheckResult: request_id={} allowed={}",
+                        request_id, allowed
+                    );
+                }
+                Some(err) => {
+                    println!(
+                        "[Leader][actor] LimitCheckResult: request_id={} allowed={} error={:?}",
+                        request_id, allowed, err
+                    );
+                }
+            },
+
+            ActorEvent::ChargeApplied { operation } => {
+                println!("[Leader][actor] ChargeApplied: operation={:?}", operation);
             }
-            ActorEvent::CardUpdated { card_id, delta } => {
-                println!("[Replica] CardUpdated card={} delta={}", card_id, delta);
+
+            ActorEvent::LimitUpdated {
+                scope,
+                account_id,
+                card_id,
+                new_limit,
+            } => {
+                println!(
+                "[Leader][actor] LimitUpdated: scope={:?} account_id={} card_id={:?} new_limit={:?}",
+                scope, account_id, card_id, new_limit
+            );
             }
+
+            ActorEvent::LimitUpdateFailed {
+                scope,
+                account_id,
+                card_id,
+                request_id,
+                error,
+            } => {
+                println!(
+                "[Leader][actor] LimitUpdateFailed: scope={:?} account_id={} card_id={:?} request_id={} error={:?}",
+                scope, account_id, card_id, request_id, error
+            );
+            }
+
             ActorEvent::Debug(msg) => {
-                println!("[Replica][actor] {}", msg);
+                println!("[Leader][actor][debug] {}", msg);
             }
         }
     }
@@ -163,7 +204,6 @@ impl Replica {
         other_replicas: Vec<SocketAddr>,
         max_conns: usize,
     ) -> AppResult<()> {
-
         // Start network subsystem
         let (connection_tx, connection_rx) = ConnectionManager::start(address, max_conns);
 
