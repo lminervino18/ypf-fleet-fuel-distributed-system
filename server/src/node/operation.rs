@@ -10,7 +10,7 @@ impl TryFrom<&[u8]> for Operation {
 
     fn try_from(payload: &[u8]) -> Result<Self, AppError> {
         Ok(Operation {
-            id: u32::from_ne_bytes(payload[0..5].try_into().map_err(|e| {
+            id: u32::from_be_bytes(payload[0..4].try_into().map_err(|e| {
                 AppError::InvalidData {
                     details: format!("not enough bytes to deserialize operation: {e}"),
                 }

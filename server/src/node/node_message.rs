@@ -35,7 +35,7 @@ impl TryFrom<Vec<u8>> for NodeMessage {
                 op: payload[5..].try_into()?,
             }),
             2u8 => Ok(Ack {
-                id: u32::from_ne_bytes(payload[1..5].try_into().map_err(|e| {
+                id: u32::from_be_bytes(payload[1..5].try_into().map_err(|e| {
                     AppError::InvalidData {
                         details: format!("not enough bytes to deserialize ACK: {e}"),
                     }
@@ -79,7 +79,7 @@ mod test {
 
     #[test]
     fn deserialize_valid_operation_request_node_msg() {
-        let msg_bytes = [0x00, 0x01].to_vec();
+        let msg_bytes = [0x00, 0x00, 0x00, 0x00, 0x01].to_vec();
         let node_msg: NodeMessage = msg_bytes.try_into().unwrap();
         let expected = NodeMessage::Request {
             op: Operation { id: 1 },
@@ -93,7 +93,7 @@ mod test {
             op: Operation { id: 1 },
         };
         let msg_bytes: Vec<u8> = node_msg.into();
-        let expected = [0x00, 0x01].to_vec();
+        let expected = [0x00, 0x00, 0x00, 0x00, 0x01].to_vec();
         assert_eq!(msg_bytes, expected);
     }
 }
