@@ -18,7 +18,7 @@ pub enum NodeMessage {
 
     /// Acknowledgement reply sent by a replica after receiving a valid `Log` message from the
     /// coordinator.
-    ACK { id: u32 },
+    Ack { id: u32 },
 }
 
 use NodeMessage::*;
@@ -34,7 +34,7 @@ impl TryFrom<Vec<u8>> for NodeMessage {
             1u8 => Ok(Log {
                 op: payload[5..].try_into()?,
             }),
-            2u8 => Ok(ACK {
+            2u8 => Ok(Ack {
                 id: u32::from_ne_bytes(payload[1..5].try_into().map_err(|e| {
                     AppError::InvalidData {
                         details: format!("not enough bytes to deserialize ACK: {e}"),
@@ -63,7 +63,7 @@ impl From<NodeMessage> for Vec<u8> {
                 srl.extend(op_srl);
                 srl
             }
-            NodeMessage::ACK { id } => {
+            NodeMessage::Ack { id } => {
                 let mut srl = vec![2u8];
                 let id_srl = id.to_be_bytes().to_vec();
                 srl.extend(id_srl);
@@ -78,18 +78,22 @@ mod test {
     use super::*;
 
     #[test]
-    fn deserialize_valid_accept_operation_node_msg() {
-        let msg_bytes = [0x01, 0x01].to_vec();
+    fn deserialize_valid_operation_request_node_msg() {
+        let msg_bytes = [0x00, 0x01].to_vec();
         let node_msg: NodeMessage = msg_bytes.try_into().unwrap();
-        let expected = NodeMessage::Accept(Operation { id: 1 });
+        let expected = NodeMessage::Request {
+            op: Operation { id: 1 },
+        };
         assert_eq!(node_msg, expected);
     }
 
     #[test]
-    fn serialize_accept_operation_node_msg() {
-        let node_msg = NodeMessage::Accept(Operation { id: 1 });
+    fn serialize_operation_request_node_msg() {
+        let node_msg = NodeMessage::Request {
+            op: Operation { id: 1 },
+        };
         let msg_bytes: Vec<u8> = node_msg.into();
-        let expected = [0x01, 0x01].to_vec();
+        let expected = [0x00, 0x01].to_vec();
         assert_eq!(msg_bytes, expected);
     }
 }

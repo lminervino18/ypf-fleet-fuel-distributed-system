@@ -24,27 +24,22 @@ pub enum NodeRole {
 /// The Node is responsible for wiring background tasks that bridge the async
 /// Tokio runtime (network IO) and the Actix actor system (application logic).
 pub trait Node {
-    async fn handle_accept(&mut self, op: Operation);
-    async fn handle_learn(&mut self, op: Operation);
-    async fn handle_commit(&mut self, op: Operation);
-    async fn handle_finished(&mut self, op: Operation);
+    async fn handle_request(&mut self, op: Operation);
+    async fn handle_log(&mut self, op: Operation);
+    async fn handle_ack(&mut self, id: u32);
     async fn recv_node_msg(&mut self) -> Option<InboundEvent>;
 
     async fn handle_node_msg(&mut self, msg: NodeMessage) {
         match msg {
-            NodeMessage::Accept(op) => {
-                self.handle_accept(op).await;
+            NodeMessage::Request { op } => {
+                self.handle_request(op).await;
             }
-            NodeMessage::Learn(op) => {
-                self.handle_learn(op);
+            NodeMessage::Log { op } => {
+                self.handle_log(op);
             }
-            NodeMessage::Commit(op) => {
-                self.handle_commit(op);
+            NodeMessage::Ack { id } => {
+                self.handle_ack(id);
             }
-            NodeMessage::Finished(op) => {
-                self.handle_finished(op);
-            }
-            _ => {}
         }
     }
 
@@ -52,7 +47,7 @@ pub trait Node {
         while let Some(evt) = self.recv_node_msg().await {
             match evt {
                 InboundEvent::Received { peer, payload } => {
-                    self.handle_node_msg(payload.try_into().unwrap()).await;
+                    self.handle_node_msg(payload.try_into()?).await;
                 }
                 InboundEvent::ConnClosed { peer } => {
                     println!("[INFO] Connection closed by {}", peer);

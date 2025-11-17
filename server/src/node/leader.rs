@@ -23,24 +23,19 @@ pub struct Leader {
 }
 
 impl Node for Leader {
-    async fn handle_accept(&mut self, op: Operation) {
-        todo!()
+    async fn handle_request(&mut self, op: Operation) {
+        todo!();
+    }
+    async fn handle_log(&mut self, op: Operation) {
+        todo!();
     }
 
-    async fn handle_learn(&mut self, op: Operation) {
-        todo!()
-    }
-
-    async fn handle_commit(&mut self, op: Operation) {
-        todo!()
-    }
-
-    async fn handle_finished(&mut self, op: Operation) {
-        todo!()
+    async fn handle_ack(&mut self, id: u32) {
+        todo!();
     }
 
     async fn recv_node_msg(&mut self) -> Option<InboundEvent> {
-        todo!()
+        todo!();
     }
 }
 
