@@ -1,137 +1,95 @@
-use clap::Parser;
-use std::net::SocketAddr;
 mod actors;
-mod connection_manager;
 mod errors;
 mod node;
-mod node_message;
-mod operation;
-mod serial_error;
-mod serializer;
 
-use errors::{AppError, AppResult};
-use node::{Node, NodeRole};
+use clap::{Parser, Subcommand};
+use errors::AppResult;
+use node::{Leader, Replica};
+use std::{net::SocketAddr, str::FromStr};
 
 /// YPF Ruta — Distributed server binary
 ///
 /// Launch a single node participating in the distributed YPF Ruta system.
 /// Nodes may run in one of three roles: leader, replica or station.
+///
+/// For example, to run as a replica use:
+///
+/// `cargo run --bin server -- replica --leader-addr="127.0.0.1:12346"`
+///
 /// Use `--help` to view command-line options and examples.
 #[derive(Parser, Debug)]
-#[command(name = "ypf_server")]
-#[command(about = "Distributed node for the YPF Ruta system")]
+#[command(
+    name = "ypf_server",
+    about = "Distributed node for the YPF Ruta system",
+    subcommand_required = false,
+    subcommand = "station"
+)]
 struct Args {
-    /// Node role to run. Allowed values: "leader", "replica", "station".
-    #[arg(long)]
-    role: String,
-
-    /// IP address for the node to bind or use as its source address.
-    #[arg(long)]
-    ip: String,
-
-    /// TCP port to bind/connect on (1-65535).
-    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
-    port: u16,
-
+    /// Address for the node to bind.
+    #[arg(long, value_name = "IP:PORT", default_value_t = SocketAddr::from_str("127.0.0.1:12345").unwrap())]
+    address: SocketAddr,
     /// Coordinates as two floats: latitude then longitude.
-    #[arg(long, num_args = 2, value_names = ["LAT", "LON"])]
+    #[arg(long, num_args=2, value_names = ["LAT", "LON"], default_values_t = vec![0f64, 0f64])]
     coords: Vec<f64>,
+    /// Node role to run. Allowed values: "leader", "replica", "station".
+    #[command(subcommand)]
+    role: RoleArgs,
+}
 
-    /// Leader address (required for replica and station roles).
-    #[arg(long)]
-    leader: Option<String>,
-
-    /// Zero or more replica addresses (only used when running as leader).
-    #[arg(long, num_args = 0.., value_name = "IP:PORT")]
-    replicas: Vec<String>,
-
-    /// Maximum number of simultaneous TCP connections (leader only).
-    #[arg(long, default_value_t = 16)]
-    max_conns: usize,
+#[derive(Subcommand, Debug)]
+enum RoleArgs {
+    Station {
+        /// Leader address.
+        #[arg(long, value_name = "IP:PORT")]
+        leader_addr: SocketAddr,
+    },
+    Leader {
+        /// Zero or more replica addresses.
+        #[arg(long, num_args = 0.., value_name = "IP:PORT")]
+        replicas: Vec<SocketAddr>,
+        /// Maximum number of simultaneous TCP connections.
+        #[arg(long, default_value_t = 16)]
+        max_conns: usize,
+    },
+    Replica {
+        /// Leader address.
+        #[arg(long, value_name = "IP:PORT")]
+        leader_addr: SocketAddr,
+        /// Zero or more replica addresses.
+        #[arg(long, num_args = 0.., value_name = "IP:PORT")]
+        other_replicas: Vec<SocketAddr>,
+        /// Maximum number of simultaneous TCP connections.
+        #[arg(long, default_value_t = 16)]
+        max_conns: usize,
+    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Run the application and exit with a non-zero code on fatal error.
     if let Err(e) = run().await {
         eprintln!("[FATAL] {e:?}");
         std::process::exit(1);
     }
+
     Ok(())
 }
 
 async fn run() -> AppResult<()> {
     let args = Args::parse();
-
-    // Parse and validate coordinates: expect exactly two values (lat, lon).
-    if args.coords.len() != 2 {
-        return Err(AppError::InvalidCoords {
-            lat: f64::NAN,
-            lon: f64::NAN,
-        });
-    }
     let coords = (args.coords[0], args.coords[1]);
-
-    // Interpret the role argument into the NodeRole enum.
-    let role = match args.role.as_str() {
-        "leader" => NodeRole::Leader,
-        "replica" => NodeRole::Replica,
-        "station" => NodeRole::Station,
-        other => return Err(AppError::Config(format!("Invalid role: {}", other))),
-    };
-
-    // Validate and parse the optional leader address when required.
-    let leader_addr = match (&role, &args.leader) {
-        (NodeRole::Leader, _) => None,
-        (_, Some(addr_str)) => {
-            let addr: SocketAddr = addr_str
-                .parse()
-                .map_err(|_| AppError::Config(format!("Invalid leader address '{}'", addr_str)))?;
-            Some(addr)
+    match args.role {
+        RoleArgs::Leader {
+            replicas,
+            max_conns,
+        } => Leader::start(args.address, coords, replicas, max_conns).await,
+        RoleArgs::Replica {
+            leader_addr,
+            other_replicas,
+            max_conns,
+        } => Replica::start(args.address, coords, leader_addr, other_replicas, max_conns).await,
+        RoleArgs::Station { leader_addr } => {
+            // TODO: implement default "station" node behaviour
+            todo!()
         }
-        (_, None) => {
-            // Replica and station roles must specify --leader.
-            return Err(AppError::Config(
-                "Missing --leader argument for replica/station".to_string(),
-            ));
-        }
-    };
-
-    // For leaders, parse replica addresses and warn on invalid entries.
-    let replica_addrs: Vec<SocketAddr> = if role == NodeRole::Leader {
-        if args.replicas.is_empty() {
-            println!("[WARN] Leader started with no replicas");
-        }
-        args.replicas
-            .iter()
-            .filter_map(|s| match s.parse::<SocketAddr>() {
-                Ok(addr) => Some(addr),
-                Err(_) => {
-                    eprintln!("[WARN] Skipping invalid replica address '{}'", s);
-                    None
-                }
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    println!(
-        "[BOOT] role={:?} ip={}:{} coords=({:.5}, {:.5}) max_conns={} replicas={:?} leader={:?}",
-        role, args.ip, args.port, coords.0, coords.1, args.max_conns, replica_addrs, leader_addr
-    );
-
-    // Construct the Node with the validated configuration and run it.
-    let mut node = Node::new(
-        role,
-        args.ip.clone(),
-        args.port,
-        coords,
-        leader_addr,
-        replica_addrs,
-        args.max_conns,
-    )
-    .await?;
-
-    node.run().await
+    }
 }

@@ -9,9 +9,9 @@
 //! actor/messaging, serialization/protocol, and unexpected failures) to
 //! simplify error handling and logging across the codebase.
 
-use thiserror::Error;
 use std::io;
 use std::net::AddrParseError;
+use thiserror::Error;
 use tokio::task::JoinError;
 
 /// Unified application-level error type.
@@ -51,10 +51,7 @@ pub enum AppError {
     ConnectionTimeout { addr: String },
 
     #[error("Connection I/O error with {addr}: {source}")]
-    ConnectionIO {
-        addr: String,
-        source: io::Error,
-    },
+    ConnectionIO { addr: String, source: io::Error },
 
     #[error("Connection limit reached: max = {max}")]
     ConnectionLimit { max: usize },
@@ -90,6 +87,9 @@ pub enum AppError {
 
     #[error("Unknown message type: {details}")]
     UnknownMessage { details: String },
+
+    #[error("Empty message: {details}")]
+    EmptyMessage { details: String },
 
     // ---- Fallback / Unexpected ----
     #[error("Unexpected error: {details}")]
