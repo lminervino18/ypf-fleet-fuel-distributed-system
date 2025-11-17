@@ -91,7 +91,7 @@ impl Actor for CardActor {
 
     fn started(&mut self, _ctx: &mut Self::Context) {
         println!(
-            "[Card {}@Account {}] Started",
+            "[Card {}/Account {}] Started",
             self.card_id, self.account_id
         );
     }
@@ -129,7 +129,7 @@ impl Handler<CardMsg> for CardActor {
                 self.consumed += amount;
 
                 println!(
-                    "[Card {}@Account {}] Applied charge: {} (total consumed: {})",
+                    "[Card {}/Account {}] Applied charge: {} (total consumed: {})",
                     self.card_id, self.account_id, amount, self.consumed
                 );
             }
@@ -163,7 +163,7 @@ impl Handler<CardMsg> for CardActor {
 
             CardMsg::Placeholder(text) => {
                 println!(
-                    "[Card {}@Account {}] Placeholder message: {}",
+                    "[Card {}/Account {}] Placeholder message: {}",
                     self.card_id, self.account_id, text
                 );
             }

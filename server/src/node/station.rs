@@ -1,14 +1,13 @@
 //! Station (pump) simulation module.
 //!
 //! This module simulates a YPF Ruta station with a set of pumps:
-//! - reads commands from stdin,
-//! - for each command, picks a pump, account, card and amount,
-//! - sends a *single* logical "charge request" to the Node,
-//! - receives a single result "allowed or not" from the Node,
-//! - enforces that each pump can only have **one in-flight operation** at a time.
+//! - Reads commands from stdin,
+//! - For each command, selects a pump, account, card, and amount,
+//! - Sends a single logical "charge request" to the Node,
+//! - Receives a single result "allowed or not" from the Node,
+//! - Enforces that each pump can only have **one in-flight operation** at a time.
 //!
 //! Command format (one per line):
-//!
 //!   <pump_id> <account_id> <card_id> <amount>
 //!
 //! Examples:
@@ -16,9 +15,9 @@
 //!   1 2 20 150.25
 //!
 //! Special commands:
-//!   help   -> print usage
-//!   quit   -> stop the simulator
-//!   exit   -> stop the simulator
+//!   help   -> Print usage instructions
+//!   quit   -> Stop the simulator
+//!   exit   -> Stop the simulator
 //!
 //! If a pump already has a pending operation, new commands for that pump
 //! are rejected until the previous one finishes.
@@ -29,21 +28,21 @@ use tokio::sync::mpsc;
 use std::collections::HashMap;
 
 use crate::actors::types::LimitCheckError;
-use crate::errors::AppResult;
+use crate::errors::{AppResult, AppError};
 
 /// Message sent from the Station (pumps) to the Node.
 ///
 /// The Station only knows about a **single logical operation**: "charge".
-/// Internally the Node may do multi-step work (check limit, apply charge, etc.),
+/// Internally, the Node may perform multi-step work (check limit, apply charge, etc.),
 /// but that is abstracted away from the Station.
 #[derive(Debug)]
 pub enum StationToNodeMsg {
     /// Request to perform a charge coming from a specific pump.
     ///
     /// The Node must:
-    /// - check limits (card + account),
-    /// - if allowed, apply the charge,
-    /// - reply back with a `ChargeResult`.
+    /// - Check limits (card + account),
+    /// - If allowed, apply the charge,
+    /// - Reply back with a `ChargeResult`.
     ChargeRequest {
         pump_id: usize,
         account_id: u64,
@@ -80,14 +79,14 @@ struct PumpRequest {
 
 /// Run the station simulator.
 ///
-/// - `num_pumps`: how many pumps are available (pump IDs go from `0` to `num_pumps - 1`)
-/// - `to_node_tx`: channel Station → Node
-/// - `from_node_rx`: channel Node → Station
+/// - `num_pumps`: How many pumps are available (pump IDs go from `0` to `num_pumps - 1`).
+/// - `to_node_tx`: Channel Station → Node.
+/// - `from_node_rx`: Channel Node → Station.
 ///
 /// The function returns when:
-/// - stdin reaches EOF, or
-/// - the user types `quit` / `exit`, or
-/// - the `from_node_rx` channel is closed.
+/// - Stdin reaches EOF, or
+/// - The user types `quit` / `exit`, or
+/// - The `from_node_rx` channel is closed.
 pub async fn run_station_simulator(
     num_pumps: usize,
     mut to_node_tx: mpsc::Sender<StationToNodeMsg>,
@@ -151,8 +150,8 @@ pub async fn run_station_simulator(
                             &mut next_request_id,
                         ) {
                             Ok(Some(req_id)) => {
-                                // Copiamos los datos necesarios a variables locales
-                                // para NO mantener un borrow de `requests` durante el await.
+                                // Copy necessary data to local variables
+                                // to avoid holding a borrow of `requests` during the await.
                                 let (pump_id, account_id, card_id, amount, request_id) =
                                     match requests.get(&req_id) {
                                         Some(req) => (
@@ -167,7 +166,7 @@ pub async fn run_station_simulator(
                                                 "[Station][INTERNAL] request_id={} not found right after creation",
                                                 req_id
                                             );
-                                            // Por seguridad, liberamos el surtidor si estaba marcado
+                                            // For safety, free the pump if it was marked
                                             for slot in &mut in_flight_by_pump {
                                                 if *slot == Some(req_id) {
                                                     *slot = None;
@@ -272,14 +271,14 @@ fn parse_command(line: &str, num_pumps: usize) -> Result<ParsedCommand, String> 
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() != 4 {
         return Err(format!(
-            "invalid command format. Expected: <pump_id> <account_id> <card_id> <amount>, got {} tokens",
+            "Invalid command format. Expected: <pump_id> <account_id> <card_id> <amount>, got {} tokens",
             parts.len()
         ));
     }
 
     let pump_id: usize = parts[0]
         .parse()
-        .map_err(|_| format!("invalid pump_id: '{}'", parts[0]))?;
+        .map_err(|_| format!("Invalid pump_id: '{}'", parts[0]))?;
 
     if pump_id >= num_pumps {
         return Err(format!(
@@ -291,15 +290,15 @@ fn parse_command(line: &str, num_pumps: usize) -> Result<ParsedCommand, String> 
 
     let account_id: u64 = parts[1]
         .parse()
-        .map_err(|_| format!("invalid account_id: '{}'", parts[1]))?;
+        .map_err(|_| format!("Invalid account_id: '{}'", parts[1]))?;
 
     let card_id: u64 = parts[2]
         .parse()
-        .map_err(|_| format!("invalid card_id: '{}'", parts[2]))?;
+        .map_err(|_| format!("Invalid card_id: '{}'", parts[2]))?;
 
     let amount: f64 = parts[3]
         .parse()
-        .map_err(|_| format!("invalid amount: '{}'", parts[3]))?;
+        .map_err(|_| format!("Invalid amount: '{}'", parts[3]))?;
 
     Ok(ParsedCommand {
         pump_id,
@@ -311,11 +310,11 @@ fn parse_command(line: &str, num_pumps: usize) -> Result<ParsedCommand, String> 
 
 /// Handle a single user command line.
 ///
-/// This:
-/// - parses `<pump_id> <account_id> <card_id> <amount>`,
-/// - checks if the pump is idle,
-/// - allocates a new `request_id`,
-/// - registers the `PumpRequest` and marks the pump as busy.
+/// This function:
+/// - Parses `<pump_id> <account_id> <card_id> <amount>`,
+/// - Checks if the pump is idle,
+/// - Allocates a new `request_id`,
+/// - Registers the `PumpRequest` and marks the pump as busy.
 ///
 /// It **does not** send anything to the Node; that is done by the caller
 /// (so we can `await` on the channel send).
@@ -336,7 +335,7 @@ fn handle_user_command(
     // Check if the pump is already busy
     if let Some(existing_req) = in_flight_by_pump[parsed.pump_id] {
         return Err(format!(
-            "pump {} is busy with request_id {}. Wait for the result before sending another command.",
+            "Pump {} is busy with request_id {}. Wait for the result before sending another command.",
             parsed.pump_id, existing_req
         ));
     }
@@ -366,7 +365,7 @@ fn handle_user_command(
 /// Handle a `NodeToStationMsg` coming back from the Node.
 ///
 /// This is a **single-step** result:
-/// - the Node already did the authorization and (if allowed) the charge.
+/// - The Node already did the authorization and (if allowed) the charge.
 /// - So we only need to log and free the pump.
 fn handle_node_event(
     msg: NodeToStationMsg,
@@ -407,3 +406,4 @@ fn handle_node_event(
         }
     }
 }
+
