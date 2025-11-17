@@ -1,5 +1,4 @@
 use actix::prelude::*;
-use std::net::SocketAddr;
 
 /// Mensajes genéricos de alto nivel entre actores.
 #[derive(Debug, Clone, Message)]
@@ -25,12 +24,6 @@ pub enum RouterCmd {
         card_id: u64,
         msg: Box<ActorMsg>,
     },
-
-    /// Mensaje de red recibido (desde el ConnectionManager)
-    ///
-    /// `from`: dirección del peer que envió el mensaje  
-    /// `bytes`: payload crudo recibido (ya en bytes)
-    NetIn { from: SocketAddr, bytes: Vec<u8> },
 
     /// Listar las cuentas locales
     ListAccounts,
