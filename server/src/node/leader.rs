@@ -1,10 +1,11 @@
 use super::{
     connection_manager::{ConnectionManager, InboundEvent, ManagerCmd},
     node::Node,
+    node_message::NodeMessage,
     operation::Operation,
 };
 use crate::{
-    actors::ActorRouter,
+    actors::{ActorRouter, RouterCmd},
     errors::{AppError, AppResult},
 };
 use actix::{Actor, Addr};
@@ -16,7 +17,7 @@ pub struct Leader {
     coords: (f64, f64),
     max_conns: usize,
     replicas: Vec<SocketAddr>,
-    operations: HashMap<u8, Operation>,
+    operations: HashMap<u32, (usize, Operation)>,
     connection_tx: mpsc::Sender<ManagerCmd>,
     connection_rx: mpsc::Receiver<InboundEvent>,
     router: Addr<ActorRouter>,
@@ -24,14 +25,30 @@ pub struct Leader {
 
 impl Node for Leader {
     async fn handle_request(&mut self, op: Operation) {
-        todo!();
+        self.operations.insert(op.id, (0, op.clone()));
+        let log_msg: Vec<u8> = NodeMessage::Log { op: op.clone() }.into();
+        for replica in &self.replicas {
+            self.connection_tx
+                .send(ManagerCmd::SendTo(*replica, log_msg.clone()))
+                .await
+                .unwrap();
+        }
     }
+
     async fn handle_log(&mut self, op: Operation) {
         todo!();
     }
 
     async fn handle_ack(&mut self, id: u32) {
-        todo!();
+        self.operations.entry(id).and_modify(|(ack_count, _)| {
+            *ack_count += 1;
+            if *ack_count <= self.replicas.len() / 2 {
+                return;
+            }
+        });
+
+        let op = self.operations.remove(&id);
+        // self.router.send() // tell actix to manage the businness logic
     }
 
     async fn recv_node_msg(&mut self) -> Option<InboundEvent> {
