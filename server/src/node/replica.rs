@@ -4,7 +4,7 @@ use super::{
     node_message::NodeMessage,
     operation::Operation,
 };
-use crate::actors::types::{ActorEvent, LimitCheckError, LimitScope, LimitUpdateError};
+use crate::actors::types::ActorEvent;
 use crate::{
     actors::ActorRouter,
     errors::{AppError, AppResult},
@@ -72,20 +72,20 @@ impl Node for Replica {
             } => match error {
                 None => {
                     println!(
-                        "[Leader][actor] LimitCheckResult: request_id={} allowed={}",
+                        "[Replica][actor] LimitCheckResult: request_id={} allowed={}",
                         request_id, allowed
                     );
                 }
                 Some(err) => {
                     println!(
-                        "[Leader][actor] LimitCheckResult: request_id={} allowed={} error={:?}",
+                        "[Replica][actor] LimitCheckResult: request_id={} allowed={} error={:?}",
                         request_id, allowed, err
                     );
                 }
             },
 
             ActorEvent::ChargeApplied { operation } => {
-                println!("[Leader][actor] ChargeApplied: operation={:?}", operation);
+                println!("[Replica][actor] ChargeApplied: operation={:?}", operation);
             }
 
             ActorEvent::LimitUpdated {
@@ -95,9 +95,9 @@ impl Node for Replica {
                 new_limit,
             } => {
                 println!(
-                "[Leader][actor] LimitUpdated: scope={:?} account_id={} card_id={:?} new_limit={:?}",
-                scope, account_id, card_id, new_limit
-            );
+                    "[Replica][actor] LimitUpdated: scope={:?} account_id={} card_id={:?} new_limit={:?}",
+                    scope, account_id, card_id, new_limit
+                );
             }
 
             ActorEvent::LimitUpdateFailed {
@@ -108,19 +108,19 @@ impl Node for Replica {
                 error,
             } => {
                 println!(
-                "[Leader][actor] LimitUpdateFailed: scope={:?} account_id={} card_id={:?} request_id={} error={:?}",
-                scope, account_id, card_id, request_id, error
-            );
+                    "[Replica][actor] LimitUpdateFailed: scope={:?} account_id={} card_id={:?} request_id={} error={:?}",
+                    scope, account_id, card_id, request_id, error
+                );
             }
 
             ActorEvent::Debug(msg) => {
-                println!("[Leader][actor][debug] {}", msg);
+                println!("[Replica][actor][debug] {}", msg);
             }
         }
     }
 
     // ===============================================================
-    // Main event loop: identical to Leader but in Replica
+    // Main event loop: same pattern as Leader
     // ===============================================================
     async fn run_loop(&mut self) -> AppResult<()> {
         let mut net_open = true;

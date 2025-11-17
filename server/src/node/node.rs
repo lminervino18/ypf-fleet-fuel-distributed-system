@@ -17,7 +17,8 @@ pub enum NodeRole {
 /// - a local ActorRouter (Actix) for application logic,
 /// - role-specific behaviour (leader, replica, station).
 ///
-/// So the trait delegates to `run_loop()`, which must be implemented by each node type.
+/// The trait delegates the main execution to `run_loop()`,
+/// which is implemented by each concrete node type.
 pub trait Node {
     // ==========
     // Consensus operations (network driven)
@@ -40,6 +41,8 @@ pub trait Node {
     }
 
     /// Handle an ActorEvent coming from the actor system.
+    ///
+    /// Default: do nothing. Leader/Replica override this when needed.
     async fn handle_actor_event(&mut self, _event: ActorEvent) {}
 
     // ==========
@@ -52,12 +55,12 @@ pub trait Node {
             NodeMessage::Learn(op) => self.handle_learn(op).await,
             NodeMessage::Commit(op) => self.handle_commit(op).await,
             NodeMessage::Finished(op) => self.handle_finished(op).await,
-            _ => { /* ignore */ }
+            _ => { /* ignore for now */ }
         }
     }
 
     // ==========
-    // Event loop — MUST be implemented by Leader/Replica/Station
+    // Event loop — implemented by Leader/Replica/Station
     // ==========
     async fn run_loop(&mut self) -> AppResult<()>;
 
