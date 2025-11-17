@@ -1,5 +1,5 @@
-use crate::operation::Operation;
-use crate::serial_error::SerialError;
+use super::operation::Operation;
+use crate::errors::AppError;
 
 #[derive(Debug, PartialEq)]
 pub enum NodeMessage {
@@ -20,12 +20,14 @@ pub enum NodeMessage {
 // 4. replicas -> coord: finished
 
 impl TryFrom<Vec<u8>> for NodeMessage {
-    type Error = SerialError;
+    type Error = AppError;
 
-    fn try_from(payload: Vec<u8>) -> Result<Self, SerialError> {
+    fn try_from(payload: Vec<u8>) -> Result<Self, AppError> {
         match payload[0] {
             0x01 => Ok(NodeMessage::Accept(Operation::try_from(&payload[1..])?)),
-            _ => Err(SerialError::InvalidBytes),
+            _ => Err(AppError::InvalidData {
+                details: ("error deserializing node message payload".to_string()),
+            }),
         }
     }
 }

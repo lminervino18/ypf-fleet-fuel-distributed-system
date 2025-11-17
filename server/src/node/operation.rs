@@ -1,4 +1,4 @@
-use crate::serial_error::SerialError;
+use crate::errors::AppError;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Operation {
@@ -6,9 +6,9 @@ pub struct Operation {
 }
 
 impl TryFrom<&[u8]> for Operation {
-    type Error = SerialError;
+    type Error = AppError;
 
-    fn try_from(payload: &[u8]) -> Result<Self, SerialError> {
+    fn try_from(payload: &[u8]) -> Result<Self, AppError> {
         // TODO: check validity of payload
         Ok(Operation { id: payload[0] })
     }

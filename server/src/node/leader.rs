@@ -1,13 +1,15 @@
-/* use super::connection_manager::{ConnectionManager, InboundEvent, ManagerCmd};
-use crate::actors::ActorRouter;
-use crate::errors::{AppError, AppResult};
-use crate::node::Node;
-use crate::operation::Operation;
+use super::{
+    connection_manager::{ConnectionManager, InboundEvent, ManagerCmd},
+    node::Node,
+    operation::Operation,
+};
+use crate::{
+    actors::ActorRouter,
+    errors::{AppError, AppResult},
+};
 use actix::{Actor, Addr};
-use std::collections::HashMap;
-use std::future::pending;
-use std::net::SocketAddr;
-use tokio::sync::{mpsc, oneshot}; */
+use std::{collections::HashMap, future::pending, net::SocketAddr};
+use tokio::sync::{mpsc, oneshot};
 
 pub struct Leader {
     id: u64,

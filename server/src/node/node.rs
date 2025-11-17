@@ -1,8 +1,6 @@
-use crate::{
-    connection_manager::InboundEvent, errors::AppResult, node_message::NodeMessage,
-    operation::Operation,
-};
-use std::{future::pending, net::SocketAddr};
+use super::{connection_manager::InboundEvent, node_message::NodeMessage, operation::Operation};
+use crate::errors::AppResult;
+use std::future::pending;
 
 /// Role of a node in the YPF Ruta distributed system.
 ///
