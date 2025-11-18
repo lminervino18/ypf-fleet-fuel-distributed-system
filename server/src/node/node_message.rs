@@ -8,7 +8,7 @@ pub enum NodeMessage {
     ///
     /// This message is only handled by the coordinator. In case a replica receives it, it resends
     /// it to the coordinator.
-    Request { op: Operation },
+    Request { op: Operation, addr: SocketAddr },
 
     /// Log message sent by coordinator to the replicas.
     ///
@@ -21,6 +21,7 @@ pub enum NodeMessage {
     Ack { id: u32 },
 }
 
+use std::net::SocketAddr;
 use NodeMessage::*;
 
 impl TryFrom<Vec<u8>> for NodeMessage {
@@ -30,6 +31,7 @@ impl TryFrom<Vec<u8>> for NodeMessage {
         match payload[0] {
             0u8 => Ok(Request {
                 op: payload[1..].try_into()?,
+                client_addr: // TODO
             }),
             1u8 => Ok(Log {
                 op: payload[5..].try_into()?,

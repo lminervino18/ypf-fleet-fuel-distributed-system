@@ -27,7 +27,7 @@ pub struct Replica {
 }
 
 impl Node for Replica {
-    async fn handle_request(&mut self, op: Operation) {
+    async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr) {
         todo!();
     }
     async fn handle_log(&mut self, op: Operation) {

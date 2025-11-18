@@ -1,6 +1,6 @@
 use super::{connection_manager::InboundEvent, node_message::NodeMessage, operation::Operation};
 use crate::errors::AppResult;
-use std::future::pending;
+use std::{future::pending, net::SocketAddr};
 
 /// Role of a node in the YPF Ruta distributed system.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,15 +20,15 @@ pub enum NodeRole {
 /// The trait delegates the main execution to `run_loop()`,
 /// which is implemented by each concrete node type.
 pub trait Node {
-    async fn handle_request(&mut self, op: Operation);
+    async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr);
     async fn handle_log(&mut self, op: Operation);
     async fn handle_ack(&mut self, id: u32);
     async fn recv_node_msg(&mut self) -> Option<InboundEvent>;
 
     async fn handle_node_msg(&mut self, msg: NodeMessage) {
         match msg {
-            NodeMessage::Request { op } => {
-                self.handle_request(op).await;
+            NodeMessage::Request { op, addr } => {
+                self.handle_request(op, addr).await;
             }
             NodeMessage::Log { op } => {
                 self.handle_log(op);

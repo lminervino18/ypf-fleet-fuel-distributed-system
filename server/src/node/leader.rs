@@ -17,7 +17,7 @@ pub struct Leader {
     coords: (f64, f64),
     max_conns: usize,
     replicas: Vec<SocketAddr>,
-    operations: HashMap<u32, (usize, Operation)>,
+    operations: HashMap<u32, (usize, SocketAddr, Operation)>,
     connection_tx: mpsc::Sender<ManagerCmd>,
     connection_rx: mpsc::Receiver<InboundEvent>,
     actor_rx: mpsc::Receiver<ActorEvent>,
@@ -25,8 +25,8 @@ pub struct Leader {
 }
 
 impl Node for Leader {
-    async fn handle_request(&mut self, op: Operation) {
-        self.operations.insert(op.id, (0, op.clone()));
+    async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr) {
+        self.operations.insert(op.id, (0, client_addr, op.clone()));
         let log_msg: Vec<u8> = NodeMessage::Log { op: op.clone() }.into();
         for replica in &self.replicas {
             self.connection_tx
@@ -41,25 +41,36 @@ impl Node for Leader {
     }
 
     async fn handle_ack(&mut self, id: u32) {
-        if let Some(ack_op) = self.operations.get_mut(&id) {
-            let ack_count = &mut ack_op.0;
-            *ack_count += 1;
-            if *ack_count <= self.replicas.len() / 2 {
-                return;
-            }
-        } else {
+        let Some((ack_count, _, _)) = self.operations.get_mut(&id) else {
             todo!() // TODO: handle this case
         };
 
-        let op = self.operations.remove(&id).unwrap().1;
-        self.router.send(RouterCmd::ApplyCharge {
-            account_id: (op.account_id),
-            card_id: (op.card_id),
-            amount: (op.amount as f64),
-            op_id: (op.id as u64),
-            request_id: (0), // ?
-            timestamp: 0,
-        });
+        *ack_count += 1;
+        if *ack_count <= self.replicas.len() / 2 {
+            return;
+        }
+
+        let (_, client_addr, op) = self.operations.remove(&id).unwrap();
+        if self
+            .router
+            .send(RouterCmd::ApplyCharge {
+                account_id: (op.account_id),
+                card_id: (op.card_id),
+                amount: (op.amount as f64),
+                op_id: (op.id as u64),
+                request_id: (0), // ?
+                timestamp: 0,
+            })
+            .await
+            .is_ok()
+        {
+            self.connection_tx.send(ManagerCmd::SendTo(
+                client_addr,
+                NodeMessage::Ack { id: 0 }.into(), // TODO: this msg should have its own type
+            ));
+        } else {
+            // TODO: ...
+        }
     }
 
     async fn recv_node_msg(&mut self) -> Option<InboundEvent> {
