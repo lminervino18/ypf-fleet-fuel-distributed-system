@@ -8,31 +8,30 @@ pub struct Operation {
     pub amount: f32,
 }
 
+fn read_bytes<const N: usize>(
+    payload: &[u8],
+    range: std::ops::Range<usize>,
+) -> Result<[u8; N], AppError> {
+    payload
+        .get(range.clone())
+        .ok_or_else(|| AppError::InvalidData {
+            details: format!("not enough bytes to deserialize operation: {:?}", range),
+        })?
+        .try_into()
+        .map_err(|e| AppError::InvalidData {
+            details: format!("not enough bytes to deserialize operation: {e}"),
+        })
+}
+
 impl TryFrom<&[u8]> for Operation {
     type Error = AppError;
 
     fn try_from(payload: &[u8]) -> Result<Self, AppError> {
         Ok(Operation {
-            id: u32::from_be_bytes(payload[0..4].try_into().map_err(|e| {
-                AppError::InvalidData {
-                    details: format!("not enough bytes to deserialize operation: {e}"),
-                }
-            })?),
-            account_id: u64::from_be_bytes(payload[4..12].try_into().map_err(|e| {
-                AppError::InvalidData {
-                    details: format!("not enough bytes to deserialize operation: {e}"),
-                }
-            })?),
-            card_id: u64::from_be_bytes(payload[12..20].try_into().map_err(|e| {
-                AppError::InvalidData {
-                    details: format!("not enough bytes to deserialize operation: {e}"),
-                }
-            })?),
-            amount: f32::from_be_bytes(payload[20..24].try_into().map_err(|e| {
-                AppError::InvalidData {
-                    details: format!("not enough bytes to deserialize operation: {e}"),
-                }
-            })?),
+            id: u32::from_be_bytes(read_bytes(payload, 0..4)?),
+            account_id: u64::from_be_bytes(read_bytes(payload, 4..12)?),
+            card_id: u64::from_be_bytes(read_bytes(payload, 12..20)?),
+            amount: f32::from_be_bytes(read_bytes(payload, 20..24)?),
         })
     }
 }
