@@ -4,7 +4,7 @@ use super::{
     node_message::NodeMessage,
     operation::Operation,
 };
-use crate::actors::types::ActorEvent;
+use crate::actors::{types::ActorEvent, RouterCmd};
 use crate::{
     actors::ActorRouter,
     errors::{AppError, AppResult},
@@ -39,16 +39,17 @@ impl Node for Replica {
         ));
     }
 
-    async fn handle_log(&mut self, op: Operation) {
-        let op_id = op.id;
-        self.operations.insert(op_id, op);
+    async fn handle_log(&mut self, new_op: Operation) {
+        let new_op_id = new_op.id;
+        self.operations.insert(new_op_id, new_op);
+        self.commit_operation(new_op_id - 1);
         self.connection_tx.send(ManagerCmd::SendTo(
             self.leader_addr,
-            NodeMessage::Ack { id: op_id }.into(),
+            NodeMessage::Ack { id: new_op_id }.into(),
         ));
     }
 
-    async fn handle_ack(&mut self, id: u32) {
+    async fn handle_ack(&mut self, _id: u32) {
         todo!(); // TODO: replicas should not receive any ACK msgs
     }
 
@@ -58,6 +59,28 @@ impl Node for Replica {
 }
 
 impl Replica {
+    async fn commit_operation(&mut self, id: u32) {
+        let Some(op) = self.operations.remove(&id) else {
+            return;
+        };
+
+        if self
+            .router
+            .send(RouterCmd::ApplyCharge {
+                account_id: (op.account_id),
+                card_id: (op.card_id),
+                amount: (op.amount as f64),
+                op_id: (op.id as u64),
+                request_id: (0), // ?
+                timestamp: 0,
+            })
+            .await
+            .is_err()
+        {
+            todo!() // TODO
+        };
+    }
+
     pub async fn start(
         address: SocketAddr,
         coords: (f64, f64),
