@@ -19,7 +19,7 @@ pub struct Replica {
     max_conns: usize,
     leader_addr: SocketAddr,
     other_replicas: Vec<SocketAddr>,
-    operations: HashMap<u8, Operation>,
+    operations: HashMap<u32, Operation>,
     connection_tx: mpsc::Sender<ManagerCmd>,
     connection_rx: mpsc::Receiver<InboundEvent>,
     actor_rx: mpsc::Receiver<ActorEvent>,
@@ -38,12 +38,18 @@ impl Node for Replica {
             .into(),
         ));
     }
+
     async fn handle_log(&mut self, op: Operation) {
-        todo!();
+        let op_id = op.id;
+        self.operations.insert(op_id, op);
+        self.connection_tx.send(ManagerCmd::SendTo(
+            self.leader_addr,
+            NodeMessage::Ack { id: op_id }.into(),
+        ));
     }
 
     async fn handle_ack(&mut self, id: u32) {
-        todo!();
+        todo!(); // TODO: replicas should not receive any ACK msgs
     }
 
     async fn recv_node_msg(&mut self) -> Option<InboundEvent> {
