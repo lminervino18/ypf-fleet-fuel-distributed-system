@@ -28,7 +28,15 @@ pub struct Replica {
 
 impl Node for Replica {
     async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr) {
-        todo!();
+        // redirect to leader node
+        self.connection_tx.send(ManagerCmd::SendTo(
+            self.leader_addr,
+            NodeMessage::Request {
+                op,
+                addr: client_addr,
+            }
+            .into(),
+        ));
     }
     async fn handle_log(&mut self, op: Operation) {
         todo!();

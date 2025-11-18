@@ -37,7 +37,7 @@ impl Node for Leader {
     }
 
     async fn handle_log(&mut self, op: Operation) {
-        todo!();
+        todo!(); // TODO: leader should not receive any Log msgs
     }
 
     async fn handle_ack(&mut self, id: u32) {
@@ -69,7 +69,7 @@ impl Node for Leader {
                 NodeMessage::Ack { id: 0 }.into(), // TODO: this msg should have its own type
             ));
         } else {
-            // TODO: ...
+            todo!() // TODO
         }
     }
 
