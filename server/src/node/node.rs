@@ -31,10 +31,10 @@ pub trait Node {
                 self.handle_request(op, addr).await;
             }
             NodeMessage::Log { op } => {
-                self.handle_log(op);
+                self.handle_log(op).await;
             }
             NodeMessage::Ack { id } => {
-                self.handle_ack(id);
+                self.handle_ack(id).await;
             }
         }
     }

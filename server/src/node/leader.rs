@@ -50,7 +50,7 @@ impl Node for Leader {
             return;
         }
 
-        self.commit_operation(id);
+        self.commit_operation(id).await;
     }
 
     async fn recv_node_msg(&mut self) -> Option<InboundEvent> {
@@ -74,10 +74,13 @@ impl Leader {
             .await
             .is_ok()
         {
-            self.connection_tx.send(ManagerCmd::SendTo(
-                client_addr,
-                NodeMessage::Ack { id: 0 }.into(), // TODO: this msg should have its own type
-            ));
+            self.connection_tx
+                .send(ManagerCmd::SendTo(
+                    client_addr,
+                    NodeMessage::Ack { id: 0 }.into(), // TODO: this msg should have its own type
+                ))
+                .await
+                .unwrap();
         } else {
             todo!() // TODO
         }

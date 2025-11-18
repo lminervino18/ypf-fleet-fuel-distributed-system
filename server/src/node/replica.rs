@@ -29,24 +29,30 @@ pub struct Replica {
 impl Node for Replica {
     async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr) {
         // redirect to leader node
-        self.connection_tx.send(ManagerCmd::SendTo(
-            self.leader_addr,
-            NodeMessage::Request {
-                op,
-                addr: client_addr,
-            }
-            .into(),
-        ));
+        self.connection_tx
+            .send(ManagerCmd::SendTo(
+                self.leader_addr,
+                NodeMessage::Request {
+                    op,
+                    addr: client_addr,
+                }
+                .into(),
+            ))
+            .await
+            .unwrap();
     }
 
     async fn handle_log(&mut self, new_op: Operation) {
         let new_op_id = new_op.id;
         self.operations.insert(new_op_id, new_op);
-        self.commit_operation(new_op_id - 1);
-        self.connection_tx.send(ManagerCmd::SendTo(
-            self.leader_addr,
-            NodeMessage::Ack { id: new_op_id }.into(),
-        ));
+        self.commit_operation(new_op_id - 1).await;
+        self.connection_tx
+            .send(ManagerCmd::SendTo(
+                self.leader_addr,
+                NodeMessage::Ack { id: new_op_id }.into(),
+            ))
+            .await
+            .unwrap();
     }
 
     async fn handle_ack(&mut self, _id: u32) {
