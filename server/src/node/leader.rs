@@ -41,15 +41,25 @@ impl Node for Leader {
     }
 
     async fn handle_ack(&mut self, id: u32) {
-        self.operations.entry(id).and_modify(|(ack_count, _)| {
+        if let Some(ack_op) = self.operations.get_mut(&id) {
+            let ack_count = &mut ack_op.0;
             *ack_count += 1;
             if *ack_count <= self.replicas.len() / 2 {
                 return;
             }
-        });
+        } else {
+            todo!() // TODO: handle this case
+        };
 
-        let op = self.operations.remove(&id);
-        // self.router.send() // tell actix to manage the businness logic
+        let op = self.operations.remove(&id).unwrap().1;
+        self.router.send(RouterCmd::ApplyCharge {
+            account_id: (op.account_id),
+            card_id: (op.card_id),
+            amount: (op.amount as f64),
+            op_id: (op.id as u64),
+            request_id: (0), // ?
+            timestamp: 0,
+        });
     }
 
     async fn recv_node_msg(&mut self) -> Option<InboundEvent> {

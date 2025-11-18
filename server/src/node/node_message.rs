@@ -79,21 +79,33 @@ mod test {
 
     #[test]
     fn deserialize_valid_operation_request_node_msg() {
-        let msg_bytes = [0x00, 0x00, 0x00, 0x00, 0x01].to_vec();
-        let node_msg: NodeMessage = msg_bytes.try_into().unwrap();
-        let expected = NodeMessage::Request {
-            op: Operation { id: 1 },
+        let op = Operation {
+            id: 1,
+            account_id: 348,
+            card_id: 34821,
+            amount: 80500.53,
         };
+        let op_srl: Vec<u8> = op.clone().into();
+        let mut msg_bytes = [0x00].to_vec();
+        msg_bytes.extend(op_srl);
+        let node_msg: NodeMessage = msg_bytes.try_into().unwrap();
+        let expected = NodeMessage::Request { op };
         assert_eq!(node_msg, expected);
     }
 
     #[test]
     fn serialize_operation_request_node_msg() {
-        let node_msg = NodeMessage::Request {
-            op: Operation { id: 1 },
+        let op = Operation {
+            id: 1,
+            account_id: 348,
+            card_id: 34821,
+            amount: 80500.53,
         };
+        let node_msg = NodeMessage::Request { op: op.clone() };
         let msg_bytes: Vec<u8> = node_msg.into();
-        let expected = [0x00, 0x00, 0x00, 0x00, 0x01].to_vec();
+        let mut expected = [0x00].to_vec();
+        let op_srl: Vec<u8> = op.into();
+        expected.extend(op_srl);
         assert_eq!(msg_bytes, expected);
     }
 }
