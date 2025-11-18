@@ -50,6 +50,16 @@ impl Node for Leader {
             return;
         }
 
+        self.commit_operation(id);
+    }
+
+    async fn recv_node_msg(&mut self) -> Option<InboundEvent> {
+        self.connection_rx.recv().await
+    }
+}
+
+impl Leader {
+    async fn commit_operation(&mut self, id: u32) {
         let (_, client_addr, op) = self.operations.remove(&id).unwrap();
         if self
             .router
@@ -73,12 +83,6 @@ impl Node for Leader {
         }
     }
 
-    async fn recv_node_msg(&mut self) -> Option<InboundEvent> {
-        self.connection_rx.recv().await
-    }
-}
-
-impl Leader {
     pub async fn start(
         address: SocketAddr,
         coords: (f64, f64),

@@ -1,5 +1,9 @@
 use super::operation::Operation;
-use crate::errors::AppError;
+use crate::{
+    errors::AppError,
+    node::serial_helpers::{deserialize_socket_addr, read_bytes, serialize_socket_addr},
+};
+use NodeMessage::*;
 
 /// Messages sent between nodes.
 #[derive(Debug, PartialEq)]
@@ -22,7 +26,6 @@ pub enum NodeMessage {
 }
 
 use std::net::SocketAddr;
-use NodeMessage::*;
 
 impl TryFrom<Vec<u8>> for NodeMessage {
     type Error = AppError;
@@ -30,8 +33,8 @@ impl TryFrom<Vec<u8>> for NodeMessage {
     fn try_from(payload: Vec<u8>) -> Result<Self, AppError> {
         match payload[0] {
             0u8 => Ok(Request {
-                op: payload[1..].try_into()?,
-                client_addr: // TODO
+                op: payload[1..25].try_into()?,
+                addr: deserialize_socket_addr(read_bytes(&payload, 25..31)?)?,
             }),
             1u8 => Ok(Log {
                 op: payload[5..].try_into()?,
@@ -53,10 +56,15 @@ impl TryFrom<Vec<u8>> for NodeMessage {
 impl From<NodeMessage> for Vec<u8> {
     fn from(msg: NodeMessage) -> Self {
         match msg {
-            NodeMessage::Request { op } => {
+            NodeMessage::Request { op, addr } => {
                 let mut srl: Vec<u8> = vec![0u8];
                 let op_srl: Vec<u8> = op.into();
+                let addr_srl = serialize_socket_addr(addr).unwrap(); // TODO: this unwrap has to be
+                                                                     // avoided by specifying that
+                                                                     // the socket addr HAS to be
+                                                                     // IPv4
                 srl.extend(op_srl);
+                srl.extend(addr_srl);
                 srl
             }
             NodeMessage::Log { op } => {
@@ -78,6 +86,7 @@ impl From<NodeMessage> for Vec<u8> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::net::IpAddr;
 
     #[test]
     fn deserialize_valid_operation_request_node_msg() {
@@ -88,10 +97,13 @@ mod test {
             amount: 80500.53,
         };
         let op_srl: Vec<u8> = op.clone().into();
+        let addr = SocketAddr::new(IpAddr::V4([127, 0, 0, 1].into()), 12345);
+        let addr_srl = serialize_socket_addr(addr).unwrap();
         let mut msg_bytes = [0x00].to_vec();
         msg_bytes.extend(op_srl);
+        msg_bytes.extend(addr_srl);
         let node_msg: NodeMessage = msg_bytes.try_into().unwrap();
-        let expected = NodeMessage::Request { op };
+        let expected = NodeMessage::Request { op, addr };
         assert_eq!(node_msg, expected);
     }
 
@@ -103,11 +115,17 @@ mod test {
             card_id: 34821,
             amount: 80500.53,
         };
-        let node_msg = NodeMessage::Request { op: op.clone() };
+        let addr = SocketAddr::new(IpAddr::V4([127, 0, 0, 1].into()), 12345);
+        let node_msg = NodeMessage::Request {
+            op: op.clone(),
+            addr,
+        };
         let msg_bytes: Vec<u8> = node_msg.into();
         let mut expected = [0x00].to_vec();
         let op_srl: Vec<u8> = op.into();
+        let addr_srl = serialize_socket_addr(addr).unwrap();
         expected.extend(op_srl);
+        expected.extend(addr_srl);
         assert_eq!(msg_bytes, expected);
     }
 }

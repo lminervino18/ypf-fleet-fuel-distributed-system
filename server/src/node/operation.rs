@@ -1,3 +1,4 @@
+use super::serial_helpers::read_bytes;
 use crate::errors::AppError;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -6,21 +7,6 @@ pub struct Operation {
     pub account_id: u64,
     pub card_id: u64,
     pub amount: f32,
-}
-
-fn read_bytes<const N: usize>(
-    payload: &[u8],
-    range: std::ops::Range<usize>,
-) -> Result<[u8; N], AppError> {
-    payload
-        .get(range.clone())
-        .ok_or_else(|| AppError::InvalidData {
-            details: format!("not enough bytes to deserialize operation: {:?}", range),
-        })?
-        .try_into()
-        .map_err(|e| AppError::InvalidData {
-            details: format!("not enough bytes to deserialize operation: {e}"),
-        })
 }
 
 impl TryFrom<&[u8]> for Operation {
