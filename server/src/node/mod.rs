@@ -1,5 +1,6 @@
 mod connection_manager;
 mod leader;
+mod network;
 mod node;
 mod node_message;
 mod operation;
