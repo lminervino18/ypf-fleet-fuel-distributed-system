@@ -1,10 +1,21 @@
-use super::helpers::serialize_socket_addr;
+use super::protocol::*;
 use crate::node::message::Message;
 use crate::node::message::Message::*;
+use crate::node::operation::Operation;
+use std::net::IpAddr;
 
-impl From<Message> for &[u8] {
-    fn from(msg: Message) -> Self {
-        todo!();
+impl From<Operation> for Vec<u8> {
+    fn from(msg: Operation) -> Self {
+        let id_srl = msg.id.to_be_bytes();
+        let acc_id_srl = msg.account_id.to_be_bytes();
+        let card_id_srl = msg.card_id.to_be_bytes();
+        let amount = msg.amount.to_be_bytes();
+        let mut srl = vec![];
+        srl.extend(id_srl);
+        srl.extend(acc_id_srl);
+        srl.extend(card_id_srl);
+        srl.extend(amount);
+        srl
     }
 }
 
@@ -12,29 +23,81 @@ impl From<Message> for Vec<u8> {
     fn from(msg: Message) -> Self {
         match msg {
             Request { op, addr } => {
-                let mut srl: Vec<u8> = vec![0u8];
+                let type_srl = [TYPE_REQUEST];
                 let op_srl: Vec<u8> = op.into();
-                let addr_srl = serialize_socket_addr(addr).unwrap(); // TODO: this unwrap has to be
-                                                                     // avoided by specifying that
-                                                                     // the socket addr HAS to be
-                                                                     // IPv4
+                let addr_srl: [u8; 6] = match addr.ip() {
+                    IpAddr::V4(ip) => {
+                        let [a, b, c, d] = ip.octets();
+                        let [p0, p1] = addr.port().to_be_bytes();
+                        [a, b, c, d, p0, p1]
+                    }
+                    _ => panic!(), // sólo ipv4
+                };
+                let mut srl = vec![];
+                srl.extend(type_srl);
                 srl.extend(op_srl);
                 srl.extend(addr_srl);
                 srl
             }
             Log { op } => {
-                let mut srl = vec![1u8];
+                let type_srl = [TYPE_LOG];
                 let op_srl: Vec<u8> = op.into();
+                let mut srl = vec![];
+                srl.extend(type_srl);
                 srl.extend(op_srl);
                 srl
             }
             Ack { id } => {
-                let mut srl = vec![2u8];
-                let id_srl = id.to_be_bytes().to_vec();
+                let type_srl = [TYPE_ACK];
+                let id_srl = id.to_be_bytes();
+                let mut srl = vec![];
+                srl.extend(type_srl);
                 srl.extend(id_srl);
                 srl
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_serialize_operation() {
+        let op = Operation {
+            id: 126,
+            account_id: 348,
+            card_id: 34821,
+            amount: 80500.53,
+        };
+
+        let op_srl: Vec<u8> = op.into();
+        let expected = [
+            0x00, 0x00, 0x00, 0x7E, // 126
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x5C, // 348
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x05, // 34721
+            0x47, 0x9d, 0x3a, 0x44, // 80500.53 IEEE 754 simple precision
+        ];
+        assert_eq!(op_srl, expected);
+    }
+
+    #[test]
+    fn deserialize_opeartion() {
+        let op_srl = [
+            0x00, 0x00, 0x00, 0x7E, // 126
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x5C, // 348
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x05, // 34721
+            0x47, 0x9d, 0x3a, 0x44, // 80500.53 IEEE simple precision
+        ];
+        let expected = Operation {
+            id: 126,
+            account_id: 348,
+            card_id: 34821,
+            amount: 80500.53,
+        };
+        let op: Operation = op_srl[..].try_into().unwrap();
+        assert_eq!(op, expected);
     }
 }
 

@@ -1,8 +1,5 @@
 use super::operation::Operation;
-use crate::{
-    errors::AppError,
-    node::serial_helpers::{deserialize_socket_addr, read_bytes, serialize_socket_addr},
-};
+use std::net::SocketAddr;
 
 /// Messages sent between nodes.
 #[derive(Debug, PartialEq)]
