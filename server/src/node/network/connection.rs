@@ -1,15 +1,19 @@
-use super::manager::Manager;
-use crate::errors::AppError;
-use std::net::ToSocketAddrs;
+use super::handler::Handler;
+use crate::{errors::AppResult, node::node_message::NodeMessage};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use tokio::sync::Mutex;
 
 pub struct Connection {
-    manager: Manager,
+    active: Arc<Mutex<HashMap<SocketAddr, Handler>>>,
+    max_conns: usize,
 }
 
 impl Connection {
-    fn new<Addr: ToSocketAddrs>(listener_addr: Addr, max_streams: usize) -> Self {
-        Self {
-            manager: Manager::new(max_streams),
-        }
+    async fn send(&mut self, msg: NodeMessage, address: SocketAddr) -> AppResult<()> {
+        todo!();
+    }
+
+    async fn recv(&mut self) -> AppResult<()> {
+        todo!();
     }
 }
