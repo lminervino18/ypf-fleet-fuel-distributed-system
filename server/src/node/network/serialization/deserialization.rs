@@ -42,10 +42,10 @@ impl TryFrom<&[u8]> for Operation {
     }
 }
 
-impl TryFrom<&[u8]> for Message {
+impl TryFrom<Vec<u8>> for Message {
     type Error = AppError;
 
-    fn try_from(payload: &[u8]) -> Result<Self, AppError> {
+    fn try_from(payload: Vec<u8>) -> Result<Self, AppError> {
         match payload[0] {
             TYPE_REQUEST => {
                 let op_srl = &payload[1..];

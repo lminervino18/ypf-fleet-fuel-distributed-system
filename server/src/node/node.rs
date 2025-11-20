@@ -1,6 +1,6 @@
-use super::{connection_manager::InboundEvent, message::Message, operation::Operation};
+use super::{message::Message, operation::Operation};
 use crate::errors::AppResult;
-use std::{future::pending, net::SocketAddr};
+use std::net::SocketAddr;
 
 /// Role of a node in the YPF Ruta distributed system.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,20 +10,11 @@ pub enum NodeRole {
     Station,
 }
 
-/// Distributed node participating in the YPF Ruta system.
-///
-/// A Node encapsulates:
-/// - networking (TCP) via the ConnectionManager,
-/// - a local ActorRouter (Actix) for application logic,
-/// - role-specific behaviour (leader, replica, station).
-///
-/// The trait delegates the main execution to `run_loop()`,
-/// which is implemented by each concrete node type.
 pub trait Node {
     async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr);
     async fn handle_log(&mut self, op: Operation);
     async fn handle_ack(&mut self, id: u32);
-    async fn recv_node_msg(&mut self) -> Option<InboundEvent>;
+    async fn recv_node_msg(&mut self) -> AppResult<Message>;
 
     async fn handle_node_msg(&mut self, msg: Message) {
         match msg {
@@ -40,18 +31,20 @@ pub trait Node {
     }
 
     async fn run(&mut self) -> AppResult<()> {
-        while let Some(evt) = self.recv_node_msg().await {
-            match evt {
-                InboundEvent::Received { peer, payload } => {
-                    self.handle_node_msg(payload.try_into()?).await;
+        while let Ok(msg) = self.recv_node_msg().await {
+            match msg {
+                Message::Request { op, addr } => {
+                    self.handle_request(op, addr);
                 }
-                InboundEvent::ConnClosed { peer } => {
-                    println!("[INFO] Connection closed by {}", peer);
+                Message::Log { op } => {
+                    self.handle_log(op);
+                }
+                Message::Ack { id } => {
+                    self.handle_ack(id);
                 }
             }
         }
 
-        pending::<()>().await;
         Ok(())
     }
 }

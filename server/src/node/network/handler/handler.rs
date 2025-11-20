@@ -21,7 +21,7 @@ pub struct Handler {
 }
 
 impl Handler {
-    pub async fn start(address: SocketAddr, receiver_tx: Arc<Sender<Message>>) -> AppResult<Self> {
+    pub async fn start(address: &SocketAddr, receiver_tx: Arc<Sender<Message>>) -> AppResult<Self> {
         let stream =
             TcpStream::connect(address)
                 .await

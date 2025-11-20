@@ -26,7 +26,7 @@ pub struct Connection {
 // ConnectionClosed, para que cuando Node haga send/recv pueda hanldear fácilmente si
 // se cayó, por ej, el líder (match Err(ConnectionClosed {addr}) => if addr == leader_addr ...)
 impl Connection {
-    async fn start(address: SocketAddr, max_conns: usize) -> AppResult<Self> {
+    pub async fn start(address: SocketAddr, max_conns: usize) -> AppResult<Self> {
         let active = Arc::new(Mutex::new(HashMap::new()));
         let (messages_tx, messages_rx) = mpsc::channel(MSG_BUFF_SIZE);
         let messages_tx = Arc::new(messages_tx);
@@ -41,7 +41,7 @@ impl Connection {
         })
     }
 
-    pub async fn send(&mut self, msg: Message, address: SocketAddr) -> AppResult<()> {
+    pub async fn send(&mut self, msg: Message, address: &SocketAddr) -> AppResult<()> {
         let mut guard = self.active.lock().await;
         if !guard.contains_key(&address) {
             let handler = Handler::start(address, self.messages_tx.clone()).await?;

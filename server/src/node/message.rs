@@ -2,7 +2,7 @@ use super::operation::Operation;
 use std::net::SocketAddr;
 
 /// Messages sent between nodes.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Message {
     /* Raft
      ***/

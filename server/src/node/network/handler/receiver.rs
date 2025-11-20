@@ -23,7 +23,7 @@ impl StreamReceiver {
         // read to buffer with allocated expected size
         let mut bytes = vec![0; len];
         self.stream.read_exact(&mut bytes).await;
-        self.messages_tx.send(bytes.try_into()?);
+        self.messages_tx.send(bytes.try_into()?).await;
         Ok(())
     }
 }

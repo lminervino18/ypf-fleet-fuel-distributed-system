@@ -20,7 +20,7 @@ impl StreamSender {
     pub async fn send(&mut self) -> AppResult<()> {
         if let Some(msg) = self.messages_rx.recv().await {
             // payload into bytes
-            let bytes: &[u8] = msg.into();
+            let bytes: Vec<u8> = msg.into();
             // 2 bytes for the msg len (in bytes)
             let len: u16 = bytes.len() as u16;
             let mut len_bytes = len.to_be_bytes().to_vec();
