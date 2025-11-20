@@ -1,7 +1,7 @@
 use super::{
     connection_manager::{ConnectionManager, InboundEvent, ManagerCmd},
+    message::Message,
     node::Node,
-    node_message::NodeMessage,
     operation::Operation,
 };
 use crate::actors::{types::ActorEvent, RouterCmd};
@@ -32,7 +32,7 @@ impl Node for Replica {
         self.connection_tx
             .send(ManagerCmd::SendTo(
                 self.leader_addr,
-                NodeMessage::Request {
+                Message::Request {
                     op,
                     addr: client_addr,
                 }
@@ -49,7 +49,7 @@ impl Node for Replica {
         self.connection_tx
             .send(ManagerCmd::SendTo(
                 self.leader_addr,
-                NodeMessage::Ack { id: new_op_id }.into(),
+                Message::Ack { id: new_op_id }.into(),
             ))
             .await
             .unwrap();

@@ -1,7 +1,7 @@
 use super::{acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler};
 use crate::{
     errors::{AppError, AppResult},
-    node::node_message::NodeMessage,
+    node::message::Message,
 };
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
@@ -17,8 +17,8 @@ const MSG_BUFF_SIZE: usize = 1600;
 pub struct Connection {
     active: Arc<Mutex<HashMap<SocketAddr, Handler>>>,
     acceptor_handle: JoinHandle<()>,
-    messages_tx: Arc<Sender<NodeMessage>>, // sólo para pasarle a quienes me mandan (Receiver)
-    messages_rx: Receiver<NodeMessage>,
+    messages_tx: Arc<Sender<Message>>, // sólo para pasarle a quienes me mandan (Receiver)
+    messages_rx: Receiver<Message>,
     max_conns: usize,
 }
 
@@ -41,7 +41,7 @@ impl Connection {
         })
     }
 
-    pub async fn send(&mut self, msg: NodeMessage, address: SocketAddr) -> AppResult<()> {
+    pub async fn send(&mut self, msg: Message, address: SocketAddr) -> AppResult<()> {
         if !self.active.lock().await.contains_key(&address) {
             self.add_handler(address).await?;
         }
@@ -56,7 +56,7 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn recv(&mut self) -> AppResult<NodeMessage> {
+    pub async fn recv(&mut self) -> AppResult<Message> {
         self.messages_rx.recv().await.ok_or(AppError::ChannelClosed)
     }
 

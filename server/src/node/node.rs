@@ -1,4 +1,4 @@
-use super::{connection_manager::InboundEvent, node_message::NodeMessage, operation::Operation};
+use super::{connection_manager::InboundEvent, message::Message, operation::Operation};
 use crate::errors::AppResult;
 use std::{future::pending, net::SocketAddr};
 
@@ -25,15 +25,15 @@ pub trait Node {
     async fn handle_ack(&mut self, id: u32);
     async fn recv_node_msg(&mut self) -> Option<InboundEvent>;
 
-    async fn handle_node_msg(&mut self, msg: NodeMessage) {
+    async fn handle_node_msg(&mut self, msg: Message) {
         match msg {
-            NodeMessage::Request { op, addr } => {
+            Message::Request { op, addr } => {
                 self.handle_request(op, addr).await;
             }
-            NodeMessage::Log { op } => {
+            Message::Log { op } => {
                 self.handle_log(op).await;
             }
-            NodeMessage::Ack { id } => {
+            Message::Ack { id } => {
                 self.handle_ack(id).await;
             }
         }

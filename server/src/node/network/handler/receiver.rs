@@ -1,14 +1,14 @@
-use crate::{errors::AppResult, node::node_message::NodeMessage};
+use crate::{errors::AppResult, node::message::Message};
 use std::sync::Arc;
 use tokio::{io::AsyncReadExt, net::tcp::OwnedReadHalf, sync::mpsc::Sender};
 
 pub struct StreamReceiver {
-    messages_tx: Arc<Sender<NodeMessage>>,
+    messages_tx: Arc<Sender<Message>>,
     stream: OwnedReadHalf,
 }
 
 impl StreamReceiver {
-    pub fn new(messages_tx: Arc<Sender<NodeMessage>>, stream: OwnedReadHalf) -> Self {
+    pub fn new(messages_tx: Arc<Sender<Message>>, stream: OwnedReadHalf) -> Self {
         Self {
             messages_tx,
             stream,

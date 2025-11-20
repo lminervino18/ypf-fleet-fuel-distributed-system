@@ -1,7 +1,7 @@
 use super::{receiver::StreamReceiver, sender::StreamSender};
 use crate::{
     errors::{AppError, AppResult},
-    node::node_message::NodeMessage,
+    node::message::Message,
 };
 use std::{net::SocketAddr, sync::Arc, time::Instant};
 use tokio::{
@@ -15,16 +15,13 @@ const MSG_BUFF_SIZE: usize = 10;
 
 pub struct Handler {
     handle: JoinHandle<()>,
-    messages_tx: Sender<NodeMessage>,
+    messages_tx: Sender<Message>,
     pub address: SocketAddr,
     pub last_used: Instant,
 }
 
 impl Handler {
-    pub async fn start(
-        address: SocketAddr,
-        receiver_tx: Arc<Sender<NodeMessage>>,
-    ) -> AppResult<Self> {
+    pub async fn start(address: SocketAddr, receiver_tx: Arc<Sender<Message>>) -> AppResult<Self> {
         let stream =
             TcpStream::connect(address)
                 .await
@@ -37,7 +34,7 @@ impl Handler {
 
     pub async fn start_from(
         stream: TcpStream,
-        receiver_tx: Arc<Sender<NodeMessage>>,
+        receiver_tx: Arc<Sender<Message>>,
     ) -> AppResult<Self> {
         let (messages_tx, sender_rx) = mpsc::channel(MSG_BUFF_SIZE);
         let address = stream.local_addr().map_err(|e| AppError::Unexpected {
@@ -47,7 +44,7 @@ impl Handler {
         Ok(Handler::new(stream, messages_tx, sender_rx, receiver_tx, address).await?)
     }
 
-    pub async fn send(&mut self, msg: NodeMessage) -> AppResult<()> {
+    pub async fn send(&mut self, msg: Message) -> AppResult<()> {
         self.last_used = Instant::now();
         Ok(self
             .messages_tx
@@ -62,9 +59,9 @@ impl Handler {
 
     async fn new(
         stream: TcpStream,
-        messages_tx: Sender<NodeMessage>,
-        sender_rx: Receiver<NodeMessage>,
-        receiver_tx: Arc<Sender<NodeMessage>>,
+        messages_tx: Sender<Message>,
+        sender_rx: Receiver<Message>,
+        receiver_tx: Arc<Sender<Message>>,
         address: SocketAddr,
     ) -> AppResult<Self> {
         let (stream_rx, stream_tx) = stream.into_split();

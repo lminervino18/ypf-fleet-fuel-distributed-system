@@ -1,7 +1,7 @@
 use super::active_helpers::add_handler_from;
 use super::handler::Handler;
 use crate::errors::{AppError, AppResult};
-use crate::node::node_message::NodeMessage;
+use crate::node::message::Message;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ impl Acceptor {
     pub async fn start(
         address: SocketAddr,
         active: Arc<Mutex<HashMap<SocketAddr, Handler>>>,
-        messages_tx: Arc<Sender<NodeMessage>>,
+        messages_tx: Arc<Sender<Message>>,
         max_conns: usize,
     ) -> AppResult<JoinHandle<()>> {
         let mut acceptor = Acceptor::new(address, active, max_conns).await?;
@@ -49,7 +49,7 @@ impl Acceptor {
         })
     }
 
-    async fn run(&mut self, messages_tx: Arc<Sender<NodeMessage>>) {
+    async fn run(&mut self, messages_tx: Arc<Sender<Message>>) {
         while let Ok((stream, _)) = self.listener.accept().await {
             let Ok(handler) = Handler::start_from(stream, messages_tx.clone()).await else {
                 continue;

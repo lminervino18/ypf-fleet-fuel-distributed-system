@@ -1,7 +1,7 @@
 use super::{
     connection_manager::{ConnectionManager, InboundEvent, ManagerCmd},
+    message::Message,
     node::Node,
-    node_message::NodeMessage,
     operation::Operation,
 };
 use crate::{
@@ -27,7 +27,7 @@ pub struct Leader {
 impl Node for Leader {
     async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr) {
         self.operations.insert(op.id, (0, client_addr, op.clone()));
-        let log_msg: Vec<u8> = NodeMessage::Log { op: op.clone() }.into();
+        let log_msg: Vec<u8> = Message::Log { op: op.clone() }.into();
         for replica in &self.replicas {
             self.connection_tx
                 .send(ManagerCmd::SendTo(*replica, log_msg.clone()))
@@ -77,7 +77,7 @@ impl Leader {
             self.connection_tx
                 .send(ManagerCmd::SendTo(
                     client_addr,
-                    NodeMessage::Ack { id: 0 }.into(), // TODO: this msg should have its own type
+                    Message::Ack { id: 0 }.into(), // TODO: this msg should have its own type
                 ))
                 .await
                 .unwrap();
