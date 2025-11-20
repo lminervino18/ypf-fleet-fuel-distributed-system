@@ -1,16 +1,13 @@
-use crate::{
-    errors::{AppError, AppResult},
-    node::message::Message,
-};
+use crate::errors::{AppError, AppResult};
 use tokio::{io::AsyncWriteExt, net::tcp::OwnedWriteHalf, sync::mpsc::Receiver};
 
-pub struct StreamSender {
-    messages_rx: Receiver<Message>,
+pub struct StreamSender<T> {
+    messages_rx: Receiver<T>,
     stream: OwnedWriteHalf,
 }
 
-impl StreamSender {
-    pub fn new(messages_rx: Receiver<Message>, stream: OwnedWriteHalf) -> Self {
+impl<T: Into<Vec<u8>>> StreamSender<T> {
+    pub fn new(messages_rx: Receiver<T>, stream: OwnedWriteHalf) -> Self {
         Self {
             messages_rx,
             stream,

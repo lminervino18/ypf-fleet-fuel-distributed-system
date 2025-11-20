@@ -41,16 +41,15 @@ impl Handler {
             details: e.to_string(),
         })?;
 
-        Ok(Handler::new(stream, messages_tx, sender_rx, receiver_tx, address).await?)
+        Handler::new(stream, messages_tx, sender_rx, receiver_tx, address).await
     }
 
     pub async fn send(&mut self, msg: Message) -> AppResult<()> {
         self.last_used = Instant::now();
-        Ok(self
-            .messages_tx
+        self.messages_tx
             .send(msg)
             .await
-            .map_err(|_| AppError::ConnectionClosed {})?)
+            .map_err(|_| AppError::ConnectionClosed {})
     }
 
     pub async fn stop(&mut self) {
@@ -75,16 +74,18 @@ impl Handler {
         })
     }
 
-    fn run(mut sender: StreamSender, mut receiver: StreamReceiver) -> JoinHandle<()> {
+    fn run(mut sender: StreamSender<Message>, mut receiver: StreamReceiver) -> JoinHandle<()> {
         task::spawn(async move {
             loop {
                 select! {
                         sent = sender.send() => { match sent {
+                            Ok(()) => {},
                             Err(AppError::ChannelClosed) => { break; },
                             _ => todo!(),
                         }},
                         received = receiver.recv() => {
                             match received {
+                                Ok(()) => {},
                                 _ => todo!(),
                             }
                         }
