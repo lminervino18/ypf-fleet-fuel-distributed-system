@@ -2,24 +2,25 @@ use super::{
     connection_manager::{ConnectionManager, InboundEvent, ManagerCmd},
     node::Node,
     node_message::NodeMessage,
-    operation::Operation,
+    // Consensus-level operation used by the distributed protocol.
+    operation::Operation as NodeOperation,
 };
-use crate::actors::types::{ActorEvent, RouterCmd};
+
 use crate::{
-    actors::ActorRouter,
-    errors::{AppError, AppResult},
+    actors::actor_router::ActorRouter,
+    actors::messages::{ActorEvent, RouterCmd},
+    domain::Operation as ActorOperation,
+    errors::{AppError, AppResult, VerifyError, ApplyError},
     node::station::{NodeToStationMsg, StationToNodeMsg},
 };
+
+
 use actix::{Actor, Addr};
 use std::{collections::HashMap, future::pending, net::SocketAddr};
 use tokio::sync::{mpsc, oneshot};
 
+
 /// Internal state for a charge coming from a station pump.
-///
-/// We store this so that:
-/// - after a successful limit check we can build `ApplyCharge`,
-/// - after `ChargeApplied` we know which original request_id to confirm
-///   back to the station.
 #[derive(Debug, Clone)]
 struct StationPendingCharge {
     account_id: u64,
@@ -29,23 +30,9 @@ struct StationPendingCharge {
 
 /// Replica node.
 ///
-/// The Replica wires together:
-/// - the TCP ConnectionManager (network),
-/// - the local ActorRouter (Actix),
-/// - the station simulator (stdin-driven pumps),
-/// in the same way as the Leader, but intended to be a follower in the
-/// distributed system.
-///
-/// Flow for a charge coming from a pump:
-/// 1. Station sends `StationToNodeMsg::ChargeRequest`.
-/// 2. Replica stores `StationPendingCharge` keyed by `request_id`.
-/// 3. Replica sends `RouterCmd::AuthorizeCharge` to ActorRouter.
-/// 4. Actor layer emits:
-///    - `ActorEvent::LimitCheckResult` (allowed / denied),
-///      and if allowed:
-///    - `ActorEvent::ChargeApplied` when the charge is actually applied.
-/// 5. Replica converts these actor events into a single
-///    `NodeToStationMsg::ChargeResult` back to the station.
+/// Same wiring as the Leader, but intended to be a follower in the
+/// distributed system. For station-originated charges it uses the
+/// exact same Verify → Apply flow as the Leader.
 pub struct Replica {
     id: u64,
     coords: (f64, f64),
@@ -54,7 +41,7 @@ pub struct Replica {
     other_replicas: Vec<SocketAddr>,
 
     /// Consensus operations (placeholder for now).
-    operations: HashMap<u8, Operation>,
+    operations: HashMap<u8, NodeOperation>,
 
     // ===== Network (ConnectionManager) =====
     connection_tx: mpsc::Sender<ManagerCmd>,
@@ -70,7 +57,7 @@ pub struct Replica {
     station_result_tx: mpsc::Sender<NodeToStationMsg>,
 
     /// In-flight charge requests coming from the station.
-    /// Key = `request_id` chosen by the station simulator.
+    /// Key = `op_id` / `request_id` chosen by the station simulator.
     station_requests: HashMap<u64, StationPendingCharge>,
 
     /// Local Actix ActorRouter handle.
@@ -81,23 +68,23 @@ pub struct Replica {
 // Node trait implementation
 // ===============================================================
 impl Node for Replica {
-    async fn handle_accept(&mut self, op: Operation) {
-        println!("[Replica] handle_accept({:?})", op);
+    async fn handle_accept(&mut self, op: NodeOperation) {
+        //println!("[Replica] handle_accept({:?})", op);
         // TODO: integrate with real consensus.
     }
 
-    async fn handle_learn(&mut self, op: Operation) {
-        println!("[Replica] handle_learn({:?})", op);
+    async fn handle_learn(&mut self, op: NodeOperation) {
+        //println!("[Replica] handle_learn({:?})", op);
         // TODO
     }
 
-    async fn handle_commit(&mut self, op: Operation) {
-        println!("[Replica] handle_commit({:?})", op);
+    async fn handle_commit(&mut self, op: NodeOperation) {
+        //println!("[Replica] handle_commit({:?})", op);
         // TODO
     }
 
-    async fn handle_finished(&mut self, op: Operation) {
-        println!("[Replica] handle_finished({:?})", op);
+    async fn handle_finished(&mut self, op: NodeOperation) {
+        //println!("[Replica] handle_finished({:?})", op);
         // TODO
     }
 
@@ -111,135 +98,149 @@ impl Node for Replica {
 
     async fn handle_actor_event(&mut self, event: ActorEvent) {
         match event {
-            // ---- Limit check result (authorization) ----
-            ActorEvent::LimitCheckResult {
-                request_id,
+            // --------------------------------------------------
+            // Response to RouterCmd::Verify { op_id, operation }
+            // --------------------------------------------------
+            ActorEvent::VerifyResult {
+                op_id,
+                operation,
                 allowed,
                 error,
             } => {
-                // Is this a request coming from the station?
-                let pending = match self.station_requests.get(&request_id) {
+                let pending = match self.station_requests.get(&op_id) {
                     Some(p) => p.clone(),
                     None => {
-                        // Not from station: just log it.
+                        // Not from station: just log and return.
                         match &error {
                             None => {
-                                println!(
-                                    "[Replica][actor] LimitCheckResult (non-station): request_id={} allowed={}",
-                                    request_id, allowed
-                                );
+                                // //println!(
+                                //     "[Replica][actor] VerifyResult (non-station): op_id={} allowed={} op={:?}",
+                                //     op_id, allowed, operation
+                                // );
                             }
                             Some(err) => {
-                                println!(
-                                    "[Replica][actor] LimitCheckResult (non-station): request_id={} allowed={} error={:?}",
-                                    request_id, allowed, err
-                                );
+                                // //println!(
+                                //     "[Replica][actor] VerifyResult (non-station): op_id={} allowed={} op={:?} error={:?}",
+                                //     op_id, allowed, operation, err
+                                // );
                             }
                         }
                         return;
                     }
                 };
 
-                if !allowed {
-                    println!(
-                        "[Replica][actor→station] request_id={} -> DENIED (error={:?})",
-                        request_id, error
-                    );
+                if !matches!(operation, ActorOperation::Charge { .. }) {
+                    // //println!(
+                    //     "[Replica][actor] VerifyResult for non-Charge operation from station: op_id={} op={:?}",
+                    //     op_id, operation
+                    // );
+                }
 
-                    // Do not continue with ApplyCharge; respond directly to station.
-                    self.station_requests.remove(&request_id);
+                if !allowed {
+                    // //println!(
+                    //     "[Replica][actor→station] op_id={} -> CHARGE DENIED (error={:?})",
+                    //     op_id, error
+                    // );
+
+                    self.station_requests.remove(&op_id);
 
                     let msg = NodeToStationMsg::ChargeResult {
-                        request_id,
+                        request_id: op_id,
                         allowed: false,
                         error,
                     };
 
                     if let Err(e) = self.station_result_tx.send(msg).await {
-                        eprintln!(
-                            "[Replica][actor→station][ERROR] failed to send DENIED result: {}",
-                            e
-                        );
+                        // //println!(
+                        //     "[Replica][actor→station][ERROR] failed to send DENIED result: {}",
+                        //     e
+                        // );
                     }
                 } else {
-                    println!(
-                        "[Replica][actor] LimitCheckResult: request_id={} allowed=true -> ApplyCharge",
-                        request_id
-                    );
+                    // //println!(
+                    //     "[Replica][actor] VerifyResult: op_id={} allowed=true -> Apply(op)",
+                    //     op_id
+                    // );
 
-                    // Fire ApplyCharge into the actor system using stored state.
-                    self.router.do_send(RouterCmd::ApplyCharge {
-                        account_id: pending.account_id,
-                        card_id: pending.card_id,
-                        amount: pending.amount,
-                        timestamp: 0,      // TODO: real timestamp
-                        op_id: request_id, // correlate op_id == request_id
-                        request_id,
+                    let _ = pending;
+
+                    self.router.do_send(RouterCmd::Apply {
+                        op_id,
+                        operation,
                     });
-                    // Do not respond to station yet: wait for ChargeApplied.
                 }
             }
 
-            // ---- Confirmation that the charge was applied ----
-            ActorEvent::ChargeApplied { operation } => {
-                println!("[Replica][actor] ChargeApplied: operation={:?}", operation);
+            // --------------------------------------------------
+            // Response to RouterCmd::Apply { op_id, operation }
+            // --------------------------------------------------
+            ActorEvent::ApplyResult {
+                op_id,
+                operation,
+                success,
+                error,
+            } => {
+                // //println!(
+                //     "[Replica][actor] ApplyResult: op_id={} success={} op={:?} error={:?}",
+                //     op_id, success, operation, error
+                // );
 
-                if let crate::actors::types::Operation::Charge { op_id, .. } = operation {
-                    if self.station_requests.remove(&op_id).is_some() {
-                        println!(
-                            "[Replica][actor→station] request_id={} -> CHARGE CONFIRMED",
-                            op_id
-                        );
+                if let Some(pending) = self.station_requests.remove(&op_id) {
+                    if success {
+                        // //println!(
+                        //     "[Replica][actor→station] op_id={} -> CHARGE CONFIRMED (acc={}, card={}, amount={})",
+                        //     op_id, pending.account_id, pending.card_id, pending.amount
+                        // );
+
                         let msg = NodeToStationMsg::ChargeResult {
                             request_id: op_id,
                             allowed: true,
                             error: None,
                         };
+
                         if let Err(e) = self.station_result_tx.send(msg).await {
-                            eprintln!(
-                                "[Replica][actor→station][ERROR] failed to send OK result: {}",
-                                e
-                            );
+                            // //println!(
+                            //     "[Replica][actor→station][ERROR] failed to send OK result: {}",
+                            //     e
+                            // );
                         }
                     } else {
-                        println!(
-                            "[Replica][actor] ChargeApplied with op_id={} not tracked as station request",
-                            op_id
-                        );
+                        // e//println!(
+                        //     "[Replica][actor→station][ERROR] Apply failed for op_id={} (acc={}, card={}, amount={}) op={:?} error={:?}",
+                        //     op_id, pending.account_id, pending.card_id, pending.amount, operation, error
+                        // );
+
+                        let mapped_error: Option<VerifyError> = match error {
+                            Some(ApplyError::LimitUpdate(e)) => Some(VerifyError::LimitUpdate(e)),
+                            None => None,
+                        };
+
+                        let msg = NodeToStationMsg::ChargeResult {
+                            request_id: op_id,
+                            allowed: false,
+                            error: mapped_error,
+                        };
+
+                        if let Err(e) = self.station_result_tx.send(msg).await {
+                            // //println!(
+                            //     "[Replica][actor→station][ERROR] failed to send FAILED-APPLY result: {}",
+                            //     e
+                            // );
+                        }
                     }
                 } else {
-                    println!("[Replica][actor] ChargeApplied with non-Charge operation");
+                    // //println!(
+                    //     "[Replica][actor] ApplyResult with op_id={} not tracked as station request (op={:?})",
+                    //     op_id, operation
+                    // );
                 }
             }
 
-            // ---- Other events: limit updates, failures, debug ----
-            ActorEvent::LimitUpdated {
-                scope,
-                account_id,
-                card_id,
-                new_limit,
-            } => {
-                println!(
-                    "[Replica][actor] LimitUpdated: scope={:?} account_id={} card_id={:?} new_limit={:?}",
-                    scope, account_id, card_id, new_limit
-                );
-            }
-
-            ActorEvent::LimitUpdateFailed {
-                scope,
-                account_id,
-                card_id,
-                request_id,
-                error,
-            } => {
-                println!(
-                    "[Replica][actor] LimitUpdateFailed: scope={:?} account_id={} card_id={:?} request_id={} error={:?}",
-                    scope, account_id, card_id, request_id, error
-                );
-            }
-
+            // --------------------------------------------------
+            // Other events: debug, etc.
+            // --------------------------------------------------
             ActorEvent::Debug(msg) => {
-                println!("[Replica][actor][debug] {}", msg);
+                //println!("[Replica][actor][debug] {}", msg);
             }
         }
     }
@@ -253,7 +254,6 @@ impl Node for Replica {
         let mut station_open = true;
 
         while net_open || actors_open || station_open {
-            // Build futures without borrowing &mut self twice.
             let net_fut = if net_open {
                 Some(self.connection_rx.recv())
             } else {
@@ -286,17 +286,17 @@ impl Node for Replica {
                                 InboundEvent::Received { peer: _, payload } => {
                                     match NodeMessage::try_from(payload) {
                                         Ok(msg) => self.handle_node_msg(msg).await,
-                                        Err(e) =>
-                                            eprintln!("[WARN][Replica] invalid msg from network: {:?}", e),
+                                        Err(e) => {}
+                                            //println!("[WARN][Replica] invalid msg from network: {:?}", e),
                                     }
                                 }
                                 InboundEvent::ConnClosed { peer } => {
-                                    println!("[Replica] Connection closed by {}", peer);
+                                    //println!("[Replica] Connection closed by {}", peer);
                                 }
                             }
                         }
                         None => {
-                            println!("[Replica] Network channel closed");
+                            //println!("[Replica] Network channel closed");
                             net_open = false;
                         }
                     }
@@ -312,7 +312,7 @@ impl Node for Replica {
                     match maybe_actor {
                         Some(evt) => self.handle_actor_event(evt).await,
                         None => {
-                            println!("[Replica] Actor event channel closed");
+                            //println!("[Replica] Actor event channel closed");
                             actors_open = false;
                         }
                     }
@@ -328,7 +328,7 @@ impl Node for Replica {
                     match maybe_station {
                         Some(msg) => self.handle_station_msg(msg).await,
                         None => {
-                            println!("[Replica] Station command channel closed");
+                            //println!("[Replica] Station command channel closed");
                             station_open = false;
                         }
                     }
@@ -346,7 +346,8 @@ impl Node for Replica {
 impl Replica {
     /// Handle a message coming from the station (pump simulator).
     ///
-    /// Currently we only support `ChargeRequest`, same as in Leader.
+    /// Currently we only support `ChargeRequest`, mapped to
+    /// `Operation::Charge` with the same Verify → Apply flow as in Leader.
     async fn handle_station_msg(&mut self, msg: StationToNodeMsg) {
         match msg {
             StationToNodeMsg::ChargeRequest {
@@ -356,14 +357,11 @@ impl Replica {
                 amount,
                 request_id,
             } => {
-                println!(
-                    "[Replica][station] pump={} -> ChargeRequest(account={}, card={}, amount={}, request_id={})",
-                    pump_id, account_id, card_id, amount, request_id
-                );
+                // //println!(
+                //     "[Replica][station] pump={} -> ChargeRequest(account={}, card={}, amount={}, request_id={})",
+                //     pump_id, account_id, card_id, amount, request_id
+                // );
 
-                // Store state to:
-                // - build ApplyCharge after LimitCheckResult,
-                // - know which request_id to confirm to station after ChargeApplied.
                 self.station_requests.insert(
                     request_id,
                     StationPendingCharge {
@@ -373,20 +371,20 @@ impl Replica {
                     },
                 );
 
-                // Trigger limit check on actor side.
-                self.router.do_send(RouterCmd::AuthorizeCharge {
+                let op = ActorOperation::Charge {
                     account_id,
                     card_id,
                     amount,
-                    request_id,
+                };
+
+                self.router.do_send(RouterCmd::Verify {
+                    op_id: request_id,
+                    operation: op,
                 });
             }
         }
     }
 
-    // ===============================================================
-    // Start function
-    // ===============================================================
     /// Start a Replica node:
     ///
     /// - boots the ConnectionManager (TCP),
@@ -411,7 +409,7 @@ impl Replica {
         let (station_cmd_tx, station_cmd_rx) = mpsc::channel::<StationToNodeMsg>(128);
         let (station_result_tx, station_result_rx) = mpsc::channel::<NodeToStationMsg>(128);
 
-        // Spawn the station simulator with the given number of pumps.
+        // Spawn the station simulator.
         let station_cmd_tx_for_station = station_cmd_tx.clone();
         tokio::spawn(async move {
             if let Err(e) = crate::node::station::run_station_simulator(
@@ -421,7 +419,7 @@ impl Replica {
             )
             .await
             {
-                eprintln!("[Station][Replica] simulator error: {e:?}");
+                //println!("[Station][Replica] simulator error: {e:?}");
             }
         });
 
@@ -434,7 +432,7 @@ impl Replica {
                 let router = ActorRouter::new(actor_tx).start();
 
                 if router_tx.send(router.clone()).is_err() {
-                    eprintln!("[ERROR] Failed to send router address to Replica");
+                    //println!("[ERROR] Failed to send router address to Replica");
                 }
 
                 pending::<()>().await;

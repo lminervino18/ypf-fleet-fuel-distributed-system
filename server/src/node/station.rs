@@ -27,8 +27,7 @@ use tokio::sync::mpsc;
 
 use std::collections::HashMap;
 
-use crate::actors::types::LimitCheckError;
-use crate::errors::{AppResult, AppError};
+use crate::errors::{AppResult, AppError, VerifyError};
 
 /// Message sent from the Station (pumps) to the Node.
 ///
@@ -63,7 +62,7 @@ pub enum NodeToStationMsg {
         request_id: u64,
         allowed: bool,
         /// Optional reason if `allowed == false`.
-        error: Option<LimitCheckError>,
+        error: Option<VerifyError>,
     },
 }
 
@@ -162,7 +161,7 @@ pub async fn run_station_simulator(
                                             req.request_id,
                                         ),
                                         None => {
-                                            eprintln!(
+                                            println!(
                                                 "[Station][INTERNAL] request_id={} not found right after creation",
                                                 req_id
                                             );
@@ -391,12 +390,12 @@ fn handle_node_event(
 
             if allowed {
                 println!(
-                    "[Station] pump={} -> CHARGE OK (request_id={}, account={}, card={}, amount={})",
+                    "[Station][RESULT] pump={} -> CHARGE OK (request_id={}, account={}, card={}, amount={})",
                     pump_id, request_id, req.account_id, req.card_id, req.amount
                 );
             } else {
                 println!(
-                    "[Station] pump={} -> CHARGE DENIED (request_id={}, account={}, card={}, amount={}, error={:?})",
+                    "[Station][RESULT] pump={} -> CHARGE DENIED (request_id={}, account={}, card={}, amount={}, error={:?})",
                     pump_id, request_id, req.account_id, req.card_id, req.amount, error
                 );
             }
@@ -406,4 +405,3 @@ fn handle_node_event(
         }
     }
 }
-

@@ -2,24 +2,24 @@ use super::{
     connection_manager::{ConnectionManager, InboundEvent, ManagerCmd},
     node::Node,
     node_message::NodeMessage,
-    operation::Operation,
+    operation::Operation as NodeOperation, 
 };
-use crate::actors::types::{ActorEvent, RouterCmd};
+
+use crate::actors::{ActorEvent, RouterCmd};          
+use crate::domain::Operation as ActorOperation;       
+
 use crate::{
-    actors::ActorRouter,
-    errors::{AppError, AppResult},
+    actors::actor_router::ActorRouter,
+    errors::{AppError, AppResult, VerifyError, ApplyError},
     node::station::{NodeToStationMsg, StationToNodeMsg},
 };
+
 use actix::{Actor, Addr};
 use std::{collections::HashMap, future::pending, net::SocketAddr};
 use tokio::sync::{mpsc, oneshot};
 
-/// Internal state associated with a charge request coming from a station pump.
-///
-/// We store this so that:
-/// - after a successful limit check we can build `ApplyCharge`,
-/// - after `ChargeApplied` we know which original request_id to confirm
-///   back to the station.
+
+/// Internal state for a charge coming from a station pump.
 #[derive(Debug, Clone)]
 struct StationPendingCharge {
     account_id: u64,
@@ -34,24 +34,27 @@ struct StationPendingCharge {
 /// - the local ActorRouter (Actix),
 /// - the station simulator (stdin-driven pumps).
 ///
-/// Flow for a charge coming from a pump:
-/// 1. Station sends `StationToNodeMsg::ChargeRequest`.
-/// 2. Leader stores `StationPendingCharge` keyed by `request_id`.
-/// 3. Leader sends `RouterCmd::AuthorizeCharge` to ActorRouter.
-/// 4. Actor layer emits:
-///    - `ActorEvent::LimitCheckResult` (allowed / denied),
-///      and if allowed:
-///    - `ActorEvent::ChargeApplied` when the charge is actually applied.
-/// 5. Leader converts these actor events into a single `NodeToStationMsg::ChargeResult`
-///    back to the station.
+/// For a `Charge` coming from a pump the flow is:
+///
+/// 1. Station → Leader: `StationToNodeMsg::ChargeRequest`.
+/// 2. Leader builds `ActorOperation::Charge { .. }` and sends
+///    `RouterCmd::Verify { op_id, operation }` to ActorRouter.
+/// 3. ActorRouter/actors run the full verification and emit
+///    `ActorEvent::VerifyResult { op_id, operation, allowed, error }`.
+/// 4. If `allowed == false`, Leader sends a DENIED `ChargeResult` to the
+///    station and drops the pending request.
+/// 5. If `allowed == true`, Leader sends `RouterCmd::Apply { op_id, operation }`.
+/// 6. Once the operation is actually applied, ActorRouter emits
+///    `ActorEvent::ApplyResult`; Leader then sends a final OK / FAIL result
+///    to the station and removes the pending request.
 pub struct Leader {
     id: u64,
     coords: (f64, f64),
     max_conns: usize,
     replicas: Vec<SocketAddr>,
 
-    /// Consensus operations (not really used yet, but kept for future logic).
-    operations: HashMap<u8, Operation>,
+    /// Consensus operations (placeholder for future use).
+    operations: HashMap<u8, NodeOperation>,
 
     // ===== Network (ConnectionManager) =====
     connection_tx: mpsc::Sender<ManagerCmd>,
@@ -67,34 +70,37 @@ pub struct Leader {
     station_result_tx: mpsc::Sender<NodeToStationMsg>,
 
     /// In-flight charge requests coming from the station.
-    /// Key = `request_id` chosen by the station simulator.
+    /// Key = `op_id` / `request_id` chosen by the station simulator.
     station_requests: HashMap<u64, StationPendingCharge>,
 
     /// Actix ActorRouter handle.
     router: Addr<ActorRouter>,
 }
 
+// ==========================================================
+// Node trait implementation
+// ==========================================================
 impl Node for Leader {
     // ==========================
     // Consensus handlers
     // ==========================
-    async fn handle_accept(&mut self, op: Operation) {
-        println!("[Leader] handle_accept({:?})", op);
+    async fn handle_accept(&mut self, op: NodeOperation) {
+        //println!("[Leader] handle_accept({:?})", op);
         // TODO: integrate with real consensus protocol.
     }
 
-    async fn handle_learn(&mut self, op: Operation) {
-        println!("[Leader] handle_learn({:?})", op);
+    async fn handle_learn(&mut self, op: NodeOperation) {
+        //println!("[Leader] handle_learn({:?})", op);
         // TODO
     }
 
-    async fn handle_commit(&mut self, op: Operation) {
-        println!("[Leader] handle_commit({:?})", op);
+    async fn handle_commit(&mut self, op: NodeOperation) {
+        //println!("[Leader] handle_commit({:?})", op);
         // TODO
     }
 
-    async fn handle_finished(&mut self, op: Operation) {
-        println!("[Leader] handle_finished({:?})", op);
+    async fn handle_finished(&mut self, op: NodeOperation) {
+        //println!("[Leader] handle_finished({:?})", op);
         // TODO
     }
 
@@ -117,138 +123,162 @@ impl Node for Leader {
     // ==========================
     async fn handle_actor_event(&mut self, event: ActorEvent) {
         match event {
-            // ---- Limit check result (authorization) ----
-            ActorEvent::LimitCheckResult {
-                request_id,
+            // --------------------------------------------------
+            // Response to RouterCmd::Verify { op_id, operation }
+            // --------------------------------------------------
+            ActorEvent::VerifyResult {
+                op_id,
+                operation,
                 allowed,
                 error,
             } => {
-                // Is this a request coming from the station?
-                let pending = match self.station_requests.get(&request_id) {
+                // Check if this `op_id` corresponds to a station-originated request.
+                let pending = match self.station_requests.get(&op_id) {
                     Some(p) => p.clone(),
                     None => {
-                        // Could be an internal / admin request not related to pumps.
+                        // Not a pump request (maybe a future admin / node-to-node op).
                         match &error {
                             None => {
-                                println!(
-                                    "[Leader][actor] LimitCheckResult (non-station): request_id={} allowed={}",
-                                    request_id, allowed
-                                );
+                                // //println!(
+                                //     "[Leader][actor] VerifyResult (non-station): op_id={} allowed={} op={:?}",
+                                //     op_id, allowed, operation
+                                // );
                             }
                             Some(err) => {
-                                println!(
-                                    "[Leader][actor] LimitCheckResult (non-station): request_id={} allowed={} error={:?}",
-                                    request_id, allowed, err
-                                );
+                                // //println!(
+                                //     "[Leader][actor] VerifyResult (non-station): op_id={} allowed={} op={:?} error={:?}",
+                                //     op_id, allowed, operation, err
+                                // );
                             }
                         }
                         return;
                     }
                 };
 
-                if !allowed {
-                    println!(
-                        "[Leader][actor→station] request_id={} -> DENIED (error={:?})",
-                        request_id, error
-                    );
+                // Right now the station only sends charges, but we assert anyway.
+                if !matches!(operation, ActorOperation::Charge { .. }) {
+                    // //println!(
+                    //     "[Leader][actor] VerifyResult for non-Charge operation from station: op_id={} op={:?}",
+                    //     op_id, operation
+                    // );
+                }
 
-                    // We stop here (no ApplyCharge). Reply to station and forget the request.
-                    self.station_requests.remove(&request_id);
+                if !allowed {
+                    // Verification failed: we *do not* hit Apply, just inform the station.
+                    // //println!(
+                    //     "[Leader][actor→station] op_id={} -> CHARGE DENIED (error={:?})",
+                    //     op_id, error
+                    // );
+
+                    self.station_requests.remove(&op_id);
 
                     let msg = NodeToStationMsg::ChargeResult {
-                        request_id,
+                        request_id: op_id,
                         allowed: false,
-                        error,
+                        error, // Option<VerifyError>
                     };
 
                     if let Err(e) = self.station_result_tx.send(msg).await {
-                        eprintln!(
-                            "[Leader][actor→station][ERROR] failed to send DENIED result: {}",
-                            e
-                        );
+                        // e//println!(
+                        //     "[Leader][actor→station][ERROR] failed to send DENIED result: {}",
+                        //     e
+                        // );
                     }
                 } else {
-                    println!(
-                        "[Leader][actor] LimitCheckResult: request_id={} allowed=true -> ApplyCharge",
-                        request_id
-                    );
+                    // Verification passed: now we ask the actor layer to actually apply.
+                    // //println!(
+                    //     "[Leader][actor] VerifyResult: op_id={} allowed=true -> Apply(op)",
+                    //     op_id
+                    // );
 
-                    // Build ApplyCharge from the pending state we stored when the pump requested.
-                    self.router.do_send(RouterCmd::ApplyCharge {
-                        account_id: pending.account_id,
-                        card_id: pending.card_id,
-                        amount: pending.amount,
-                        timestamp: 0,      // TODO: real timestamp if needed
-                        op_id: request_id, // correlate op_id == request_id
-                        request_id,
+                    // We keep the pending entry until ApplyResult arrives.
+                    let _ = pending;
+
+                    self.router.do_send(RouterCmd::Apply {
+                        op_id,
+                        operation,
                     });
-                    // We DO NOT reply to station yet:
-                    // wait for ChargeApplied to confirm that the state mutation actually happened.
                 }
             }
 
-            // ---- Charge was effectively applied on actors side ----
-            ActorEvent::ChargeApplied { operation } => {
-                println!("[Leader][actor] ChargeApplied: operation={:?}", operation);
-
-                // Only care if `op_id` matches a station request.
-                if let crate::actors::types::Operation::Charge { op_id, .. } = operation {
-                    if self.station_requests.remove(&op_id).is_some() {
-                        println!(
-                            "[Leader][actor→station] request_id={} -> CHARGE CONFIRMED",
-                            op_id
-                        );
-                        let msg = NodeToStationMsg::ChargeResult {
-                            request_id: op_id,
-                            allowed: true,
-                            error: None,
-                        };
-                        if let Err(e) = self.station_result_tx.send(msg).await {
-                            eprintln!(
-                                "[Leader][actor→station][ERROR] failed to send OK result: {}",
-                                e
-                            );
-                        }
-                    } else {
-                        // ChargeApplied not initiated by the station (or already cleaned up).
-                        println!(
-                            "[Leader][actor] ChargeApplied with op_id={} not tracked as station request",
-                            op_id
-                        );
-                    }
-                } else {
-                    println!("[Leader][actor] ChargeApplied with non-Charge operation");
-                }
-            }
-
-            // ---- Other actor events (limits, debug, etc.) ----
-            ActorEvent::LimitUpdated {
-                scope,
-                account_id,
-                card_id,
-                new_limit,
-            } => {
-                println!(
-                    "[Leader][actor] LimitUpdated: scope={:?} account_id={} card_id={:?} new_limit={:?}",
-                    scope, account_id, card_id, new_limit
-                );
-            }
-
-            ActorEvent::LimitUpdateFailed {
-                scope,
-                account_id,
-                card_id,
-                request_id,
+            // --------------------------------------------------
+            // Response to RouterCmd::Apply { op_id, operation }
+            // --------------------------------------------------
+            ActorEvent::ApplyResult {
+                op_id,
+                operation,
+                success,
                 error,
             } => {
-                println!(
-                    "[Leader][actor] LimitUpdateFailed: scope={:?} account_id={} card_id={:?} request_id={} error={:?}",
-                    scope, account_id, card_id, request_id, error
-                );
+                // //println!(
+                //     "[Leader][actor] ApplyResult: op_id={} success={} op={:?} error={:?}",
+                //     op_id, success, operation, error
+                // );
+
+                let pending = match self.station_requests.remove(&op_id) {
+                    Some(p) => p,
+                    None => {
+                        // //println!(
+                        //     "[Leader][actor] ApplyResult for non-station op_id={} (op={:?})",
+                        //     op_id, operation
+                        // );
+                        return;
+                    }
+                };
+
+                if success {
+                    // //println!(
+                    //     "[Leader][actor→station] op_id={} -> CHARGE CONFIRMED (acc={}, card={}, amount={})",
+                    //     op_id, pending.account_id, pending.card_id, pending.amount
+                    // );
+
+                    let msg = NodeToStationMsg::ChargeResult {
+                        request_id: op_id,
+                        allowed: true,
+                        error: None,
+                    };
+
+                    if let Err(e) = self.station_result_tx.send(msg).await {
+                        // //println!(
+                        //     "[Leader][actor→station][ERROR] failed to send OK result: {}",
+                            
+                        // );
+                    }
+                } else {
+                    // Apply failed after a successful Verify.
+                    // For now we just log and surface a generic failure to the station.
+                    // //println!(
+                    //     "[Leader][actor→station][ERROR] Apply failed for op_id={} (acc={}, card={}, amount={}) op={:?} error={:?}",
+                    //     op_id, pending.account_id, pending.card_id, pending.amount, operation, error
+                    // );
+
+                    // Map the ApplyError to something meaningful for the station.
+                    // You can refine this mapping if needed.
+                    let mapped_error: Option<VerifyError> = match error {
+                        Some(ApplyError::LimitUpdate(e)) => Some(VerifyError::LimitUpdate(e)),
+                        None => None,
+                    };
+
+                    let msg = NodeToStationMsg::ChargeResult {
+                        request_id: op_id,
+                        allowed: false,
+                        error: mapped_error,
+                    };
+
+                    if let Err(e) = self.station_result_tx.send(msg).await {
+                        // e//println!(
+                        //     "[Leader][actor→station][ERROR] failed to send FAILED-APPLY result: {}",
+                        //     e
+                        // );
+                    }
+                }
             }
 
+            // --------------------------------------------------
+            // Other events (debug, etc.)
+            // --------------------------------------------------
             ActorEvent::Debug(msg) => {
-                println!("[Leader][actor][debug] {}", msg);
+                //println!("[Leader][actor][debug] {}", msg);
             }
         }
     }
@@ -297,17 +327,17 @@ impl Node for Leader {
                                 InboundEvent::Received { peer: _, payload } => {
                                     match NodeMessage::try_from(payload) {
                                         Ok(msg) => self.handle_node_msg(msg).await,
-                                        Err(e) =>
-                                            eprintln!("[WARN][Leader] invalid msg from network: {:?}", e),
+                                        Err(e) => {}
+                                            //println!("[WARN][Leader] invalid msg from network: {:?}", e),
                                     }
                                 }
                                 InboundEvent::ConnClosed { peer } => {
-                                    println!("[Leader] Connection closed by {}", peer);
+                                    //println!("[Leader] Connection closed by {}", peer);
                                 }
                             }
                         }
                         None => {
-                            println!("[Leader] Network channel closed");
+                            //println!("[Leader] Network channel closed");
                             net_open = false;
                         }
                     }
@@ -325,7 +355,7 @@ impl Node for Leader {
                     match maybe_event {
                         Some(evt) => self.handle_actor_event(evt).await,
                         None => {
-                            println!("[Leader] Actor event channel closed");
+                            //println!("[Leader] Actor event channel closed");
                             actors_open = false;
                         }
                     }
@@ -343,7 +373,7 @@ impl Node for Leader {
                     match maybe_station {
                         Some(msg) => self.handle_station_msg(msg).await,
                         None => {
-                            println!("[Leader] Station command channel closed");
+                            //println!("[Leader] Station command channel closed");
                             station_open = false;
                         }
                     }
@@ -355,11 +385,14 @@ impl Node for Leader {
     }
 }
 
+// ==========================================================
+// Leader helpers
+// ==========================================================
 impl Leader {
     /// Handle a message coming from the station (pump simulator).
     ///
-    /// Currently we only support `ChargeRequest`, which represents:
-    /// "please authorize + apply this charge for (account, card, amount)".
+    /// Currently we only support `ChargeRequest`, which is mapped to a single
+    /// `Operation::Charge` that goes through the Verify → Apply flow.
     async fn handle_station_msg(&mut self, msg: StationToNodeMsg) {
         match msg {
             StationToNodeMsg::ChargeRequest {
@@ -369,14 +402,12 @@ impl Leader {
                 amount,
                 request_id,
             } => {
-                println!(
-                    "[Leader][station] pump={} -> ChargeRequest(account={}, card={}, amount={}, request_id={})",
-                    pump_id, account_id, card_id, amount, request_id
-                );
+                // //println!(
+                //     "[Leader][station] pump={} -> ChargeRequest(account={}, card={}, amount={}, request_id={})",
+                //     pump_id, account_id, card_id, amount, request_id
+                // );
 
-                // Store the pending charge so we can:
-                // - build ApplyCharge after LimitCheckResult,
-                // - know what to confirm back when ChargeApplied fires.
+                // Keep minimal state to be able to log and confirm later.
                 self.station_requests.insert(
                     request_id,
                     StationPendingCharge {
@@ -386,12 +417,17 @@ impl Leader {
                     },
                 );
 
-                // Trigger limit check in the actor system.
-                self.router.do_send(RouterCmd::AuthorizeCharge {
+                // Build the domain operation for the actor layer.
+                let op = ActorOperation::Charge {
                     account_id,
                     card_id,
                     amount,
-                    request_id,
+                };
+
+                // Trigger verification in the actor system.
+                self.router.do_send(RouterCmd::Verify {
+                    op_id: request_id,
+                    operation: op,
                 });
             }
         }
@@ -427,7 +463,6 @@ impl Leader {
         let (station_result_tx, station_result_rx) = mpsc::channel::<NodeToStationMsg>(128);
 
         // Spawn the station simulator (stdin-driven pumps).
-        // `pumps` is the number of independent pump IDs allowed.
         let station_cmd_tx_for_station = station_cmd_tx.clone();
         tokio::spawn(async move {
             if let Err(e) = crate::node::station::run_station_simulator(
@@ -437,7 +472,7 @@ impl Leader {
             )
             .await
             {
-                eprintln!("[Station] simulator error: {e:?}");
+                //println!("[Station] simulator error: {e:?}");
             }
         });
 
@@ -452,7 +487,7 @@ impl Leader {
                 let router = ActorRouter::new(actor_tx).start();
 
                 if router_tx.send(router.clone()).is_err() {
-                    eprintln!("[ERROR] Failed to deliver ActorRouter addr to Leader");
+                    //println!("[ERROR] Failed to deliver ActorRouter addr to Leader");
                 }
 
                 pending::<()>().await;

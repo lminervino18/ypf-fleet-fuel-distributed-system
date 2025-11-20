@@ -1,6 +1,7 @@
 mod actors;
 mod errors;
 mod node;
+pub mod domain;
 
 use clap::{Parser, Subcommand};
 use errors::AppResult;
@@ -87,7 +88,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("[FATAL] {e:?}");
+            //println!("[FATAL] {e:?}");
             ExitCode::FAILURE
         }
     }

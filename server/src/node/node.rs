@@ -1,5 +1,5 @@
 use super::{connection_manager::InboundEvent, node_message::NodeMessage, operation::Operation};
-use crate::actors::types::ActorEvent;
+use crate::actors::messages::ActorEvent;
 use crate::errors::AppResult;
 
 /// Role of a node in the YPF Ruta distributed system.
