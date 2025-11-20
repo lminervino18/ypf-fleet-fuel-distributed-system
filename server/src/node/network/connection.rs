@@ -42,51 +42,17 @@ impl Connection {
     }
 
     pub async fn send(&mut self, msg: Message, address: SocketAddr) -> AppResult<()> {
-        if !self.active.lock().await.contains_key(&address) {
-            self.add_handler(address).await?;
+        let mut guard = self.active.lock().await;
+        if !guard.contains_key(&address) {
+            let handler = Handler::start(address, self.messages_tx.clone()).await?;
+            add_handler_from(&mut guard, handler, self.max_conns);
         }
 
-        self.active
-            .lock()
-            .await
-            .get_mut(&address)
-            .unwrap()
-            .send(msg)
-            .await?;
+        guard.get_mut(&address).unwrap().send(msg).await?;
         Ok(())
     }
 
     pub async fn recv(&mut self) -> AppResult<Message> {
         self.messages_rx.recv().await.ok_or(AppError::ChannelClosed)
-    }
-
-    async fn add_handler_from(&mut self, handler: Handler) {
-        if self.active.lock().await.len() >= self.max_conns {
-            self.remove_last_recently_used();
-        }
-
-        self.active.lock().await.insert(handler.address, handler);
-    }
-
-    async fn add_handler(&mut self, address: SocketAddr) -> AppResult<()> {
-        if self.active.lock().await.len() >= self.max_conns {
-            self.remove_last_recently_used();
-        }
-
-        add_handler_from(
-            self.active.lock().await,
-            Handler::start(address, self.messages_tx.clone()).await?,
-            self.max_conns,
-        );
-        Ok(())
-    }
-
-    async fn remove_last_recently_used(&mut self) -> Option<Handler> {
-        let mut active = self.active.lock().await;
-        if let Some((&address, _)) = active.iter().min_by_key(|(_, handler)| handler.last_used) {
-            return active.remove(&address);
-        }
-
-        None
     }
 }

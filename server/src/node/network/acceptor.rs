@@ -55,8 +55,8 @@ impl Acceptor {
                 continue;
             };
 
-            let guard = self.active.lock().await;
-            add_handler_from(guard, handler, self.max_conns);
+            let mut guard = self.active.lock().await;
+            add_handler_from(&mut guard, handler, self.max_conns);
         }
     }
 }
