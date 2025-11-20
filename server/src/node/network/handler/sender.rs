@@ -35,3 +35,43 @@ impl<T: Into<Vec<u8>>> StreamSender<T> {
         Err(AppError::ChannelClosed)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::io::Read;
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::mpsc;
+    use tokio::task;
+
+    #[tokio::test]
+    async fn test_successful_send_with_valid_stream() {
+        let server_address = "127.0.0.1:12348";
+        let message = [1, 2, 3, 4, 5];
+        let server = task::spawn(async move {
+            let (messages_tx, messages_rx) = mpsc::channel(1);
+            let (stream, _) = TcpListener::bind(server_address)
+                .await
+                .unwrap()
+                .accept()
+                .await
+                .unwrap();
+            let (_, stream) = stream.into_split();
+            let mut sender = StreamSender {
+                messages_rx,
+                stream,
+            };
+            messages_tx.send(message).await.unwrap();
+            sender.send().await.unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_secs(1)).await; // wait for listener
+        let mut client_skt = TcpStream::connect(server_address).await.unwrap();
+        let mut buf = vec![0u8; message.len() + 1];
+        let _ = client_skt.read(&mut buf).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(buf, message);
+    }
+}
