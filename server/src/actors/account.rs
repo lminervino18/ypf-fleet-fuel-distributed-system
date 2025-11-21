@@ -3,32 +3,27 @@
 //! State:
 //! - `account_limit`: optional (None = no limit).
 //! - `account_consumed`: total charged across all cards of this account.
-//! - `pending_charges`: holds amounts already verified but not yet applied.
 //!
-//! Flows for `Verify`:
-//! - `VerifyCharge`:
-//!     Called from CardActor, *only if* the card passed its own limit.
-//!     The actor checks the account-wide limit for the requested amount,
-//!     also considering pending reservations.
+//! Flows:
+//! - Charges (from cards):
+//!     CardActor → AccountActor:
+//!       `AccountMsg::ApplyChargeFromCard`
+//!     The account:
+//!       * checks account-wide limit,
+//!       * applies the charge if allowed,
+//!       * replies to the card via `AccountChargeReply`.
 //!
-//! - `VerifyLimitChange`:
-//!     Checks that the new limit is not below the already consumed amount
-//!     (including pending amounts).
-//!
-//! Flows for `Apply`:
-//! - `ApplyCharge`:
-//!     Takes the reservation associated with `op_id` (if any), updates
-//!     `account_consumed` and reports success.
-//!
-//! - `ApplyLimitChange`:
-//!     Sets the new account limit without additional checks (verification
-//!     has already been done during `Verify`).
+//! - Account limit changes (from router):
+//!     Router → AccountActor:
+//!       `AccountMsg::ApplyAccountLimit`
+//!     The account:
+//!       * checks that the new limit is not below already consumed,
+//!       * applies the new limit if allowed,
+//!       * notifies the router via `RouterInternalMsg::OperationCompleted`.
 
 use actix::prelude::*;
-use std::collections::HashMap;
-
 use super::actor_router::ActorRouter;
-use super::messages::{AccountMsg, RouterInternalMsg};
+use super::messages::{AccountChargeReply, AccountMsg, RouterInternalMsg};
 use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
 
 /// Actor that manages a single account and its state.
@@ -41,11 +36,7 @@ pub struct AccountActor {
     /// Total consumption across all cards in this account (already applied).
     account_consumed: f64,
 
-    /// Holds charges that have been verified but not yet applied.
-    /// Key = op_id, Value = amount.
-    pending_charges: HashMap<u64, f64>,
-
-    /// Back-reference to the router, to send RouterInternalMsg events.
+    /// Back-reference to the router, to send `RouterInternalMsg` events.
     router: Addr<ActorRouter>,
 }
 
@@ -55,7 +46,6 @@ impl AccountActor {
             account_id,
             account_limit: Some(100.0),
             account_consumed: 0.0,
-            pending_charges: HashMap::new(),
             router,
         }
     }
@@ -65,30 +55,23 @@ impl AccountActor {
         self.router.do_send(msg);
     }
 
-    /// Effective consumption = applied + pending.
-    fn effective_consumed(&self) -> f64 {
-        let pending_sum: f64 = self.pending_charges.values().copied().sum();
-        self.account_consumed + pending_sum
-    }
-
-    /// Check account-wide limit for a given amount, considering pending reservations.
-    fn check_account_limit_with_pending(&self, amount: f64) -> Result<(), LimitCheckError> {
+    /// Helper to check account-wide limit for a given amount.
+    fn check_account_limit(&self, amount: f64) -> Result<(), LimitCheckError> {
         if let Some(limit) = self.account_limit {
-            if self.effective_consumed() + amount > limit {
+            if self.account_consumed + amount > limit {
                 return Err(LimitCheckError::AccountLimitExceeded);
             }
         }
         Ok(())
     }
 
-    /// Check if we can raise/set the account limit to `new_limit`.
-    /// Uses effective consumption (applied + pending).
+    /// Helper to validate a new account limit against current consumption.
     fn can_raise_limit(
         new_limit: Option<f64>,
         already_consumed: f64,
     ) -> Result<(), LimitUpdateError> {
         match new_limit {
-            None => Ok(()), // no limit is always allowed
+            None => Ok(()), // "no limit" is always allowed
             Some(lim) if lim >= already_consumed => Ok(()),
             Some(_) => Err(LimitUpdateError::BelowCurrentUsage),
         }
@@ -109,99 +92,64 @@ impl Handler<AccountMsg> for AccountActor {
 
     fn handle(&mut self, msg: AccountMsg, _ctx: &mut Context<Self>) -> Self::Result {
         match msg {
-            AccountMsg::VerifyCharge { amount, op_id } => {
-                // Called only when the card has already passed card-level checks.
+            AccountMsg::ApplyChargeFromCard {
+                op_id,
+                amount,
+                card_id: _,
+                reply_to,
+            } => {
+                // Verify account-wide limit for this charge.
                 let res = self
-                    .check_account_limit_with_pending(amount)
+                    .check_account_limit(amount)
                     .map_err(VerifyError::ChargeLimit);
 
                 match res {
                     Ok(()) => {
-                        // Reserve this amount for this op_id.
-                        self.pending_charges.insert(op_id, amount);
+                        // Apply charge at account level.
+                        self.account_consumed += amount;
 
-                        self.send_internal(RouterInternalMsg::VerifyResult {
+
+                        // Reply to the card: account-side part succeeded.
+                        let _ = reply_to.do_send(AccountChargeReply {
                             op_id,
-                            allowed: true,
+                            success: true,
                             error: None,
                         });
                     }
                     Err(err) => {
-                        // Clean up any previous phantom reservation.
-                        self.pending_charges.remove(&op_id);
-
-                        self.send_internal(RouterInternalMsg::VerifyResult {
+                        // Do not update account_consumed; just notify the card.
+                        let _ = reply_to.do_send(AccountChargeReply {
                             op_id,
-                            allowed: false,
+                            success: false,
                             error: Some(err),
                         });
                     }
                 }
             }
 
-            AccountMsg::VerifyLimitChange { new_limit, op_id } => {
-                // Use effective consumption to avoid lowering below already
-                // applied + pending.
-                let effective = self.effective_consumed();
-                let res =
-                    Self::can_raise_limit(new_limit, effective).map_err(VerifyError::LimitUpdate);
+            AccountMsg::ApplyAccountLimit { op_id, new_limit } => {
+                let res = Self::can_raise_limit(new_limit, self.account_consumed)
+                    .map_err(VerifyError::LimitUpdate);
 
                 match res {
                     Ok(()) => {
-                        self.send_internal(RouterInternalMsg::VerifyResult {
+                        // Apply the new account limit.
+                        self.account_limit = new_limit;
+
+                        self.send_internal(RouterInternalMsg::OperationCompleted {
                             op_id,
-                            allowed: true,
+                            success: true,
                             error: None,
                         });
                     }
                     Err(err) => {
-                        self.send_internal(RouterInternalMsg::VerifyResult {
+                        self.send_internal(RouterInternalMsg::OperationCompleted {
                             op_id,
-                            allowed: false,
+                            success: false,
                             error: Some(err),
                         });
                     }
                 }
-            }
-
-            AccountMsg::ApplyCharge {
-                card_id: _,
-                amount,
-                op_id,
-            } => {
-                // Take the reservation if it exists; if not (rare case) use `amount`.
-                let reserved = self.pending_charges.remove(&op_id).unwrap_or(amount);
-
-                self.account_consumed += reserved;
-
-                // Uncomment for debugging:
-                // println!(
-                //     "[Account {}] Applied charge: {} (total consumed: {})",
-                //     self.account_id, reserved, self.account_consumed
-                // );
-
-                self.send_internal(RouterInternalMsg::ApplyResult {
-                    op_id,
-                    success: true,
-                    error: None,
-                });
-            }
-
-            AccountMsg::ApplyLimitChange { new_limit, op_id } => {
-                // Apply the new limit without re-checking invariants.
-                self.account_limit = new_limit;
-
-                // Uncomment for debugging:
-                // println!(
-                //     "[Account {}] New account limit set: {:?}",
-                //     self.account_id, self.account_limit
-                // );
-
-                self.send_internal(RouterInternalMsg::ApplyResult {
-                    op_id,
-                    success: true,
-                    error: None,
-                });
             }
         }
     }

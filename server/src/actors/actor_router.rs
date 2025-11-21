@@ -10,30 +10,18 @@ use crate::actors::messages::{
     RouterInternalMsg,
 };
 use crate::domain::Operation;
-use crate::errors::ApplyError;
+use crate::errors::VerifyError;
 
 use super::account::AccountActor;
 use super::card::CardActor;
-
-
-/// Internal state used to aggregate `ApplyResult` coming from multiple actors
-/// (e.g. Card + Account for a `Charge`). Tracks expected acknowledgements and
-/// aggregates success/error for multi-actor operations.
-#[derive(Debug)]
-struct PendingApply {
-    expected_acks: u8,
-    received_acks: u8,
-    success: bool,
-    error: Option<ApplyError>,
-}
 
 /// Router actor that owns and routes to AccountActor and CardActor instances.
 ///
 /// Responsibilities:
 /// - Maintain and create AccountActor and CardActor instances as needed.
-/// - Route Verify/Apply requests to the correct actors.
-/// - Aggregate results for multi-actor operations (e.g. charge).
-/// - Emit ActorEvent messages to the Node via event_tx.
+/// - Route `RouterCmd::Execute` to the correct actors.
+/// - Receive `RouterInternalMsg::OperationCompleted` from cards/accounts.
+/// - Emit a single `ActorEvent::OperationResult` to the Node via `event_tx`.
 pub struct ActorRouter {
     /// Maps account_id to AccountActor address.
     pub accounts: HashMap<u64, Addr<AccountActor>>,
@@ -42,10 +30,10 @@ pub struct ActorRouter {
     pub cards: HashMap<(u64, u64), Addr<CardActor>>,
 
     /// Maps op_id to Operation for correlation.
+    ///
+    /// This lets the router attach the original operation to the
+    /// final `ActorEvent::OperationResult`.
     pub operations: HashMap<u64, Operation>,
-
-    /// Tracks pending Apply operations and their expected acknowledgements.
-    pending_apply: HashMap<u64, PendingApply>,
 
     /// Channel for sending ActorEvent messages to the Node.
     pub event_tx: mpsc::Sender<ActorEvent>,
@@ -58,7 +46,6 @@ impl ActorRouter {
             accounts: HashMap::new(),
             cards: HashMap::new(),
             operations: HashMap::new(),
-            pending_apply: HashMap::new(),
             event_tx,
         }
     }
@@ -104,20 +91,6 @@ impl ActorRouter {
         self.cards.insert(key, addr.clone());
         addr
     }
-
-    /// Register a pending apply operation.
-    /// Use 1 ack for limit operations, 2 for charge operations.
-    fn register_pending_apply(&mut self, op_id: u64, expected_acks: u8) {
-        self.pending_apply.insert(
-            op_id,
-            PendingApply {
-                expected_acks,
-                received_acks: 0,
-                success: true,
-                error: None,
-            },
-        );
-    }
 }
 
 impl Actor for ActorRouter {
@@ -133,9 +106,10 @@ impl Handler<RouterCmd> for ActorRouter {
     fn handle(&mut self, msg: RouterCmd, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
             // ---------------------------------
-            // VERIFY
+            // EXECUTE (single-step from Node POV)
             // ---------------------------------
-            RouterCmd::Verify { op_id, operation } => {
+            RouterCmd::Execute { op_id, operation } => {
+                // Store the operation so we can attach it to the final result.
                 self.operations.insert(op_id, operation.clone());
 
                 match operation {
@@ -145,56 +119,11 @@ impl Handler<RouterCmd> for ActorRouter {
                         amount,
                     } => {
                         let card = self.get_or_create_card(account_id, card_id, ctx);
-                        card.do_send(CardMsg::VerifyCharge {
-                            amount,
+                        card.do_send(CardMsg::ExecuteCharge {
                             op_id,
                             account_id,
                             card_id,
-                        });
-                    }
-
-                    Operation::LimitAccount {
-                        account_id,
-                        new_limit,
-                    } => {
-                        let acc = self.get_or_create_account(account_id, ctx);
-                        acc.do_send(AccountMsg::VerifyLimitChange { new_limit, op_id });
-                    }
-
-                    Operation::LimitCard {
-                        account_id,
-                        card_id,
-                        new_limit,
-                    } => {
-                        let card = self.get_or_create_card(account_id, card_id, ctx);
-                        card.do_send(CardMsg::VerifyLimitChange { new_limit, op_id });
-                    }
-                }
-            }
-
-            // ---------------------------------
-            // APPLY
-            // ---------------------------------
-            RouterCmd::Apply { op_id, operation } => {
-                self.operations.insert(op_id, operation.clone());
-
-                match operation {
-                    Operation::Charge {
-                        account_id,
-                        card_id,
-                        amount,
-                    } => {
-                        // Charge: Apply to Card + Account (2 acks expected).
-                        self.register_pending_apply(op_id, 2);
-
-                        let card = self.get_or_create_card(account_id, card_id, ctx);
-                        card.do_send(CardMsg::ApplyCharge { amount, op_id });
-
-                        let acc = self.get_or_create_account(account_id, ctx);
-                        acc.do_send(AccountMsg::ApplyCharge {
-                            card_id,
                             amount,
-                            op_id,
                         });
                     }
 
@@ -202,10 +131,11 @@ impl Handler<RouterCmd> for ActorRouter {
                         account_id,
                         new_limit,
                     } => {
-                        self.register_pending_apply(op_id, 1);
-
                         let acc = self.get_or_create_account(account_id, ctx);
-                        acc.do_send(AccountMsg::ApplyLimitChange { new_limit, op_id });
+                        acc.do_send(AccountMsg::ApplyAccountLimit {
+                            op_id,
+                            new_limit,
+                        });
                     }
 
                     Operation::LimitCard {
@@ -213,10 +143,8 @@ impl Handler<RouterCmd> for ActorRouter {
                         card_id,
                         new_limit,
                     } => {
-                        self.register_pending_apply(op_id, 1);
-
                         let card = self.get_or_create_card(account_id, card_id, ctx);
-                        card.do_send(CardMsg::ApplyLimitChange { new_limit, op_id });
+                        card.do_send(CardMsg::ExecuteLimitChange { op_id, new_limit });
                     }
                 }
             }
@@ -241,62 +169,31 @@ impl Handler<RouterInternalMsg> for ActorRouter {
 
     fn handle(&mut self, msg: RouterInternalMsg, _ctx: &mut Context<Self>) -> Self::Result {
         match msg {
-            RouterInternalMsg::VerifyResult {
-                op_id,
-                allowed,
-                error,
-            } => {
-                if let Some(op) = self.operations.get(&op_id) {
-                    self.emit(ActorEvent::VerifyResult {
-                        op_id,
-                        operation: op.clone(),
-                        allowed,
-                        error,
-                    });
-                } else {
-                    self.emit(ActorEvent::Debug(format!(
-                        "[Router] VerifyResult for unknown op_id={}",
-                        op_id
-                    )));
-                }
-            }
-
-            RouterInternalMsg::ApplyResult {
+            RouterInternalMsg::OperationCompleted {
                 op_id,
                 success,
                 error,
             } => {
-                let pending = match self.pending_apply.get_mut(&op_id) {
-                    Some(p) => p,
+                // Retrieve the corresponding operation.
+                let operation = match self.operations.get(&op_id) {
+                    Some(op) => op.clone(),
                     None => {
+                        // This should not normally happen: we got a completion
+                        // for an operation we never registered.
                         self.emit(ActorEvent::Debug(format!(
-                            "[Router] ApplyResult for non-pending op_id={}",
+                            "[Router] OperationCompleted for unknown op_id={}",
                             op_id
                         )));
                         return;
                     }
                 };
 
-                pending.received_acks += 1;
-                if !success {
-                    pending.success = false;
-                    if pending.error.is_none() {
-                        pending.error = error.clone();
-                    }
-                }
-
-                if pending.received_acks >= pending.expected_acks {
-                    let pending = self.pending_apply.remove(&op_id).unwrap();
-
-                    if let Some(op) = self.operations.get(&op_id) {
-                        self.emit(ActorEvent::ApplyResult {
-                            op_id,
-                            operation: op.clone(),
-                            success: pending.success,
-                            error: pending.error,
-                        });
-                    }
-                }
+                self.emit(ActorEvent::OperationResult {
+                    op_id,
+                    operation,
+                    success,
+                    error,
+                });
             }
 
             RouterInternalMsg::Debug(msg) => {
