@@ -1,11 +1,11 @@
-mod connection_manager;
 mod leader;
+mod message;
+mod network;
 mod node;
-mod node_message;
-mod node_role;
 mod operation;
 mod replica;
+mod station;
+mod test;
 
 pub use leader::Leader;
-pub use node_role::NodeRole;
 pub use replica::Replica;

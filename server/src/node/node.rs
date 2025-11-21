@@ -1,12 +1,9 @@
-use super::{connection_manager::InboundEvent, node_message::NodeMessage, operation::Operation};
-use crate::errors::AppResult;
-use std::future::pending;
+use super::{message::Message, operation::Operation, station::StationToNodeMsg};
+use crate::{actors::ActorEvent, errors::AppResult};
+use std::net::SocketAddr;
+use tokio::select;
 
 /// Role of a node in the YPF Ruta distributed system.
-///
-/// - Leader: coordinates replicas and accepts connections from stations/replicas.
-/// - Replica: connects to a leader and acts as a passive replica.
-/// - Station: edge node that represents a physical station and forwards requests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeRole {
     Leader,
@@ -14,53 +11,55 @@ pub enum NodeRole {
     Station,
 }
 
-/// Distributed node participating in the YPF Ruta system.
-///
-/// A Node encapsulates:
-/// - networking (TCP) via the ConnectionManager,
-/// - a local ActorRouter (Actix) for application logic,
-/// - role-specific behaviour (leader, replica, station).
-///
-/// The Node is responsible for wiring background tasks that bridge the async
-/// Tokio runtime (network IO) and the Actix actor system (application logic).
 pub trait Node {
-    async fn handle_accept(&mut self, op: Operation);
-    async fn handle_learn(&mut self, op: Operation);
-    async fn handle_commit(&mut self, op: Operation);
-    async fn handle_finished(&mut self, op: Operation);
-    async fn recv_node_msg(&mut self) -> Option<InboundEvent>;
+    async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr);
+    async fn handle_log(&mut self, op: Operation);
+    async fn handle_ack(&mut self, id: u32);
+    async fn recv_node_msg(&mut self) -> AppResult<Message>;
+    async fn recv_actor_event(&mut self) -> Option<ActorEvent>;
+    async fn handle_actor_event(&mut self, event: ActorEvent);
+    async fn handle_station_msg(&mut self, msg: StationToNodeMsg);
 
-    async fn handle_node_msg(&mut self, msg: NodeMessage) {
+    async fn handle_node_msg(&mut self, msg: Message) {
         match msg {
-            NodeMessage::Accept(op) => {
-                self.handle_accept(op).await;
+            Message::Request { op, addr } => {
+                self.handle_request(op, addr).await;
             }
-            NodeMessage::Learn(op) => {
-                self.handle_learn(op);
+            Message::Log { op } => {
+                self.handle_log(op).await;
             }
-            NodeMessage::Commit(op) => {
-                self.handle_commit(op);
+            Message::Ack { id } => {
+                self.handle_ack(id).await;
             }
-            NodeMessage::Finished(op) => {
-                self.handle_finished(op);
-            }
-            _ => {}
         }
     }
 
     async fn run(&mut self) -> AppResult<()> {
-        while let Some(evt) = self.recv_node_msg().await {
-            match evt {
-                InboundEvent::Received { peer, payload } => {
-                    self.handle_node_msg(payload.try_into().unwrap()).await;
+        loop {
+            select! {
+                node_msg = self.recv_node_msg() =>{
+                    match node_msg {
+                        Ok(msg) => {
+                            match msg {
+                                Message::Request { op, addr } => {
+                                    self.handle_request(op, addr);
+                                }
+                                Message::Log { op } => {
+                                    self.handle_log(op);
+                                }
+                                Message::Ack { id } => {
+                                    self.handle_ack(id);
+                                }
+                            }
+                        }
+                        _ => { return Ok(()); }
+                    }
                 }
-                InboundEvent::ConnClosed { peer } => {
-                    println!("[INFO] Connection closed by {}", peer);
-                }
+                // station_msg = self.recv_actor_event() =>{
+                //     // TODO
+                // }
+
             }
         }
-
-        pending::<()>().await;
-        Ok(())
     }
 }

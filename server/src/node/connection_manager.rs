@@ -118,17 +118,17 @@ impl ConnectionManager {
     async fn run(mut self) {
         let listener = match TcpListener::bind(self.listen_addr).await {
             Ok(l) => {
-                println!(
-                    "[INFO] ConnectionManager listening on {} (max_conns={})",
-                    self.listen_addr, self.max_conns
-                );
+                // //println!(
+                //     "[INFO] ConnectionManager listening on {} (max_conns={})",
+                //     self.listen_addr, self.max_conns
+                // );
                 l
             }
             Err(e) => {
-                eprintln!(
-                    "[FATAL] Failed to bind TCP listener on {}: {}",
-                    self.listen_addr, e
-                );
+                // e//println!(
+                //     "[FATAL] Failed to bind TCP listener on {}: {}",
+                //     self.listen_addr, e
+                // );
                 return;
             }
         };
@@ -140,11 +140,11 @@ impl ConnectionManager {
                     match accept_res {
                         Ok((stream, peer)) => {
                             if let Err(e) = self.handle_new_inbound(stream, peer).await {
-                                eprintln!("[ERROR] Failed to handle new connection {}: {e}", peer);
+                                //println!("[ERROR] Failed to handle new connection {}: {e}", peer);
                             }
                         }
                         Err(e) => {
-                            eprintln!("[ERROR] accept() failed: {}", e);
+                            //println!("[ERROR] accept() failed: {}", e);
                         }
                     }
                 }
@@ -154,15 +154,15 @@ impl ConnectionManager {
                     match cmd_opt {
                         Some(ManagerCmd::SendTo(addr, msg)) => {
                             if let Err(e) = self.handle_send_to(addr, &msg).await {
-                                eprintln!("[WARN] SendTo {} failed: {}", addr, e);
+                                //println!("[WARN] SendTo {} failed: {}", addr, e);
                             }
                         }
                         Some(ManagerCmd::Shutdown) => {
-                            println!("[INFO] ConnectionManager: Shutdown requested");
+                            //println!("[INFO] ConnectionManager: Shutdown requested");
                             break;
                         }
                         None => {
-                            println!("[INFO] ConnectionManager: command channel closed");
+                            //println!("[INFO] ConnectionManager: command channel closed");
                             break;
                         }
                     }
@@ -178,7 +178,7 @@ impl ConnectionManager {
                 .try_send(InboundEvent::ConnClosed { peer: info.addr });
         }
 
-        println!("[INFO] ConnectionManager stopped");
+        //println!("[INFO] ConnectionManager stopped");
     }
 
     /// Accept path: track the new inbound connection, spawn its reader,
@@ -189,7 +189,7 @@ impl ConnectionManager {
     async fn handle_new_inbound(&mut self, stream: TcpStream, peer: SocketAddr) -> AppResult<()> {
         self.evict_lru_if_full();
 
-        println!("[INFO] New inbound connection from {}", peer);
+        //println!("[INFO] New inbound connection from {}", peer);
         let (reader, writer) = stream.into_split();
         let writer_arc = Arc::new(Mutex::new(writer));
         let inbound_tx = self.inbound_tx.clone();
@@ -198,7 +198,7 @@ impl ConnectionManager {
 
         let reader_task = tokio::spawn(async move {
             if let Err(e) = handle_reader(id, peer, reader, inbound_tx.clone()).await {
-                eprintln!("[ERROR] Reader #{} ({}): {}", id, peer, e);
+                //println!("[ERROR] Reader #{} ({}): {}", id, peer, e);
             }
             let _ = inbound_tx.send(InboundEvent::ConnClosed { peer }).await;
         });
@@ -237,7 +237,7 @@ impl ConnectionManager {
                 addr: addr.to_string(),
                 source: e,
             })?;
-            println!("[SEND] Reused connection #{} to {}", id, addr);
+            //println!("[SEND] Reused connection #{} to {}", id, addr);
             return Ok(());
         }
 
@@ -258,7 +258,7 @@ impl ConnectionManager {
 
         let reader_task = tokio::spawn(async move {
             if let Err(e) = handle_reader(id, addr, reader, inbound_tx.clone()).await {
-                eprintln!("[ERROR] Reader #{} ({}): {}", id, addr, e);
+                //println!("[ERROR] Reader #{} ({}): {}", id, addr, e);
             }
             let _ = inbound_tx
                 .send(InboundEvent::ConnClosed { peer: addr })
@@ -291,7 +291,7 @@ impl ConnectionManager {
             })?;
         }
 
-        println!("[SEND] Created new connection #{} to {}", id, addr);
+        //println!("[SEND] Created new connection #{} to {}", id, addr);
         Ok(())
     }
 
@@ -303,10 +303,10 @@ impl ConnectionManager {
         if self.active.len() >= self.max_conns {
             if let Some((&old_id, _)) = self.active.iter().min_by_key(|(_, c)| c.last_used) {
                 if let Some(info) = self.active.remove(&old_id) {
-                    println!(
-                        "[WARN] Connection limit ({}) reached. Dropping LRU: {}",
-                        self.max_conns, info.addr
-                    );
+                    // //println!(
+                    //     "[WARN] Connection limit ({}) reached. Dropping LRU: {}",
+                    //     self.max_conns, info.addr
+                    // );
                     info.reader_task.abort();
                     let _ = self
                         .inbound_tx
@@ -351,10 +351,10 @@ async fn handle_reader(
                 }
             },
             Err(_) => {
-                eprintln!(
-                    "[CONN:{}][{}] idle read timeout ({}s) -> closing",
-                    id, peer, IDLE_READ_TIMEOUT_SECS
-                );
+                // e//println!(
+                //     "[CONN:{}][{}] idle read timeout ({}s) -> closing",
+                //     id, peer, IDLE_READ_TIMEOUT_SECS
+                // );
                 return Err(AppError::ConnectionTimeout {
                     addr: peer.to_string(),
                 });
