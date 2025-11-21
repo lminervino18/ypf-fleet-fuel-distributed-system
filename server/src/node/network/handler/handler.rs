@@ -104,3 +104,40 @@ impl Drop for Handler {
         self.handle.abort();
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+    use tokio::{net::TcpListener, task};
+
+    #[tokio::test]
+    async fn test_successful_send_and_receive_between_two_handlers() {
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12351);
+        let message = Message::Ack { id: 1 };
+        let message_copy = message.clone();
+        let handle1 = task::spawn(async move {
+            let (receiver_tx, _) = mpsc::channel(1);
+            let receiver_tx = Arc::new(receiver_tx);
+            let mut handler1 = Handler::start(&address, receiver_tx.clone()).await.unwrap();
+            handler1.send(message_copy).await.unwrap();
+            handler1.stop();
+        });
+
+        let (stream, _) = TcpListener::bind(address)
+            .await
+            .unwrap()
+            .accept()
+            .await
+            .unwrap();
+        let (receiver_tx, mut receiver_rx) = mpsc::channel(1);
+        let receiver_tx = Arc::new(receiver_tx);
+        let mut handler2 = Handler::start_from(stream, receiver_tx.clone())
+            .await
+            .unwrap();
+        handle1.await.unwrap();
+        handler2.stop();
+        let received = receiver_rx.recv().await.unwrap();
+        assert_eq!(received, message);
+    }
+}
