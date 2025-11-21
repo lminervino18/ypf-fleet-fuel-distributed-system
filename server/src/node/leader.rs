@@ -60,6 +60,7 @@ impl Leader {
         let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
         let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
         std::thread::spawn(move || {
+            // spawns a thread for Actix that runs inside a Tokio runtime 
             let sys = actix::System::new();
             sys.block_on(async move {
                 let router = ActorRouter::new(actor_tx).start();
@@ -67,7 +68,7 @@ impl Leader {
                     eprintln!("[ERROR] Failed to deliver ActorRouter addr to Leader");
                 }
 
-                pending::<()>().await;
+                pending::<()>().await;      // Keep the actix system running indefinitely
             });
         });
 
