@@ -38,7 +38,8 @@ impl Handler {
     ) -> AppResult<Self> {
         let (messages_tx, sender_rx) = mpsc::channel(MSG_BUFF_SIZE);
         let address = stream.local_addr().map_err(|e| AppError::Unexpected {
-            details: e.to_string(),
+            details: e.to_string(), // FIXME: creo q esto tendría q ser peer_addr pero lo acabo de
+                                    // ver...
         })?;
 
         Handler::new(stream, messages_tx, sender_rx, receiver_tx, address).await
@@ -49,7 +50,7 @@ impl Handler {
         self.messages_tx
             .send(msg)
             .await
-            .map_err(|_| AppError::ConnectionClosed {})
+            .map_err(|_| AppError::ConnectionClosed { addr: self.address })
     }
 
     pub async fn stop(&mut self) {

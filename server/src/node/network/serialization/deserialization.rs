@@ -1,4 +1,5 @@
 use super::protocol::*;
+use crate::errors::AppResult;
 use crate::node::message::Message::*;
 use crate::node::operation::Operation;
 use crate::{errors::AppError, node::message::Message};
@@ -45,7 +46,7 @@ impl TryFrom<&[u8]> for Operation {
 impl TryFrom<Vec<u8>> for Message {
     type Error = AppError;
 
-    fn try_from(payload: Vec<u8>) -> Result<Self, AppError> {
+    fn try_from(payload: Vec<u8>) -> AppResult<Self> {
         match payload[0] {
             TYPE_REQUEST => {
                 let op_srl = &payload[1..];
