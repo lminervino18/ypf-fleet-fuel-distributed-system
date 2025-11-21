@@ -7,11 +7,11 @@ pub struct StreamReceiver<T> {
     stream: OwnedReadHalf,
 }
 
-impl<T> StreamReceiver<T> 
-where 
-T: TryFrom<Vec<u8>>,
-T::Error: Into<AppError>
-    {
+impl<T> StreamReceiver<T>
+where
+    T: TryFrom<Vec<u8>>,
+    T::Error: Into<AppError>,
+{
     pub fn new(messages_tx: Arc<Sender<T>>, stream: OwnedReadHalf) -> Self {
         Self {
             messages_tx,
@@ -49,5 +49,46 @@ T::Error: Into<AppError>
             .map_err(|_| AppError::ChannelClosed)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::node::message::Message;
+    use tokio::{
+        io::AsyncWriteExt,
+        net::{TcpListener, TcpStream},
+        sync::mpsc,
+        task,
+    };
+
+    #[tokio::test]
+    async fn test_successful_receive_with_valid_stream() {
+        let sent_message = Message::Ack { id: 0 };
+        let sent_message_copy = sent_message.clone();
+        let server_address = "127.0.0.1:12350";
+        let client = task::spawn(async move {
+            let mut client_skt = TcpStream::connect(server_address).await.unwrap();
+            let mut message: Vec<u8> = 5u16.to_be_bytes().to_vec(); // 5 is the len of the ack msg
+            let sent_message_srl: Vec<u8> = sent_message_copy.into();
+            message.extend(sent_message_srl);
+            let _ = client_skt.write(&message).await.unwrap();
+        });
+
+        let (stream, _) = TcpListener::bind(server_address)
+            .await
+            .unwrap()
+            .accept()
+            .await
+            .unwrap();
+        let (stream_rx, _) = stream.into_split();
+        let (messages_tx, mut messages_rx) = mpsc::channel::<Message>(1);
+        let messages_tx = Arc::new(messages_tx);
+        let mut receiver = StreamReceiver::new(messages_tx, stream_rx);
+        client.await.unwrap();
+        receiver.recv().await.unwrap();
+        let received_msg = messages_rx.recv().await.unwrap();
+        assert_eq!(received_msg, sent_message);
     }
 }
