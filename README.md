@@ -12,6 +12,59 @@ Enunciado disponible en [este enlace](https://concurrentes-fiuba.github.io/2025_
 | [Lorenzo Minervino](https://github.com/lminervino18) | 107863 |
 | [Alejandro Paff](https://github.com/AlePaff) | 103376 |
 
+
+## Levantar proyecto
+Ejecutar el siguiente comando en la terminal para ejecutar el lado del servidor
+```bash
+./scripts/launch.sh <N_replicas> <M_estaciones>
+```
+
+Para el administrador de tarjetas (cliente) se pueden ejecutar los siguientes comandos en la terminal
+```bash
+# Especificar el servidor, en caso contrario utiliza el default
+./scripts/admin.sh --server <direccion_servidor> limit-account --amount <monto>
+
+# Limitar los montos disponibles en la cuenta
+./scripts/admin.sh limit-account --amount <monto>
+
+# Limitar el monto disponible de una tarjeta en particular
+./scripts/admin.sh limit-card --card-id <id_tarjeta> --amount <monto>
+
+# Consultar el saldo de la cuenta
+./scripts/admin.sh query-account
+
+# Consultar los saldos de las tarjetas de la cuenta
+./scripts/admin.sh query-cards
+
+# Realizar la facturación de la cuenta (en su totalidad o en un periodo)
+./scripts/admin.sh bill [--period <año-mes>]
+```
+
+Ejemplos de uso:
+```bash
+# especificar el servidor, en caso contrario utiliza el default
+./scripts/admin.sh --server localhost:7070 limit-account --amount 100.50
+
+# Limitar los montos disponibles en la cuenta
+./scripts/admin.sh limit-account --amount 100.50
+
+# Limitar el monto disponible de una tarjeta en particular
+./scripts/admin.sh limit-card --card-id card123 --amount 50.0
+
+# Consultar el saldo de la cuenta
+./scripts/admin.sh query-account
+
+# Consultar los saldos de las tarjetas de la cuenta
+./scripts/admin.sh query-cards
+
+# Realizar la facturación de la cuenta (sin aclarar periodo, muestra la totalidad)
+./scripts/admin.sh bill
+
+# Realizar la facturación de la cuenta (aclarando periodo, muestra solo en ese periodo)
+./scripts/admin.sh bill --period 2025-10
+```
+
+
 ## Informe
 El informe que se presenta a continuación está disponible en formato PDF $\LaTeX{}$ en [docs/informe.pdf](docs/informe/informe.pdf).
 
