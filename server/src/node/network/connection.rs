@@ -56,3 +56,9 @@ impl Connection {
         self.messages_rx.recv().await.ok_or(AppError::ChannelClosed)
     }
 }
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.acceptor_handle.abort();
+    }
+}
