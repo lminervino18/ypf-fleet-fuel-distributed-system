@@ -25,8 +25,8 @@ impl<T: Into<Vec<u8>>> StreamSender<T> {
             self.stream
                 .write_all(&len_bytes)
                 .await
-                .map_err(|e| AppError::ConnectionClosed {
-                    addr: self.stream.peer_addr().unwrap_or_else(|_| {
+                .map_err(|_| AppError::ConnectionClosed {
+                    addr: self.stream.peer_addr().unwrap_or_else(|e| {
                         // this should never happen since the skt was ok at the moment of
                         // initialization of this sender
                         panic!(
