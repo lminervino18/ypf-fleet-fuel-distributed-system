@@ -1,9 +1,4 @@
-use super::{
-    connection_manager::{ConnectionManager, InboundEvent, ManagerCmd},
-    node::Node,
-    node_message::NodeMessage,
-    operation::Operation,
-};
+use super::{message::Message, network::Connection, node::Node, operation::Operation};
 use crate::actors::{types::ActorEvent, RouterCmd};
 use crate::{
     actors::ActorRouter,
@@ -20,47 +15,35 @@ pub struct Replica {
     leader_addr: SocketAddr,
     other_replicas: Vec<SocketAddr>,
     operations: HashMap<u32, Operation>,
-    connection_tx: mpsc::Sender<ManagerCmd>,
-    connection_rx: mpsc::Receiver<InboundEvent>,
+    connection: Connection,
     actor_rx: mpsc::Receiver<ActorEvent>,
     router: Addr<ActorRouter>,
 }
 
 impl Node for Replica {
-    async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr) {
+    async fn handle_request(&mut self, op: Operation, addr: SocketAddr) {
         // redirect to leader node
-        self.connection_tx
-            .send(ManagerCmd::SendTo(
-                self.leader_addr,
-                NodeMessage::Request {
-                    op,
-                    addr: client_addr,
-                }
-                .into(),
-            ))
-            .await
-            .unwrap();
+        self.connection
+            .send(Message::Request { op, addr }, &self.leader_addr)
+            .await;
     }
 
     async fn handle_log(&mut self, new_op: Operation) {
         let new_op_id = new_op.id;
         self.operations.insert(new_op_id, new_op);
-        self.commit_operation(new_op_id - 1).await;
-        self.connection_tx
-            .send(ManagerCmd::SendTo(
-                self.leader_addr,
-                NodeMessage::Ack { id: new_op_id }.into(),
-            ))
-            .await
-            .unwrap();
+        // self.commit_operation(new_op_id - 1).await; // TODO: this logic should be in actors mod
+        self.connection
+            .send(Message::Ack { id: new_op_id }, &self.leader_addr)
+            .await;
+        todo!();
     }
 
     async fn handle_ack(&mut self, _id: u32) {
         todo!(); // TODO: replicas should not receive any ACK msgs
     }
 
-    async fn recv_node_msg(&mut self) -> Option<InboundEvent> {
-        self.connection_rx.recv().await
+    async fn recv_node_msg(&mut self) -> AppResult<Message> {
+        self.connection.recv().await
     }
 }
 
@@ -94,7 +77,6 @@ impl Replica {
         other_replicas: Vec<SocketAddr>,
         max_conns: usize,
     ) -> AppResult<()> {
-        let (connection_tx, connection_rx) = ConnectionManager::start(address, max_conns);
         let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
         let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
         std::thread::spawn(move || {
@@ -116,8 +98,7 @@ impl Replica {
             leader_addr,
             other_replicas,
             operations: HashMap::new(),
-            connection_tx,
-            connection_rx,
+            connection: Connection::start(address, max_conns).await?,
             actor_rx,
             router: router_rx.await.map_err(|e| AppError::ActorSystem {
                 details: format!("failed to receive router address: {e}"),

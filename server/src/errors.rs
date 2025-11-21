@@ -10,7 +10,7 @@
 //! simplify error handling and logging across the codebase.
 
 use std::io;
-use std::net::AddrParseError;
+use std::net::{AddrParseError, SocketAddr};
 use thiserror::Error;
 use tokio::task::JoinError;
 
@@ -19,7 +19,7 @@ use tokio::task::JoinError;
 /// Variants are grouped by concern (configuration, networking, actor/messaging,
 /// protocol/serialization, fallback). Many variants use `#[from]` to allow
 /// ergonomic `?` propagation from underlying error types.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 pub enum AppError {
     // ---- Config / CLI ----
     #[error("Invalid configuration: {0}")]
@@ -32,12 +32,11 @@ pub enum AppError {
     InvalidNeighbor { details: String },
 
     // ---- Networking ----
-    #[error("Network I/O error: {source}")]
+    /* #[error("Network I/O error: {source}")]
     Network {
         #[from]
         source: io::Error,
-    },
-
+    }, */
     #[error("Failed to parse socket address: {source}")]
     AddrParse {
         #[from]
@@ -50,8 +49,10 @@ pub enum AppError {
     #[error("Connection timed out to {addr}")]
     ConnectionTimeout { addr: String },
 
-    #[error("Connection I/O error with {addr}: {source}")]
-    ConnectionIO { addr: String, source: io::Error },
+    /* #[error("Connection I/O error with {addr}: {source}")]
+    ConnectionIO { addr: String, source: io::Error }, */
+    #[error("Connection closed")]
+    ConnectionClosed { addr: SocketAddr },
 
     #[error("Connection limit reached: max = {max}")]
     ConnectionLimit { max: usize },
@@ -66,16 +67,17 @@ pub enum AppError {
     #[error("Channel communication error: {details}")]
     Channel { details: String },
 
-    #[error("Task join error: {0}")]
-    Join(#[from] JoinError),
+    #[error("Channel was closed on the other side")]
+    ChannelClosed,
 
+    /* #[error("Task join error: {0}")]
+    Join(#[from] JoinError), */
     // ---- Serialization / Protocol ----
-    #[error("Serialization failed: {source}")]
+    /* #[error("Serialization failed: {source}")]
     Serialization {
         #[from]
         source: serde_json::Error,
-    },
-
+    }, */
     #[error("Invalid or malformed data: {details}")]
     InvalidData { details: String },
 
