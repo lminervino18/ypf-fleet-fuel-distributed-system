@@ -53,7 +53,7 @@ impl Handler {
             .map_err(|_| AppError::ConnectionClosed { addr: self.address })
     }
 
-    pub async fn stop(&mut self) {
+    pub fn stop(&mut self) {
         self.handle.abort();
     }
 
@@ -87,14 +87,20 @@ impl Handler {
                             Err(AppError::ChannelClosed) => { break; },
                             _ => todo!(),
                         }},
-                        received = receiver.recv() => {
-                            match received {
+                        received = receiver.recv() => { match received {
                                 Ok(()) => {},
+                                Err(AppError::ChannelClosed) => { break; },
                                 _ => todo!(),
                             }
                         }
                 }
             }
         })
+    }
+}
+
+impl Drop for Handler {
+    fn drop(&mut self) {
+        self.handle.abort();
     }
 }
