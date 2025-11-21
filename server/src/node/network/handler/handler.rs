@@ -75,7 +75,10 @@ impl Handler {
         })
     }
 
-    fn run(mut sender: StreamSender<Message>, mut receiver: StreamReceiver) -> JoinHandle<()> {
+    fn run(
+        mut sender: StreamSender<Message>,
+        mut receiver: StreamReceiver<Message>,
+    ) -> JoinHandle<()> {
         task::spawn(async move {
             loop {
                 select! {

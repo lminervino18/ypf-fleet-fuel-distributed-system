@@ -1,17 +1,18 @@
-use crate::{
-    errors::{AppError, AppResult},
-    node::message::Message,
-};
+use crate::errors::{AppError, AppResult};
 use std::sync::Arc;
 use tokio::{io::AsyncReadExt, net::tcp::OwnedReadHalf, sync::mpsc::Sender};
 
-pub struct StreamReceiver {
-    messages_tx: Arc<Sender<Message>>,
+pub struct StreamReceiver<T> {
+    messages_tx: Arc<Sender<T>>,
     stream: OwnedReadHalf,
 }
 
-impl StreamReceiver {
-    pub fn new(messages_tx: Arc<Sender<Message>>, stream: OwnedReadHalf) -> Self {
+impl<T> StreamReceiver<T> 
+where 
+T: TryFrom<Vec<u8>>,
+T::Error: Into<AppError>
+    {
+    pub fn new(messages_tx: Arc<Sender<T>>, stream: OwnedReadHalf) -> Self {
         Self {
             messages_tx,
             stream,
@@ -43,9 +44,10 @@ impl StreamReceiver {
                 }),
             })?;
         self.messages_tx
-            .send(bytes.try_into()?)
+            .send(bytes.try_into().map_err(Into::into)?)
             .await
             .map_err(|_| AppError::ChannelClosed)?;
+
         Ok(())
     }
 }
