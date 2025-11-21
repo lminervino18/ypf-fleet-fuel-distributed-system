@@ -1,234 +1,199 @@
-//! Actor router module.
-//!
-//! Flows:
-//! - Node → ActorRouter : `RouterCmd`
-//! - ActorRouter → CardActor : `CardMsg` (for CheckLimit, ApplyCharge, card limit updates)
-//! - ActorRouter → AccountActor : `AccountMsg` (for account limit updates)
-//! - CardActor → AccountActor : `AccountMsg::CheckAccountLimit` (when card passes)
-//! - AccountActor / CardActor → ActorRouter : `RouterInternalMsg`
-//! - ActorRouter → Node : `ActorEvent` (via mpsc channel)
-
 use actix::prelude::*;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
+use crate::actors::messages::{
+    AccountMsg,
+    ActorEvent,
+    CardMsg,
+    RouterCmd,
+    RouterInternalMsg,
+};
+use crate::domain::Operation;
+use crate::errors::VerifyError;
+
 use super::account::AccountActor;
 use super::card::CardActor;
-use super::types::{
-    AccountMsg, ActorEvent, CardMsg, RouterCmd, RouterInternalMsg,
-};
 
 /// Router actor that owns and routes to AccountActor and CardActor instances.
+///
+/// Responsibilities:
+/// - Maintain and create AccountActor and CardActor instances as needed.
+/// - Route `RouterCmd::Execute` to the correct actors.
+/// - Receive `RouterInternalMsg::OperationCompleted` from cards/accounts.
+/// - Emit a single `ActorEvent::OperationResult` to the Node via `event_tx`.
 pub struct ActorRouter {
-    /// account_id -> AccountActor address
+    /// Maps account_id to AccountActor address.
     pub accounts: HashMap<u64, Addr<AccountActor>>,
-    /// card_id -> CardActor address
-    pub cards: HashMap<u64, Addr<CardActor>>,
 
-    /// Channel ActorRouter → Node
+    /// Maps (account_id, card_id) to CardActor address.
+    pub cards: HashMap<(u64, u64), Addr<CardActor>>,
+
+    /// Maps op_id to Operation for correlation.
+    ///
+    /// This lets the router attach the original operation to the
+    /// final `ActorEvent::OperationResult`.
+    pub operations: HashMap<u64, Operation>,
+
+    /// Channel for sending ActorEvent messages to the Node.
     pub event_tx: mpsc::Sender<ActorEvent>,
 }
 
 impl ActorRouter {
+    /// Create a new ActorRouter with the given event channel.
     pub fn new(event_tx: mpsc::Sender<ActorEvent>) -> Self {
         Self {
             accounts: HashMap::new(),
             cards: HashMap::new(),
+            operations: HashMap::new(),
             event_tx,
         }
     }
 
-    /// Helper to emit an event to the Node.
+    /// Emit an ActorEvent to the Node.
     fn emit(&self, ev: ActorEvent) {
         let _ = self.event_tx.try_send(ev);
     }
 
-    /// Return or create an AccountActor.
+    /// Return or create an AccountActor for the given account_id.
     fn get_or_create_account(
         &mut self,
         account_id: u64,
         ctx: &mut Context<Self>,
     ) -> Addr<AccountActor> {
-        if let Some(addr) = self.accounts.get(&account_id) {
-            return addr.clone();
+        if let Some(a) = self.accounts.get(&account_id) {
+            return a.clone();
         }
-
-        println!("[Router] Creating local account {}", account_id);
 
         let addr = AccountActor::new(account_id, ctx.address()).start();
         self.accounts.insert(account_id, addr.clone());
         addr
     }
 
-    /// Return or create a CardActor.
+    /// Return or create a CardActor for the given account_id and card_id.
     ///
-    /// A card always belongs to an account, so we ensure the account exists first.
+    /// Card identity is the pair (account_id, card_id).
     fn get_or_create_card(
         &mut self,
         account_id: u64,
         card_id: u64,
         ctx: &mut Context<Self>,
     ) -> Addr<CardActor> {
-        if let Some(addr) = self.cards.get(&card_id) {
-            return addr.clone();
+        let key = (account_id, card_id);
+
+        if let Some(c) = self.cards.get(&key) {
+            return c.clone();
         }
 
         let account_addr = self.get_or_create_account(account_id, ctx);
+        let addr = CardActor::new(card_id, account_id, ctx.address(), account_addr).start();
 
-        println!(
-            "[Router] Creating card {} for account {}",
-            card_id, account_id
-        );
-
-        let addr =
-            CardActor::new(card_id, account_id, ctx.address(), account_addr).start();
-
-        self.cards.insert(card_id, addr.clone());
+        self.cards.insert(key, addr.clone());
         addr
     }
 }
 
 impl Actor for ActorRouter {
     type Context = Context<Self>;
-
-    fn started(&mut self, _ctx: &mut Self::Context) {
-        println!(
-            "[Router] Started with {} accounts and {} cards",
-            self.accounts.len(),
-            self.cards.len()
-        );
-    }
 }
 
-/// Handle commands sent from Node → ActorRouter
+// ----------------------------
+// Node → Router
+// ----------------------------
 impl Handler<RouterCmd> for ActorRouter {
     type Result = ();
 
     fn handle(&mut self, msg: RouterCmd, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
-            RouterCmd::AuthorizeCharge {
-                account_id,
-                card_id,
-                amount,
-                request_id,
-            } => {
-                // IMPORTANT: optimization path
-                // We go directly to the CardActor, not the account.
-                let card = self.get_or_create_card(account_id, card_id, ctx);
+            // ---------------------------------
+            // EXECUTE (single-step from Node POV)
+            // ---------------------------------
+            RouterCmd::Execute { op_id, operation } => {
+                // Store the operation so we can attach it to the final result.
+                self.operations.insert(op_id, operation.clone());
 
-                card.do_send(CardMsg::CheckLimit {
-                    amount,
-                    request_id,
-                    account_id,
-                    card_id,
-                });
+                match operation {
+                    Operation::Charge {
+                        account_id,
+                        card_id,
+                        amount,
+                        from_offline_station,
+                    } => {
+                        let card = self.get_or_create_card(account_id, card_id, ctx);
+                        card.do_send(CardMsg::ExecuteCharge {
+                            op_id,
+                            account_id,
+                            card_id,
+                            amount,
+                            from_offline_station,
+                        });
+                    }
+
+                    Operation::LimitAccount {
+                        account_id,
+                        new_limit,
+                    } => {
+                        let acc = self.get_or_create_account(account_id, ctx);
+                        acc.do_send(AccountMsg::ApplyAccountLimit {
+                            op_id,
+                            new_limit,
+                        });
+                    }
+
+                    Operation::LimitCard {
+                        account_id,
+                        card_id,
+                        new_limit,
+                    } => {
+                        let card = self.get_or_create_card(account_id, card_id, ctx);
+                        card.do_send(CardMsg::ExecuteLimitChange { op_id, new_limit });
+                    }
+                }
             }
 
-            RouterCmd::ApplyCharge {
-                account_id,
-                card_id,
-                amount,
-                timestamp,
-                op_id,
-                request_id: _,
-            } => {
-                // Start from the card: card updates its own usage,
-                // then the account updates account-wide usage and emits ChargeApplied.
-                let card = self.get_or_create_card(account_id, card_id, ctx);
-                card.do_send(CardMsg::ApplyCharge { amount });
-
-                let account = self.get_or_create_account(account_id, ctx);
-                account.do_send(AccountMsg::ApplyCharge {
-                    card_id,
-                    amount,
-                    request_id: 0, // correlation can be done via op_id/timestamp if needed
-                    timestamp,
-                    op_id,
-                });
-            }
-
-            RouterCmd::UpdateCardLimit {
-                account_id,
-                card_id,
-                new_limit,
-                request_id,
-            } => {
-                let card = self.get_or_create_card(account_id, card_id, ctx);
-
-                card.do_send(CardMsg::UpdateLimit {
-                    new_limit,
-                    request_id,
-                });
-            }
-
-            RouterCmd::UpdateAccountLimit {
-                account_id,
-                new_limit,
-                request_id,
-            } => {
-                let account = self.get_or_create_account(account_id, ctx);
-
-                account.do_send(AccountMsg::UpdateAccountLimit {
-                    new_limit,
-                    request_id,
-                });
-            }
-
-            RouterCmd::ListAccounts => {
-                println!("[Router] Accounts: {:?}", self.accounts.keys());
+            RouterCmd::GetLog => {
+                let msg = format!(
+                    "[Router] Accounts={}, Cards={}",
+                    self.accounts.len(),
+                    self.cards.len()
+                );
+                self.emit(ActorEvent::Debug(msg));
             }
         }
     }
 }
 
-/// Handle messages from AccountActor / CardActor → ActorRouter
+// ----------------------------
+// CardActor / AccountActor → Router
+// ----------------------------
 impl Handler<RouterInternalMsg> for ActorRouter {
     type Result = ();
 
     fn handle(&mut self, msg: RouterInternalMsg, _ctx: &mut Context<Self>) -> Self::Result {
         match msg {
-            RouterInternalMsg::LimitCheckResult {
-                request_id,
-                allowed,
+            RouterInternalMsg::OperationCompleted {
+                op_id,
+                success,
                 error,
             } => {
-                self.emit(ActorEvent::LimitCheckResult {
-                    request_id,
-                    allowed,
-                    error,
-                });
-            }
+                // Retrieve the corresponding operation.
+                let operation = match self.operations.get(&op_id) {
+                    Some(op) => op.clone(),
+                    None => {
+                        // This should not normally happen: we got a completion
+                        // for an operation we never registered.
+                        self.emit(ActorEvent::Debug(format!(
+                            "[Router] OperationCompleted for unknown op_id={}",
+                            op_id
+                        )));
+                        return;
+                    }
+                };
 
-            RouterInternalMsg::ChargeApplied { operation } => {
-                self.emit(ActorEvent::ChargeApplied { operation });
-            }
-
-            RouterInternalMsg::LimitUpdated {
-                scope,
-                account_id,
-                card_id,
-                new_limit,
-            } => {
-                self.emit(ActorEvent::LimitUpdated {
-                    scope,
-                    account_id,
-                    card_id,
-                    new_limit,
-                });
-            }
-
-            RouterInternalMsg::LimitUpdateFailed {
-                scope,
-                account_id,
-                card_id,
-                request_id,
-                error,
-            } => {
-                self.emit(ActorEvent::LimitUpdateFailed {
-                    scope,
-                    account_id,
-                    card_id,
-                    request_id,
+                self.emit(ActorEvent::OperationResult {
+                    op_id,
+                    operation,
+                    success,
                     error,
                 });
             }

@@ -1,35 +1,48 @@
 //! AccountActor: manages one account and account-wide state.
 //!
 //! State:
-//! - account_limit: optional (None = no limit)
-//! - account_consumed: total charged across all cards
+//! - `account_limit`: optional (None = no limit).
+//! - `account_consumed`: total charged across all cards of this account.
 //!
 //! Flows:
-//! - CheckAccountLimit:
-//!     Called from CardActor, *only if* the card passed its own limit.
-//! - ApplyCharge:
-//!     Called after CardActor has updated its card-level consumption.
-//!     Updates account_consumed and emits ChargeApplied(Operation::Charge).
-//! - UpdateAccountLimit:
-//!     Only allow new_limit >= account_consumed.
+//! - Charges (from cards):
+//!     CardActor → AccountActor:
+//!       `AccountMsg::ApplyChargeFromCard`
+//!     The account:
+//!       * if `from_offline_station == false`:
+//!           - checks account-wide limit,
+//!           - applies the charge if allowed,
+//!       * if `from_offline_station == true`:
+//!           - **skips all limit checks** and unconditionally applies
+//!             the charge (these correspond to previously-confirmed
+//!             offline operations that must be reconciled),
+//!       * replies to the card via `AccountChargeReply`.
+//!
+//! - Account limit changes (from router):
+//!     Router → AccountActor:
+//!       `AccountMsg::ApplyAccountLimit`
+//!     The account:
+//!       * checks that the new limit is not below already consumed,
+//!       * applies the new limit if allowed,
+//!       * notifies the router via `RouterInternalMsg::OperationCompleted`.
 
 use actix::prelude::*;
 
 use super::actor_router::ActorRouter;
-use super::types::{
-    AccountMsg, LimitCheckError, LimitScope, LimitUpdateError, Operation, RouterInternalMsg,
-};
+use super::messages::{AccountChargeReply, AccountMsg, RouterInternalMsg};
+use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
 
+/// Actor that manages a single account and its state.
 pub struct AccountActor {
     pub account_id: u64,
 
     /// Optional account-wide limit. `None` means "no limit".
     account_limit: Option<f64>,
 
-    /// Total consumption across all cards in this account.
+    /// Total consumption across all cards in this account (already applied).
     account_consumed: f64,
 
-    /// Back-reference to the router, to send RouterInternalMsg events.
+    /// Back-reference to the router, to send `RouterInternalMsg` events.
     router: Addr<ActorRouter>,
 }
 
@@ -37,16 +50,18 @@ impl AccountActor {
     pub fn new(account_id: u64, router: Addr<ActorRouter>) -> Self {
         Self {
             account_id,
-            account_limit: None,
+            account_limit: Some(100.0),
             account_consumed: 0.0,
             router,
         }
     }
 
+    /// Send an internal message to the router.
     fn send_internal(&self, msg: RouterInternalMsg) {
         self.router.do_send(msg);
     }
 
+    /// Helper to check account-wide limit for a given amount.
     fn check_account_limit(&self, amount: f64) -> Result<(), LimitCheckError> {
         if let Some(limit) = self.account_limit {
             if self.account_consumed + amount > limit {
@@ -56,12 +71,13 @@ impl AccountActor {
         Ok(())
     }
 
+    /// Helper to validate a new account limit against current consumption.
     fn can_raise_limit(
         new_limit: Option<f64>,
         already_consumed: f64,
     ) -> Result<(), LimitUpdateError> {
         match new_limit {
-            None => Ok(()), // no limit is always allowed
+            None => Ok(()), // "no limit" is always allowed
             Some(lim) if lim >= already_consumed => Ok(()),
             Some(_) => Err(LimitUpdateError::BelowCurrentUsage),
         }
@@ -72,7 +88,7 @@ impl Actor for AccountActor {
     type Context = Context<Self>;
 
     fn started(&mut self, _ctx: &mut Self::Context) {
-        println!("[Account {}] Started", self.account_id);
+        // println!("[Account {}] Started", self.account_id);
     }
 }
 
@@ -81,68 +97,81 @@ impl Handler<AccountMsg> for AccountActor {
 
     fn handle(&mut self, msg: AccountMsg, _ctx: &mut Context<Self>) -> Self::Result {
         match msg {
-            AccountMsg::CheckAccountLimit { amount, request_id } => {
-                // Called only when the card has already passed card-level checks.
-                if let Err(err) = self.check_account_limit(amount) {
-                    self.send_internal(RouterInternalMsg::LimitCheckResult {
-                        request_id,
-                        allowed: false,
-                        error: Some(err),
+            AccountMsg::ApplyChargeFromCard {
+                op_id,
+                amount,
+                card_id: _,
+                from_offline_station,
+                reply_to,
+            } => {
+                if from_offline_station {
+                    // OFFLINE REPLAY:
+                    // ---------------
+                    // This charge was already confirmed to the station while
+                    // the node was OFFLINE. We must:
+                    // - skip *all* limit checks,
+                    // - unconditionally apply it at account level,
+                    // - always report success.
+                    self.account_consumed += amount;
+
+                    let _ = reply_to.do_send(AccountChargeReply {
+                        op_id,
+                        success: true,
+                        error: None,
                     });
+
                     return;
                 }
 
-                self.send_internal(RouterInternalMsg::LimitCheckResult {
-                    request_id,
-                    allowed: true,
-                    error: None,
-                });
-            }
+                // ONLINE CHARGE:
+                // -------------
+                // Verify account-wide limit for this charge.
+                let res = self
+                    .check_account_limit(amount)
+                    .map_err(VerifyError::ChargeLimit);
 
-            AccountMsg::ApplyCharge {
-                card_id,
-                amount,
-                request_id: _,
-                timestamp,
-                op_id,
-            } => {
-                // Card already updated its own card-level consumption.
-                // Here we only manage account-wide consumption.
-                self.account_consumed += amount;
-
-                let op = Operation::Charge {
-                    account_id: self.account_id,
-                    card_id,
-                    amount,
-                    timestamp,
-                    op_id,
-                };
-
-                self.send_internal(RouterInternalMsg::ChargeApplied { operation: op });
-            }
-
-            AccountMsg::UpdateAccountLimit {
-                new_limit,
-                request_id,
-            } => {
-                match Self::can_raise_limit(new_limit, self.account_consumed) {
+                match res {
                     Ok(()) => {
-                        self.account_limit = new_limit;
+                        // Apply charge at account level.
+                        self.account_consumed += amount;
 
-                        self.send_internal(RouterInternalMsg::LimitUpdated {
-                            scope: LimitScope::Account,
-                            account_id: self.account_id,
-                            card_id: None,
-                            new_limit,
+                        let _ = reply_to.do_send(AccountChargeReply {
+                            op_id,
+                            success: true,
+                            error: None,
                         });
                     }
                     Err(err) => {
-                        self.send_internal(RouterInternalMsg::LimitUpdateFailed {
-                            scope: LimitScope::Account,
-                            account_id: self.account_id,
-                            card_id: None,
-                            request_id,
-                            error: err,
+                        // Do not update account_consumed; just notify the card.
+                        let _ = reply_to.do_send(AccountChargeReply {
+                            op_id,
+                            success: false,
+                            error: Some(err),
+                        });
+                    }
+                }
+            }
+
+            AccountMsg::ApplyAccountLimit { op_id, new_limit } => {
+                let res = Self::can_raise_limit(new_limit, self.account_consumed)
+                    .map_err(VerifyError::LimitUpdate);
+
+                match res {
+                    Ok(()) => {
+                        // Apply the new account limit.
+                        self.account_limit = new_limit;
+
+                        self.send_internal(RouterInternalMsg::OperationCompleted {
+                            op_id,
+                            success: true,
+                            error: None,
+                        });
+                    }
+                    Err(err) => {
+                        self.send_internal(RouterInternalMsg::OperationCompleted {
+                            op_id,
+                            success: false,
+                            error: Some(err),
                         });
                     }
                 }

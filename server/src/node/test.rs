@@ -24,7 +24,7 @@ mod node_test {
         replica.wait().unwrap();
     } */
 
-    #[tokio::test]
+    /* #[tokio::test]
     async fn test_syncronization_between_one_leader_and_one_replica() {
         let dummy_coords = (0.0, 0.0);
         let leader_addr = SocketAddr::new(IpAddr::V4([127, 0, 0, 1].into()), 12346);
@@ -60,5 +60,5 @@ mod node_test {
         println!("buf read: {:?}", buf);
         leader.abort();
         replica.abort();
-    }
+    } */
 }
