@@ -53,6 +53,9 @@ pub enum AppError {
     #[error("Connection I/O error with {addr}: {source}")]
     ConnectionIO { addr: String, source: io::Error },
 
+    #[error("Connection closed")]
+    ConnectionClosed,
+
     #[error("Connection limit reached: max = {max}")]
     ConnectionLimit { max: usize },
 
@@ -65,6 +68,9 @@ pub enum AppError {
 
     #[error("Channel communication error: {details}")]
     Channel { details: String },
+
+    #[error("Channel was closed on the other side")]
+    ChannelClosed,
 
     #[error("Task join error: {0}")]
     Join(#[from] JoinError),
