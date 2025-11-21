@@ -39,7 +39,6 @@ impl<T: Into<Vec<u8>>> StreamSender<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::io::Read;
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
     use tokio::net::{TcpListener, TcpStream};
@@ -69,9 +68,11 @@ mod test {
 
         tokio::time::sleep(Duration::from_secs(1)).await; // wait for listener
         let mut client_skt = TcpStream::connect(server_address).await.unwrap();
-        let mut buf = vec![0u8; message.len() + 1];
+        let mut buf = vec![0u8; message.len() + 2 /* 2 bytes for msg len */];
         let _ = client_skt.read(&mut buf).await.unwrap();
         server.await.unwrap();
-        assert_eq!(buf, message);
+        let mut expected: Vec<u8> = (message.len() as u16).to_be_bytes().to_vec();
+        expected.extend(message);
+        assert_eq!(buf, expected);
     }
 }
