@@ -43,12 +43,12 @@ impl Connection {
 
     pub async fn send(&mut self, msg: Message, address: &SocketAddr) -> AppResult<()> {
         let mut guard = self.active.lock().await;
-        if !guard.contains_key(&address) {
+        if !guard.contains_key(address) {
             let handler = Handler::start(address, self.messages_tx.clone()).await?;
             add_handler_from(&mut guard, handler, self.max_conns);
         }
 
-        guard.get_mut(&address).unwrap().send(msg).await?;
+        guard.get_mut(address).unwrap().send(msg).await?;
         Ok(())
     }
 
