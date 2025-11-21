@@ -12,14 +12,17 @@ use crate::errors::VerifyError;
 pub enum ActorEvent {
     /// Final outcome for a given operation.
     ///
-    /// - `success == true`  → all checks passed and state was updated.
-    /// - `success == false` → some business rule failed; from the Node
-    ///   perspective the operation is rejected.
+    /// - `success == true`  → all checks passed and state was updated,
+    ///   or the operation came from an offline station and was applied
+    ///   unconditionally by design.
+/// - `success == false` → some business rule failed for an ONLINE
+    ///   operation; from the Node perspective the operation is rejected.
     OperationResult {
         op_id: u64,
         operation: Operation,
         success: bool,
         /// Domain/business error, if any (limits, invalid updates, etc.).
+        /// For offline-replayed charges this will always be `None`.
         error: Option<VerifyError>,
     },
 
@@ -37,6 +40,13 @@ pub enum ActorEvent {
 #[rtype(result = "()")]
 pub enum RouterCmd {
     /// Execute a complete business operation.
+    ///
+    /// For `Operation::Charge` this includes:
+    /// - card-level limit checks in CardActor (unless
+    ///   `from_offline_station == true`),
+    /// - account-level limit checks in AccountActor (unless
+    ///   `from_offline_station == true`),
+    /// - applying card + account consumption.
     Execute {
         op_id: u64,
         operation: Operation,
@@ -53,8 +63,13 @@ pub enum RouterCmd {
 ///
 /// For charges:
 /// - CardActor sends `ApplyChargeFromCard` to AccountActor.
-/// - AccountActor verifies account-wide limits, applies the change if
-///   allowed, and replies back to the card via `AccountChargeReply`.
+/// - AccountActor:
+///     * if `from_offline_station == false`:
+///         - verifies account-wide limits,
+///         - applies the change if allowed,
+///     * if `from_offline_station == true`:
+///         - **skips all limit checks** and unconditionally applies,
+/// - then replies back to the card via `AccountChargeReply`.
 ///
 /// For account limit changes:
 /// - Router sends `ApplyAccountLimit` directly to AccountActor.
@@ -66,13 +81,20 @@ pub enum AccountMsg {
     /// Charge requested by a specific card.
     ///
     /// The account must:
-    /// 1) verify account-wide limits for the charge,
-    /// 2) apply the charge to its own state if allowed,
-    /// 3) reply to the card via `reply_to`.
+    /// 1) if `from_offline_station == false`:
+    ///       - verify account-wide limits for the charge,
+    ///       - apply the charge to its own state if allowed,
+    ///    if `from_offline_station == true`:
+    ///       - skip all limit checks and apply unconditionally,
+    /// 2) reply to the card via `reply_to`.
     ApplyChargeFromCard {
         op_id: u64,
         amount: f64,
         card_id: u64,
+        /// Whether this charge comes from an offline-station replay.
+        /// If true, the AccountActor will skip all limit checks and
+        /// always apply the charge.
+        from_offline_station: bool,
         /// Where the account will send the result of this charge.
         reply_to: Recipient<AccountChargeReply>,
     },
@@ -112,6 +134,9 @@ pub struct AccountChargeReply {
 ///   * local limit checks (card),
 ///   * sending a request to the account,
 ///   * applying card state after account confirms.
+///   When `from_offline_station == true`, **all limit checks are
+///   skipped**; the charge is treated as already confirmed and must
+///   be applied.
 /// - `ExecuteLimitChange`: change the limit of this card only.
 ///
 /// The card will report final outcomes back to the router via
@@ -125,6 +150,10 @@ pub enum CardMsg {
         account_id: u64,
         card_id: u64,
         amount: f64,
+        /// Whether this charge originates from a previously OFFLINE
+        /// station. If true, CardActor will skip card-level limit
+        /// checks and forward it to AccountActor as an offline replay.
+        from_offline_station: bool,
     },
 
     /// Execute a card-limit change.
@@ -144,8 +173,9 @@ pub enum CardMsg {
 /// Node.
 ///
 /// Semantics:
-/// - `success == true`  and `error == None` → operation applied correctly.
-/// - `success == false` → business failure.
+/// - `success == true` and `error == None` → operation applied correctly
+///   (either via normal checks or as an offline replay).
+/// - `success == false` → business failure for an ONLINE operation.
 #[derive(Debug, Message)]
 #[rtype(result = "()")]
 pub enum RouterInternalMsg {

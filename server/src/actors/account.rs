@@ -9,8 +9,13 @@
 //!     CardActor → AccountActor:
 //!       `AccountMsg::ApplyChargeFromCard`
 //!     The account:
-//!       * checks account-wide limit,
-//!       * applies the charge if allowed,
+//!       * if `from_offline_station == false`:
+//!           - checks account-wide limit,
+//!           - applies the charge if allowed,
+//!       * if `from_offline_station == true`:
+//!           - **skips all limit checks** and unconditionally applies
+//!             the charge (these correspond to previously-confirmed
+//!             offline operations that must be reconciled),
 //!       * replies to the card via `AccountChargeReply`.
 //!
 //! - Account limit changes (from router):
@@ -22,6 +27,7 @@
 //!       * notifies the router via `RouterInternalMsg::OperationCompleted`.
 
 use actix::prelude::*;
+
 use super::actor_router::ActorRouter;
 use super::messages::{AccountChargeReply, AccountMsg, RouterInternalMsg};
 use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
@@ -82,7 +88,6 @@ impl Actor for AccountActor {
     type Context = Context<Self>;
 
     fn started(&mut self, _ctx: &mut Self::Context) {
-        // Uncomment for debugging:
         // println!("[Account {}] Started", self.account_id);
     }
 }
@@ -96,8 +101,30 @@ impl Handler<AccountMsg> for AccountActor {
                 op_id,
                 amount,
                 card_id: _,
+                from_offline_station,
                 reply_to,
             } => {
+                if from_offline_station {
+                    // OFFLINE REPLAY:
+                    // ---------------
+                    // This charge was already confirmed to the station while
+                    // the node was OFFLINE. We must:
+                    // - skip *all* limit checks,
+                    // - unconditionally apply it at account level,
+                    // - always report success.
+                    self.account_consumed += amount;
+
+                    let _ = reply_to.do_send(AccountChargeReply {
+                        op_id,
+                        success: true,
+                        error: None,
+                    });
+
+                    return;
+                }
+
+                // ONLINE CHARGE:
+                // -------------
                 // Verify account-wide limit for this charge.
                 let res = self
                     .check_account_limit(amount)
@@ -108,8 +135,6 @@ impl Handler<AccountMsg> for AccountActor {
                         // Apply charge at account level.
                         self.account_consumed += amount;
 
-
-                        // Reply to the card: account-side part succeeded.
                         let _ = reply_to.do_send(AccountChargeReply {
                             op_id,
                             success: true,

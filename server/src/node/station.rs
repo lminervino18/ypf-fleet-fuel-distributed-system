@@ -14,10 +14,12 @@
 //!   0 1 10 50.0
 //!   1 2 20 150.25
 //!
-//! Special commands:
-//!   help   -> Print usage instructions
-//!   quit   -> Stop the simulator
-//!   exit   -> Stop the simulator
+//! Special commands (typed on stdin):
+//!   help        -> Print usage instructions
+//!   quit        -> Stop the simulator
+//!   exit        -> Stop the simulator
+//!   disconnect  -> Ask the node to switch into "offline" mode
+//!   connect     -> Ask the node to switch back into "online" mode
 //!
 //! If a pump already has a pending operation, new commands for that pump
 //! are rejected until the previous one finishes.
@@ -27,13 +29,17 @@ use tokio::sync::mpsc;
 
 use std::collections::HashMap;
 
-use crate::errors::{AppResult, AppError, VerifyError};
+use crate::errors::{AppError, AppResult, VerifyError};
 
 /// Message sent from the Station (pumps) to the Node.
 ///
 /// The Station only knows about a **single logical operation**: "charge".
 /// Internally, the Node may perform multi-step work (check limit, apply charge, etc.),
 /// but that is abstracted away from the Station.
+///
+/// In addition, the Station can send connectivity-related commands
+/// (`ConnectNode` / `DisconnectNode`) to instruct the node to change
+/// its connectivity mode.
 #[derive(Debug)]
 pub enum StationToNodeMsg {
     /// Request to perform a charge coming from a specific pump.
@@ -49,12 +55,28 @@ pub enum StationToNodeMsg {
         amount: f64,
         request_id: u64,
     },
+
+    /// Request from the station console to put the node into "offline" mode.
+    ///
+    /// In offline mode, the node:
+    /// - stops actually participating in the distributed protocol / network
+    ///   (implementation detail),
+    /// - may enqueue pump operations and immediately acknowledge them as OK.
+    DisconnectNode,
+
+    /// Request from the station console to put the node back into "online" mode.
+    ///
+    /// In online mode, the node:
+    /// - resumes normal participation in the distributed protocol,
+    /// - sends pump-originated operations to the actor layer again.
+    ConnectNode,
 }
 
 /// Message sent from the Node to the Station (pumps).
 ///
-/// This abstracts the whole flow as a single result:
-/// "the charge was allowed and applied" or "it was rejected".
+/// This abstracts the whole flow as:
+/// - a single result for a charge operation, or
+/// - a debug/diagnostic message.
 #[derive(Debug)]
 pub enum NodeToStationMsg {
     /// Final result of a charge request.
@@ -64,6 +86,12 @@ pub enum NodeToStationMsg {
         /// Optional reason if `allowed == false`.
         error: Option<VerifyError>,
     },
+
+    /// Generic debug / informational message from the node.
+    ///
+    /// For example, it can be used to inform the user that the node
+    /// switched to offline/online mode.
+    Debug(String),
 }
 
 /// Internal representation of a pending pump request.
@@ -138,6 +166,30 @@ pub async fn run_station_simulator(
 
                         if line.eq_ignore_ascii_case("help") {
                             print_help();
+                            continue;
+                        }
+
+                        if line.eq_ignore_ascii_case("disconnect") {
+                            // Ask the node to switch into offline mode.
+                            let msg = StationToNodeMsg::DisconnectNode;
+                            if let Err(e) = to_node_tx.send(msg).await {
+                                eprintln!(
+                                    "[Station][to-node][ERROR] Failed to send DisconnectNode: {}",
+                                    e
+                                );
+                            }
+                            continue;
+                        }
+
+                        if line.eq_ignore_ascii_case("connect") {
+                            // Ask the node to switch back to online mode.
+                            let msg = StationToNodeMsg::ConnectNode;
+                            if let Err(e) = to_node_tx.send(msg).await {
+                                eprintln!(
+                                    "[Station][to-node][ERROR] Failed to send ConnectNode: {}",
+                                    e
+                                );
+                            }
                             continue;
                         }
 
@@ -253,6 +305,8 @@ fn print_help() {
     println!("Special commands:");
     println!("  help           # print this help");
     println!("  quit / exit    # stop the simulator");
+    println!("  disconnect     # ask the node to switch into OFFLINE mode");
+    println!("  connect        # ask the node to switch back into ONLINE mode");
     println!();
 }
 
@@ -363,9 +417,9 @@ fn handle_user_command(
 
 /// Handle a `NodeToStationMsg` coming back from the Node.
 ///
-/// This is a **single-step** result:
+/// This is a **single-step** result for charges:
 /// - The Node already did the authorization and (if allowed) the charge.
-/// - So we only need to log and free the pump.
+/// For debug messages, we simply print them.
 fn handle_node_event(
     msg: NodeToStationMsg,
     in_flight_by_pump: &mut [Option<u64>],
@@ -402,6 +456,10 @@ fn handle_node_event(
 
             // Free pump
             in_flight_by_pump[pump_id] = None;
+        }
+
+        NodeToStationMsg::Debug(text) => {
+            println!("[Station][DEBUG] {}", text);
         }
     }
 }

@@ -117,6 +117,7 @@ impl Handler<RouterCmd> for ActorRouter {
                         account_id,
                         card_id,
                         amount,
+                        from_offline_station,
                     } => {
                         let card = self.get_or_create_card(account_id, card_id, ctx);
                         card.do_send(CardMsg::ExecuteCharge {
@@ -124,6 +125,7 @@ impl Handler<RouterCmd> for ActorRouter {
                             account_id,
                             card_id,
                             amount,
+                            from_offline_station,
                         });
                     }
 

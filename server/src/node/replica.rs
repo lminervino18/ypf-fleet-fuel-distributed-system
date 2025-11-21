@@ -15,12 +15,37 @@ use crate::{
 };
 
 use actix::{Actor, Addr};
-use std::{collections::HashMap, future::pending, net::SocketAddr};
+use std::{
+    collections::{HashMap, VecDeque},
+    future::pending,
+    net::SocketAddr,
+};
 use tokio::sync::{mpsc, oneshot};
 
-/// Internal state for a charge coming from a station pump.
+/// Internal state for a charge coming from a station pump
+/// while the node is ONLINE.
+///
+/// These are requests for which we *expect* an OperationResult
+/// from the ActorRouter.
 #[derive(Debug, Clone)]
 struct StationPendingCharge {
+    account_id: u64,
+    card_id: u64,
+    amount: f64,
+}
+
+/// Internal state for a charge coming from a station pump
+/// while the node is OFFLINE.
+///
+/// These operations are:
+/// - immediately acknowledged to the station as OK,
+/// - not sent to the actor system while offline,
+/// - stored in this queue so that, once connectivity is restored,
+///   they can be replayed into the ActorRouter with the
+///   `from_offline_station = true` flag set.
+#[derive(Debug, Clone)]
+struct OfflineQueuedCharge {
+    request_id: u64,
     account_id: u64,
     card_id: u64,
     amount: f64,
@@ -30,7 +55,8 @@ struct StationPendingCharge {
 ///
 /// Same wiring as the Leader, but intended to be a follower in the
 /// distributed system. For station-originated charges it uses the
-/// exact same Execute (verify + apply interno) flow as the Leader.
+/// exact same Execute (verify + apply interno) flow as the Leader
+/// when ONLINE, and the same offline queueing behavior when OFFLINE.
 pub struct Replica {
     id: u64,
     coords: (f64, f64),
@@ -41,6 +67,22 @@ pub struct Replica {
     /// Consensus operations (placeholder for now).
     operations: HashMap<u8, NodeOperation>,
 
+    /// Whether the node is in OFFLINE mode.
+    ///
+    /// In OFFLINE mode:
+    /// - cluster/network traffic is ignored,
+    /// - pump operations are auto-approved and queued in `offline_queue`,
+    /// - the actor layer is not involved in those pump operations until
+    ///   connectivity is restored.
+    is_offline: bool,
+
+    /// Queue of pump-originated operations received while OFFLINE.
+    ///
+    /// When the node switches back to ONLINE (ConnectNode), all entries
+    /// in this queue are replayed into the ActorRouter as
+    /// `Operation::Charge { .., from_offline_station: true }`.
+    offline_queue: VecDeque<OfflineQueuedCharge>,
+
     // ===== Network (ConnectionManager) =====
     connection_tx: mpsc::Sender<ManagerCmd>,
     connection_rx: mpsc::Receiver<InboundEvent>,
@@ -49,12 +91,13 @@ pub struct Replica {
     actor_rx: mpsc::Receiver<ActorEvent>,
 
     // ===== Station ↔ Replica =====
-    // Station → Replica (commands from pumps)
+    // Station → Replica (commands from pumps / console)
     station_cmd_rx: mpsc::Receiver<StationToNodeMsg>,
-    // Replica → Station (final results)
+    // Replica → Station (final results / debug)
     station_result_tx: mpsc::Sender<NodeToStationMsg>,
 
-    /// In-flight charge requests coming from the station.
+    /// In-flight charge requests coming from the station
+    /// while the node is ONLINE.
     /// Key = `op_id` / `request_id` chosen by the station simulator.
     station_requests: HashMap<u64, StationPendingCharge>,
 
@@ -67,22 +110,22 @@ pub struct Replica {
 // ===============================================================
 impl Node for Replica {
     async fn handle_accept(&mut self, op: NodeOperation) {
-        //println!("[Replica] handle_accept({:?})", op);
+        // println!("[Replica] handle_accept({:?})", op);
         // TODO: integrate with real consensus.
     }
 
     async fn handle_learn(&mut self, op: NodeOperation) {
-        //println!("[Replica] handle_learn({:?})", op);
+        // println!("[Replica] handle_learn({:?})", op);
         // TODO
     }
 
     async fn handle_commit(&mut self, op: NodeOperation) {
-        //println!("[Replica] handle_commit({:?})", op);
+        // println!("[Replica] handle_commit({:?})", op);
         // TODO
     }
 
     async fn handle_finished(&mut self, op: NodeOperation) {
-        //println!("[Replica] handle_finished({:?})", op);
+        // println!("[Replica] handle_finished({:?})", op);
         // TODO
     }
 
@@ -105,12 +148,18 @@ impl Node for Replica {
                 success,
                 error,
             } => {
+                // For pump-originated ONLINE operations we track them in
+                // `station_requests`. OFFLINE replay operations are never
+                // inserted there, so they will be treated as "non-station"
+                // and ignored at this layer (they were already confirmed
+                // to the station while offline).
                 let pending = match self.station_requests.remove(&op_id) {
                     Some(p) => p,
                     None => {
-                        // Not from station: just log and return.
+                        // Not from station: just ignore (admin/consensus or
+                        // offline-replayed op).
                         // println!(
-                        //     "[Replica][actor] OperationResult (non-station): op_id={} success={} op={:?} error={:?}",
+                        //     "[Replica][actor] OperationResult (non-station/offline): op_id={} success={} op={:?} error={:?}",
                         //     op_id, success, operation, error
                         // );
                         return;
@@ -131,16 +180,6 @@ impl Node for Replica {
                     error
                 };
 
-                // println!(
-                //     "[Replica][actor→station] op_id={} -> CHARGE {} (acc={}, card={}, amount={}, error={:?})",
-                //     op_id,
-                //     if allowed { "CONFIRMED" } else { "DENIED" },
-                //     pending.account_id,
-                //     pending.card_id,
-                //     pending.amount,
-                //     mapped_error
-                // );
-
                 let msg = NodeToStationMsg::ChargeResult {
                     request_id: op_id,
                     allowed,
@@ -159,7 +198,7 @@ impl Node for Replica {
             // Other events: debug, etc.
             // --------------------------------------------------
             ActorEvent::Debug(msg) => {
-                //println!("[Replica][actor][debug] {}", msg);
+                // println!("[Replica][actor][debug] {}", msg);
             }
         }
     }
@@ -201,22 +240,29 @@ impl Node for Replica {
                 }, if net_open => {
                     match maybe_evt {
                         Some(evt) => {
-                            match evt {
-                                InboundEvent::Received { peer: _, payload } => {
-                                    match NodeMessage::try_from(payload) {
-                                        Ok(msg) => self.handle_node_msg(msg).await,
-                                        Err(_e) => {
-                                            //println!("[WARN][Replica] invalid msg from network: {:?}", e),
+                            if self.is_offline {
+                                // In OFFLINE mode we ignore all cluster
+                                // traffic. We still drain the channel to
+                                // avoid backpressure.
+                                // println!("[Replica][net] Ignoring network event in OFFLINE mode: {:?}", evt);
+                            } else {
+                                match evt {
+                                    InboundEvent::Received { peer: _, payload } => {
+                                        match NodeMessage::try_from(payload) {
+                                            Ok(msg) => self.handle_node_msg(msg).await,
+                                            Err(_e) => {
+                                                // println!("[WARN][Replica] invalid msg from network: {:?}", e);
+                                            }
                                         }
                                     }
-                                }
-                                InboundEvent::ConnClosed { peer } => {
-                                    //println!("[Replica] Connection closed by {}", peer);
+                                    InboundEvent::ConnClosed { peer } => {
+                                        // println!("[Replica] Connection closed by {}", peer);
+                                    }
                                 }
                             }
                         }
                         None => {
-                            //println!("[Replica] Network channel closed");
+                            // println!("[Replica] Network channel closed");
                             net_open = false;
                         }
                     }
@@ -232,7 +278,7 @@ impl Node for Replica {
                     match maybe_actor {
                         Some(evt) => self.handle_actor_event(evt).await,
                         None => {
-                            //println!("[Replica] Actor event channel closed");
+                            // println!("[Replica] Actor event channel closed");
                             actors_open = false;
                         }
                     }
@@ -248,7 +294,7 @@ impl Node for Replica {
                     match maybe_station {
                         Some(msg) => self.handle_station_msg(msg).await,
                         None => {
-                            //println!("[Replica] Station command channel closed");
+                            // println!("[Replica] Station command channel closed");
                             station_open = false;
                         }
                     }
@@ -261,27 +307,67 @@ impl Node for Replica {
 }
 
 // ===============================================================
-// Extra: handler for Station → Replica messages
+// Station → Replica handler
 // ===============================================================
 impl Replica {
     /// Handle a message coming from the station (pump simulator).
     ///
-    /// Currently we only support `ChargeRequest`, mapped to
-    /// `Operation::Charge` with the same Execute flow as in Leader.
+    /// - ONLINE:
+    ///   `ChargeRequest` is mapped to `Operation::Charge` and goes
+    ///   through the internal Execute flow (verify + apply).
+    ///
+    /// - OFFLINE:
+    ///   `ChargeRequest` is enqueued into `offline_queue` and immediately
+    ///   acknowledged to the station as OK, without touching the actor layer.
+    ///
+    /// - `DisconnectNode`:
+    ///   switches the node into OFFLINE mode.
+    ///
+    /// - `ConnectNode`:
+    ///   switches the node back into ONLINE mode **and replays**
+    ///   all offline-queued charges into the ActorRouter as
+    ///   `from_offline_station = true`.
     async fn handle_station_msg(&mut self, msg: StationToNodeMsg) {
         match msg {
             StationToNodeMsg::ChargeRequest {
-                pump_id,
+                pump_id: _,
                 account_id,
                 card_id,
                 amount,
                 request_id,
             } => {
-                // println!(
-                //     "[Replica][station] pump={} -> ChargeRequest(account={}, card={}, amount={}, request_id={})",
-                //     pump_id, account_id, card_id, amount, request_id
-                // );
+                if self.is_offline {
+                    // OFFLINE MODE:
+                    // -------------
+                    // Queue the logical operation so that, when we reconnect,
+                    // a reconciliation step can replay it into the actor layer.
+                    self.offline_queue.push_back(OfflineQueuedCharge {
+                        request_id,
+                        account_id,
+                        card_id,
+                        amount,
+                    });
 
+                    // Immediately respond to the station as if the
+                    // operation had succeeded.
+                    let msg = NodeToStationMsg::ChargeResult {
+                        request_id,
+                        allowed: true,
+                        error: None,
+                    };
+
+                    if let Err(e) = self.station_result_tx.send(msg).await {
+                        // println!(
+                        //     "[Replica][station][OFFLINE][ERROR] failed to send fake-OK result: {}",
+                        //     e
+                        // );
+                    }
+
+                    return;
+                }
+
+                // ONLINE MODE:
+                // ------------
                 self.station_requests.insert(
                     request_id,
                     StationPendingCharge {
@@ -295,13 +381,96 @@ impl Replica {
                     account_id,
                     card_id,
                     amount,
+                    from_offline_station: false,
                 };
 
-                // Ejecuta (verify + apply interno).
+                // Execute (verify + apply internal).
                 self.router.do_send(RouterCmd::Execute {
                     op_id: request_id,
                     operation: op,
                 });
+            }
+
+            StationToNodeMsg::DisconnectNode => {
+                if self.is_offline {
+                    // Already offline; just inform the station.
+                    let _ = self
+                        .station_result_tx
+                        .send(NodeToStationMsg::Debug(
+                            "[Replica] Node is already in OFFLINE mode; pump operations are auto-approved."
+                                .to_string(),
+                        ))
+                        .await;
+                } else {
+                    self.is_offline = true;
+
+                    // Optional: we could instruct the ConnectionManager
+                    // to stop accepting/initiating connections via
+                    // a ManagerCmd if such a command existed.
+
+                    let _ = self
+                        .station_result_tx
+                        .send(NodeToStationMsg::Debug(
+                            "[Replica] Node switched to OFFLINE mode. Cluster traffic will be ignored and pump operations will be queued and auto-approved."
+                                .to_string(),
+                        ))
+                        .await;
+
+                    // println!("[Replica] OFFLINE mode enabled");
+                }
+            }
+
+            StationToNodeMsg::ConnectNode => {
+                if !self.is_offline {
+                    // Already online; just inform the station.
+                    let _ = self
+                        .station_result_tx
+                        .send(NodeToStationMsg::Debug(
+                            "[Replica] Node is already in ONLINE mode; pump operations go through normal verification."
+                                .to_string(),
+                        ))
+                        .await;
+                } else {
+                    self.is_offline = false;
+
+                    let queued = self.offline_queue.len();
+
+                    // Replay all queued offline charges into the actor system.
+                    // We reuse `request_id` as `op_id` and do NOT insert them
+                    // into `station_requests`, so their OperationResult will be
+                    // treated as non-station/offline events and ignored here.
+                    while let Some(OfflineQueuedCharge {
+                        request_id,
+                        account_id,
+                        card_id,
+                        amount,
+                    }) = self.offline_queue.pop_front()
+                    {
+                        let op = ActorOperation::Charge {
+                            account_id,
+                            card_id,
+                            amount,
+                            from_offline_station: true,
+                        };
+
+                            self.router.do_send(RouterCmd::Execute {
+                            op_id: request_id,
+                            operation: op,
+                        });
+                    }
+
+                    let _ = self
+                        .station_result_tx
+                        .send(NodeToStationMsg::Debug(
+                            format!(
+                                "[Replica] Node switched back to ONLINE mode. Replayed {} queued offline operations into the actor system (they were already confirmed to the station).",
+                                queued
+                            ),
+                        ))
+                        .await;
+
+                    // println!("[Replica] ONLINE mode enabled, offline_queue replayed: {}", queued);
+                }
             }
         }
     }
@@ -340,7 +509,7 @@ impl Replica {
             )
             .await
             {
-                //println!("[Station][Replica] simulator error: {e:?}");
+                // println!("[Station][Replica] simulator error: {e:?}");
             }
         });
 
@@ -353,7 +522,7 @@ impl Replica {
                 let router = ActorRouter::new(actor_tx).start();
 
                 if router_tx.send(router.clone()).is_err() {
-                    //println!("[ERROR] Failed to send router address to Replica");
+                    // println!("[ERROR] Failed to send router address to Replica");
                 }
 
                 pending::<()>().await;
@@ -368,6 +537,9 @@ impl Replica {
             leader_addr,
             other_replicas,
             operations: HashMap::new(),
+
+            is_offline: false,
+            offline_queue: VecDeque::new(),
 
             connection_tx,
             connection_rx,
