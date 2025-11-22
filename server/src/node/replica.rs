@@ -43,6 +43,10 @@ pub struct Replica {
     address: SocketAddr,
     leader_addr: SocketAddr,
     other_replicas: Vec<SocketAddr>,
+    current_term: u64,
+    voted_for: Option<u64>,
+    election_in_progress: bool,
+    votes_received: usize,
     operations: HashMap<u32, Operation>,
     connection: Connection,
     actor_rx: mpsc::Receiver<ActorEvent>,
@@ -87,6 +91,76 @@ impl Node for Replica {
 
     async fn handle_station_msg(&mut self, _msg: StationToNodeMsg) {
         // Replicas don't service station pumps; ignore or log.
+    }
+
+    async fn handle_vote_request(&mut self, term: u64, candidate_id: u64, candidate_addr: SocketAddr) {
+        // Simple voting rule: if term is newer, reset vote state. If we haven't voted this term,
+        // grant vote and record voter.
+        if term > self.current_term {
+            self.current_term = term;
+            self.voted_for = None;
+        }
+
+        let mut grant = false;
+        if self.voted_for.is_none() || self.voted_for == Some(candidate_id) {
+            self.voted_for = Some(candidate_id);
+            grant = true;
+        }
+
+        let reply = Message::Vote {
+            term: self.current_term,
+            voter_id: self.id,
+            voter_addr: self.address,
+            granted: grant,
+        };
+
+        self.connection.send(reply, &candidate_addr);
+    }
+
+    async fn handle_vote(&mut self, term: u64, _voter_id: u64, _voter_addr: SocketAddr, granted: bool) {
+        if !self.election_in_progress {
+            return;
+        }
+
+        if term != self.current_term {
+            // stale vote
+            return;
+        }
+
+        if granted {
+            self.votes_received += 1;
+            let total_peers = 1 + self.other_replicas.len(); // candidate + replicas (leader also counted separately)
+            // majority: > total_peers/2
+            if self.votes_received > total_peers / 2 {
+                // Won election
+                self.election_in_progress = false;
+                // For now we only log detection of leadership. Transition is future work.
+                // println!("[Replica:{}] WON election for term {}", self.id, self.current_term);
+            }
+        }
+    }
+
+    async fn start_election(&mut self) {
+        if self.election_in_progress {
+            return;
+        }
+
+        self.election_in_progress = true;
+        self.current_term = self.current_term.saturating_add(1);
+        self.voted_for = Some(self.id);
+        self.votes_received = 1; // vote for self
+
+        let msg = Message::RequestVote {
+            term: self.current_term,
+            candidate_id: self.id,
+            candidate_addr: self.address,
+        };
+
+        // send to leader and other replicas
+        let _ = self.connection.send(msg.clone(), &self.leader_addr);
+        for peer in &self.other_replicas {
+            let _ = self.connection.send(msg.clone(), peer);
+        }
     }
 
     
@@ -142,6 +216,10 @@ impl Replica {
             address,
             leader_addr,
             other_replicas,
+            current_term: 0,
+            voted_for: None,
+            election_in_progress: false,
+            votes_received: 0,
             operations: HashMap::new(),
             connection: Connection::start(address, max_conns).await?,
             actor_rx,

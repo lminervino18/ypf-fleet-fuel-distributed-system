@@ -55,6 +55,48 @@ impl From<Message> for Vec<u8> {
                 srl.extend(id_srl);
                 srl
             }
+            RequestVote { term, candidate_id, candidate_addr } => {
+                let type_srl = [TYPE_REQUEST_VOTE];
+                let term_srl = term.to_be_bytes();
+                let cand_id_srl = candidate_id.to_be_bytes();
+                let addr_srl: [u8; 6] = match candidate_addr.ip() {
+                    std::net::IpAddr::V4(ip) => {
+                        let [a, b, c, d] = ip.octets();
+                        let [p0, p1] = candidate_addr.port().to_be_bytes();
+                        [a, b, c, d, p0, p1]
+                    }
+                    _ => panic!(),
+                };
+
+                let mut srl = vec![];
+                srl.extend(type_srl);
+                srl.extend(term_srl);
+                srl.extend(cand_id_srl);
+                srl.extend(addr_srl);
+                srl
+            }
+            Vote { term, voter_id, voter_addr, granted } => {
+                let type_srl = [TYPE_VOTE];
+                let term_srl = term.to_be_bytes();
+                let voter_id_srl = voter_id.to_be_bytes();
+                let addr_srl: [u8; 6] = match voter_addr.ip() {
+                    std::net::IpAddr::V4(ip) => {
+                        let [a, b, c, d] = ip.octets();
+                        let [p0, p1] = voter_addr.port().to_be_bytes();
+                        [a, b, c, d, p0, p1]
+                    }
+                    _ => panic!(),
+                };
+                let granted_srl = [if granted { 1u8 } else { 0u8 }];
+
+                let mut srl = vec![];
+                srl.extend(type_srl);
+                srl.extend(term_srl);
+                srl.extend(voter_id_srl);
+                srl.extend(addr_srl);
+                srl.extend(granted_srl);
+                srl
+            }
         }
     }
 }
