@@ -113,15 +113,15 @@ async fn run() -> AppResult<()> {
             other_replicas,
             max_conns,
         } => {
-            // Replica::start(
-            //     args.address,
-            //     coords,
-            //     leader_addr,
-            //     other_replicas,
-            //     max_conns,
-            //     pumps,
-            // )
-            // .await?;
+            Replica::start(
+                args.address,
+                leader_addr,
+                coords,
+                other_replicas,
+                max_conns,
+                pumps,
+            )
+            .await?;
         }
 
         RoleArgs::Station { leader_addr: _ } => {

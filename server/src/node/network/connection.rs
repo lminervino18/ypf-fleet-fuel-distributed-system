@@ -32,6 +32,7 @@ impl Connection {
         let messages_tx = Arc::new(messages_tx);
         let acceptor_handle =
             Acceptor::start(address, active.clone(), messages_tx.clone(), max_conns).await?;
+
         Ok(Self {
             active,
             acceptor_handle,

@@ -5,6 +5,7 @@ use crate::{
     actors::actor_router::ActorRouter,
     errors::{AppError, AppResult},
     node::station::{NodeToStationMsg, StationToNodeMsg},
+    node::utils::get_id_given_addr,
 };
 use actix::{Actor, Addr};
 use std::{
@@ -79,6 +80,7 @@ struct OfflineQueuedCharge {
 pub struct Leader {
     id: u64,
     coords: (f64, f64),
+    address: SocketAddr,
     max_conns: usize,
     replicas: Vec<SocketAddr>,
     operations: HashMap<u32, (usize, SocketAddr, Operation)>,
@@ -100,7 +102,7 @@ impl Node for Leader {
         self.operations.insert(op.id, (0, client_addr, op.clone()));
         let msg = Message::Log { op: op.clone() };
         for replica in &self.replicas {
-            self.connection.send(msg.clone(), replica);
+            let _ = self.connection.send(msg.clone(), replica);
         }
     }
 
@@ -307,6 +309,27 @@ impl Node for Leader {
             }
         }
     }
+
+    async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr) {
+        // If our id is higher than the candidate, reply with ElectionOk
+        if self.id > candidate_id {
+            let reply = Message::ElectionOk { responder_id: self.id };
+
+            let _ = self.connection.send(reply, &candidate_addr).await;
+        }
+    }
+
+    async fn handle_election_ok(&mut self, _responder_id: u64) {
+        // Leader ignores election OKs
+    }
+
+    async fn handle_coordinator(&mut self, _leader_id: u64, _leader_addr: SocketAddr) {
+        // Leader ignores coordinator announcements
+    }
+
+    async fn start_election(&mut self) {
+        // Leader doesn't start elections
+    }
 }
 
 impl Leader {
@@ -341,6 +364,7 @@ impl Leader {
         });
 
         std::thread::spawn(move || {
+            // spawns a thread for Actix that runs inside a Tokio runtime 
             let sys = actix::System::new();
             sys.block_on(async move {
                 let router = ActorRouter::new(actor_tx).start();
@@ -348,13 +372,14 @@ impl Leader {
                     // println!("[ERROR] Failed to deliver ActorRouter addr to Leader");
                 }
 
-                pending::<()>().await;
+                pending::<()>().await;      // Keep the actix system running indefinitely
             });
         });
 
         let mut leader = Self {
-            id: rand::random::<u64>(),
+            id: get_id_given_addr(address),
             coords,
+            address,
             max_conns,
             replicas,
             operations: HashMap::new(),

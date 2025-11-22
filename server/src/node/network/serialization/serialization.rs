@@ -55,6 +55,50 @@ impl From<Message> for Vec<u8> {
                 srl.extend(id_srl);
                 srl
             }
+            Election { candidate_id, candidate_addr } => {
+                let type_srl = [TYPE_ELECTION];
+                let cand_id_srl = candidate_id.to_be_bytes();
+                let addr_srl: [u8; 6] = match candidate_addr.ip() {
+                    std::net::IpAddr::V4(ip) => {
+                        let [a, b, c, d] = ip.octets();
+                        let [p0, p1] = candidate_addr.port().to_be_bytes();
+                        [a, b, c, d, p0, p1]
+                    }
+                    _ => panic!(),
+                };
+
+                let mut srl = vec![];
+                srl.extend(type_srl);
+                srl.extend(cand_id_srl);
+                srl.extend(addr_srl);
+                srl
+            }
+            ElectionOk { responder_id } => {
+                let type_srl = [TYPE_ELECTION_OK];
+                let responder_id_srl = responder_id.to_be_bytes();
+                let mut srl = vec![];
+                srl.extend(type_srl);
+                srl.extend(responder_id_srl);
+                srl
+            }
+            Coordinator { leader_id, leader_addr } => {
+                let type_srl = [TYPE_COORDINATOR];
+                let leader_id_srl = leader_id.to_be_bytes();
+                let addr_srl: [u8; 6] = match leader_addr.ip() {
+                    std::net::IpAddr::V4(ip) => {
+                        let [a, b, c, d] = ip.octets();
+                        let [p0, p1] = leader_addr.port().to_be_bytes();
+                        [a, b, c, d, p0, p1]
+                    }
+                    _ => panic!(),
+                };
+
+                let mut srl = vec![];
+                srl.extend(type_srl);
+                srl.extend(leader_id_srl);
+                srl.extend(addr_srl);
+                srl
+            }
         }
     }
 }
