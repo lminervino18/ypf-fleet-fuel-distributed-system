@@ -1,4 +1,7 @@
-use crate::node::network::serials::protocol::*;
+use crate::{
+    errors::{AppError, AppResult},
+    node::{network::serials::protocol::*, operation::Operation},
+};
 
 impl TryFrom<&[u8]> for Operation {
     type Error = AppError;
@@ -126,4 +129,88 @@ fn deserialize_limit_card_operation(payload: &[u8]) -> AppResult<Operation> {
         card_id,
         new_limit,
     })
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_valid_account_id() {
+        let account_id_srl = 34586u64.to_be_bytes();
+        let expected = Ok(34586);
+        let account_id = deserialize_account_id(&account_id_srl);
+        assert_eq!(account_id, expected);
+    }
+
+    #[test]
+    fn test_deserialize_valid_card_id() {
+        let card_id_srl = 34586u64.to_be_bytes();
+        let expected = Ok(34586);
+        let account_id = deserialize_card_id(&card_id_srl);
+        assert_eq!(account_id, expected);
+    }
+
+    #[test]
+    fn test_deserialize_valid_amount() {
+        let amount_srl = 493583.5f32.to_be_bytes();
+        let expected = Ok(493583.5f32);
+        let amount = deserialize_amount(&amount_srl);
+        assert_eq!(amount, expected);
+    }
+
+    #[test]
+    fn test_deserialize_valid_some_limit() {
+        let limit_srl = 543000.8f32.to_be_bytes();
+        let expected = Ok(Some(543000.8f32));
+        let limit = deserialize_limit(&limit_srl);
+        assert_eq!(limit, expected);
+    }
+
+    #[test]
+    fn test_deserialize_valid_none_limit() {
+        let limit_srl = NO_LIMIT.to_be_bytes();
+        let expected = Ok(None);
+        let limit = deserialize_limit(&limit_srl);
+        assert_eq!(limit, expected);
+    }
+
+    #[test]
+    fn test_deserialize_valid_charge_operation() {
+        let op = Operation::Charge {
+            account_id: 10012,
+            card_id: 15333,
+            amount: 15864.63,
+            from_offline_station: true,
+        };
+        let op_srl: Vec<u8> = op.clone().into();
+        let expected = Ok(op);
+        let op = op_srl[..].try_into();
+        assert_eq!(op, expected);
+    }
+
+    #[test]
+    fn test_deserialize_valid_limit_account_operation() {
+        let op = Operation::LimitAccount {
+            account_id: 15388,
+            new_limit: Some(942000.8),
+        };
+        let op_srl: Vec<u8> = op.clone().into();
+        let expected = Ok(op);
+        let op = op_srl[..].try_into();
+        assert_eq!(op, expected);
+    }
+
+    #[test]
+    fn test_deserialize_valid_limit_card_operation() {
+        let op = Operation::LimitCard {
+            account_id: 15388,
+            card_id: 2,
+            new_limit: None,
+        };
+        let op_srl: Vec<u8> = op.clone().into();
+        let expected = Ok(op);
+        let op = op_srl[..].try_into();
+        assert_eq!(op, expected);
+    }
 }
