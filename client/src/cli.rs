@@ -12,8 +12,19 @@ const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:9000";
 #[command(about = "YPF Ruta client - admin CLI")]
 pub struct Cli {
     /// Server address
-    #[arg(long, default_value = DEFAULT_SERVER_ADDR)]
+    #[arg(long, default_value = DEFAULT_SERVER_ADDR, global = true)]
     pub server: String,
+
+    /// Coordinates (latitude longitude)
+    #[arg(
+        long,
+        num_args = 2,
+        value_names = ["LAT", "LON"],
+        default_values_t = vec![DEFAULT_COORD_LAT, DEFAULT_COORD_LON],
+        allow_negative_numbers = true,
+        global = true
+    )]
+    pub coords: Vec<f64>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -25,6 +36,7 @@ impl Cli {
         let cli = Cli::parse();
         println!("[CLIENT] parsed command: {:?}", cli.command);
         println!("[CLIENT] parsed server: {:?}", cli.server);
+        println!("[CLIENT] parsed coords: {:?}", cli.coords);
         cli
     }
 
@@ -92,6 +104,12 @@ mod tests {
         assert_eq!(cli.server, DEFAULT_SERVER_ADDR);
         assert_eq!(cli.coords, vec![DEFAULT_COORD_LAT, DEFAULT_COORD_LON]);
     }
+
+    #[test]
+    fn test_cli_parsing_custom_coords() {
+        let args = vec!["ypf_client", "--coords", "-31.4", "-64.2", "query-account"];
+        let cli = Cli::parse_from(args);
+        assert_eq!(cli.coords, vec![-31.4, -64.2]);
     }
 
     #[test]

@@ -24,6 +24,10 @@ Para el administrador de tarjetas (cliente) se pueden ejecutar los siguientes co
 # Especificar el servidor, en caso contrario utiliza el default
 ./scripts/admin.sh --server <direccion_servidor> limit-account --amount <monto>
 
+# Especificar coordenadas del cliente (latitud y longitud), por defecto usa -34.6989 -64.7597 (centro de Argentina)
+# Es un parametro global, su orden no importa
+./scripts/admin.sh --coords <lat> <lon> query-account
+
 # Limitar los montos disponibles en la cuenta
 ./scripts/admin.sh limit-account --amount <monto>
 
@@ -43,7 +47,13 @@ Para el administrador de tarjetas (cliente) se pueden ejecutar los siguientes co
 Ejemplos de uso:
 ```bash
 # especificar el servidor, en caso contrario utiliza el default
-./scripts/admin.sh --server localhost:7070 limit-account --amount 100.50
+./scripts/admin.sh --server 127.0.0.1:7070 limit-account --amount 100.50
+
+# idem pero especificando coordenadas
+./scripts/admin.sh --server 127.0.0.1:7070 limit-account --amount 100.50 --coords -31.4 -64.2
+
+# especificar coordenadas del cliente (Córdoba, Argentina)
+./scripts/admin.sh --coords -31.4 -64.2 query-account
 
 # Limitar los montos disponibles en la cuenta
 ./scripts/admin.sh limit-account --amount 100.50
