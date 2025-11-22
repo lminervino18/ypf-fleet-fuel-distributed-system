@@ -52,7 +52,7 @@ pub enum StationToNodeMsg {
         pump_id: usize,
         account_id: u64,
         card_id: u64,
-        amount: f64,
+        amount: f32,
         request_id: u64,
     },
 
@@ -100,7 +100,7 @@ struct PumpRequest {
     pump_id: usize,
     account_id: u64,
     card_id: u64,
-    amount: f64,
+    amount: f32,
     request_id: u64,
 }
 
@@ -316,7 +316,7 @@ struct ParsedCommand {
     pump_id: usize,
     account_id: u64,
     card_id: u64,
-    amount: f64,
+    amount: f32,
 }
 
 /// Parse a user command line into a `ParsedCommand`.
@@ -349,7 +349,7 @@ fn parse_command(line: &str, num_pumps: usize) -> Result<ParsedCommand, String> 
         .parse()
         .map_err(|_| format!("Invalid card_id: '{}'", parts[2]))?;
 
-    let amount: f64 = parts[3]
+    let amount: f32 = parts[3]
         .parse()
         .map_err(|_| format!("Invalid amount: '{}'", parts[3]))?;
 

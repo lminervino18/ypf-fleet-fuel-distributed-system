@@ -1,17 +1,24 @@
-use super::{message::Message, network::Connection, node::Node, operation::Operation};
+use super::{
+    actors::{actor_router::ActorRouter, ActorEvent},
+    election::bully::Bully,
+    message::Message,
+    network::Connection,
+    node::Node,
+    operation::Operation,
+    station::NodeToStationMsg,
+    utils::get_id_given_addr,
+};
 use crate::{
-    actors::actor_router::ActorRouter,
-    actors::messages::ActorEvent,
     errors::{AppError, AppResult},
-    node::election::bully::Bully,
-    node::station::{NodeToStationMsg, StationToNodeMsg},
-    node::utils::get_id_given_addr,
+    node::station::StationToNodeMsg,
 };
-use actix::{Addr, Actor};
+use actix::{Actor, Addr};
 use std::{
-    collections::{HashMap, VecDeque}, future::pending, net::SocketAddr, sync::Arc
+    collections::{HashMap, VecDeque},
+    future::pending,
+    net::SocketAddr,
+    sync::Arc,
 };
-
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// Replica node.
@@ -57,18 +64,53 @@ pub struct Replica {
 }
 
 impl Node for Replica {
-    async fn handle_request(&mut self, op: Operation, addr: SocketAddr) {
-        // redirect to leader node
-        let _ = self.connection
-            .send(Message::Request { op, addr }, &self.leader_addr).await;
+    async fn handle_charge_request(
+        &mut self,
+        pump_id: usize,
+        account_id: u64,
+        card_id: u64,
+        amount: f32,
+        request_id: u64,
+    ) {
+        todo!();
     }
 
-    async fn handle_log(&mut self, new_op: Operation) {
-        let new_op_id = new_op.id;
-        self.operations.insert(new_op_id, new_op);
+    async fn recv_station_message(&mut self) -> Option<StationToNodeMsg> {
+        todo!();
+    }
+
+    async fn handle_operation_result(
+        &mut self,
+        op_id: u32,
+        operation: Operation,
+        success: bool,
+        error: Option<crate::errors::VerifyError>,
+    ) {
+        todo!();
+    }
+
+    async fn handle_request(
+        &mut self,
+        op_id: u32,
+        op: Operation,
+        addr: SocketAddr,
+    ) -> AppResult<()> {
+        // redirect to leader node
+        self.connection
+            .send(Message::Request { op_id, addr, op }, &self.leader_addr)
+            .await
+            .unwrap();
+        todo!();
+    }
+
+    async fn handle_log(&mut self, op_id: u32, new_op: Operation) {
+        self.operations.insert(op_id, new_op);
         // self.commit_operation(new_op_id - 1).await; // TODO: this logic should be in actors mod
-        let _ = self.connection
-            .send(Message::Ack { id: new_op_id }, &self.leader_addr).await;
+        self.connection
+            .send(Message::Ack { op_id }, &self.leader_addr)
+            .await
+            .unwrap();
+        todo!();
     }
 
     async fn handle_ack(&mut self, _id: u32) {
@@ -97,9 +139,14 @@ impl Node for Replica {
         //     "[Replica ID={}] Received Election from candidate ID={}",
         //     self.id, candidate_id
         // );
-        let should_reply = { let b = self.bully.lock().await; b.should_reply_ok(candidate_id) };
+        let should_reply = {
+            let b = self.bully.lock().await;
+            b.should_reply_ok(candidate_id)
+        };
         if should_reply {
-            let reply = Message::ElectionOk { responder_id: self.id };
+            let reply = Message::ElectionOk {
+                responder_id: self.id,
+            };
             let _ = self.connection.send(reply, &candidate_addr).await;
 
             // Start own election immediately
@@ -116,7 +163,7 @@ impl Node for Replica {
         let mut b = self.bully.lock().await;
         b.on_coordinator(leader_id, leader_addr);
 
-        // TODO: 
+        // TODO:
         // la replica ahora se convierte en lider, supongo que cambiando el rol
         // con el enum NodeRole, pero habria que unificar un poco más replica.rs y leader.rs
     }
@@ -128,17 +175,16 @@ impl Node for Replica {
         for addr in &self.other_replicas {
             peer_ids.insert(get_id_given_addr(*addr), *addr);
         }
-        
+
         crate::node::election::bully::conduct_election(
             &self.bully,
             &mut self.connection,
             peer_ids,
             self.id,
             self.address,
-        ).await;
+        )
+        .await;
     }
-
-    
 }
 
 impl Replica {
@@ -172,7 +218,7 @@ impl Replica {
         });
 
         std::thread::spawn(move || {
-            // spawns a thread for Actix that runs inside a Tokio runtime 
+            // spawns a thread for Actix that runs inside a Tokio runtime
             let sys = actix::System::new();
             sys.block_on(async move {
                 let router = ActorRouter::new(actor_tx).start();
@@ -209,6 +255,3 @@ impl Replica {
         replica.run().await
     }
 }
-
-
-

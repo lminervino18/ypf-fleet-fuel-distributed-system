@@ -37,10 +37,10 @@ pub struct AccountActor {
     pub account_id: u64,
 
     /// Optional account-wide limit. `None` means "no limit".
-    account_limit: Option<f64>,
+    account_limit: Option<f32>,
 
     /// Total consumption across all cards in this account (already applied).
-    account_consumed: f64,
+    account_consumed: f32,
 
     /// Back-reference to the router, to send `RouterInternalMsg` events.
     router: Addr<ActorRouter>,
@@ -62,7 +62,7 @@ impl AccountActor {
     }
 
     /// Helper to check account-wide limit for a given amount.
-    fn check_account_limit(&self, amount: f64) -> Result<(), LimitCheckError> {
+    fn check_account_limit(&self, amount: f32) -> Result<(), LimitCheckError> {
         if let Some(limit) = self.account_limit {
             if self.account_consumed + amount > limit {
                 return Err(LimitCheckError::AccountLimitExceeded);
@@ -73,8 +73,8 @@ impl AccountActor {
 
     /// Helper to validate a new account limit against current consumption.
     fn can_raise_limit(
-        new_limit: Option<f64>,
-        already_consumed: f64,
+        new_limit: Option<f32>,
+        already_consumed: f32,
     ) -> Result<(), LimitUpdateError> {
         match new_limit {
             None => Ok(()), // "no limit" is always allowed

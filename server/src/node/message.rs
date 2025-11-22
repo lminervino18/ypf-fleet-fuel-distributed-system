@@ -7,12 +7,16 @@ pub enum Message {
     /* Raft
      ***/
     /// Operation request sent by the client server (station).
-    Request { op: Operation, addr: SocketAddr },
+    Request {
+        op_id: u32,
+        op: Operation,
+        addr: SocketAddr,
+    },
     /// Log message sent by coordinator to the replicas.
-    Log { op: Operation },
+    Log { op_id: u32, op: Operation },
     /// Acknowledgement reply sent by a replica after receiving a valid `Log` message from the
     /// coordinator.
-    Ack { id: u32 },
+    Ack { op_id: u32 },
 
     /* Leader election (bully) */
     /// Election message sent by a candidate to notify peers.
@@ -21,8 +25,8 @@ pub enum Message {
         candidate_addr: SocketAddr,
     },
     /// OK reply sent by a higher-id process to a candidate.
-    ElectionOk { 
-        responder_id: u64,      // util para debuguear
+    ElectionOk {
+        responder_id: u64, // util para debuguear
     },
 
     /// Coordinator announcement sent by the new leader to all processes.
@@ -30,5 +34,4 @@ pub enum Message {
         leader_id: u64,
         leader_addr: SocketAddr,
     },
-    // ...
 }
