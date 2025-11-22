@@ -17,8 +17,8 @@ pub struct Bully {
 }
 
 use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
+use crate::node::network::Connection;
 
 /// Conduct a Bully election: owns the coordination flow
 /// (send Election, wait for replies, promote to coordinator). It receives an
@@ -26,7 +26,7 @@ use tokio::sync::Mutex;
 /// caller holding the lock across await points.
 pub async fn conduct_election(
     bully: Arc<Mutex<Bully>>,
-    outgoing: Sender<(Message, SocketAddr)>,
+    connection: Arc<Mutex<Connection>>,
     peers: Vec<SocketAddr>,
     id: u64,
     address: SocketAddr,
@@ -42,8 +42,11 @@ pub async fn conduct_election(
     };
 
     // broadcast Election
-    for p in &peers {
-        let _ = outgoing.send((msg.clone(), *p)).await;
+    {
+        let mut conn = connection.lock().await;
+        for p in &peers {
+            let _ = conn.send(msg.clone(), p).await;
+        }
     }
 
     // wait for responses window
@@ -57,8 +60,9 @@ pub async fn conduct_election(
         b.mark_coordinator();
 
         let coordinator_msg = Message::Coordinator { leader_id: id, leader_addr: address };
+        let mut conn = connection.lock().await;
         for p in &peers {
-            let _ = outgoing.send((coordinator_msg.clone(), *p)).await;
+            let _ = conn.send(coordinator_msg.clone(), p).await;
         }
     }
 }

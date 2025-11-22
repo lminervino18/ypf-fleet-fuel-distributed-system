@@ -47,7 +47,7 @@ pub struct Replica {
     other_replicas: Vec<SocketAddr>,
     bully: Arc<Mutex<Bully>>,
     operations: HashMap<u32, Operation>,
-    connection: Connection,
+    connection: Arc<Mutex<Connection>>,
     actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
     offline_queue: VecDeque<OfflineQueuedCharge>,
@@ -60,7 +60,7 @@ pub struct Replica {
 impl Node for Replica {
     async fn handle_request(&mut self, op: Operation, addr: SocketAddr) {
         // redirect to leader node
-        let _ = self.connection
+        let _ = self.connection.lock().await
             .send(Message::Request { op, addr }, &self.leader_addr).await;
     }
 
@@ -68,7 +68,7 @@ impl Node for Replica {
         let new_op_id = new_op.id;
         self.operations.insert(new_op_id, new_op);
         // self.commit_operation(new_op_id - 1).await; // TODO: this logic should be in actors mod
-        let _ = self.connection
+        let _ = self.connection.lock().await
             .send(Message::Ack { id: new_op_id }, &self.leader_addr).await;
     }
 
@@ -77,7 +77,7 @@ impl Node for Replica {
     }
 
     async fn recv_node_msg(&mut self) -> AppResult<Message> {
-        self.connection.recv().await
+        self.connection.lock().await.recv().await
     }
 
     async fn recv_actor_event(&mut self) -> Option<ActorEvent> {
@@ -97,21 +97,19 @@ impl Node for Replica {
         let should_reply = { let b = self.bully.lock().await; b.should_reply_ok(candidate_id) };
         if should_reply {
             let reply = Message::ElectionOk {};
-            // reply using direct connection
-            let _ = self.connection.send(reply, &candidate_addr).await;
+            let _ = self.connection.lock().await.send(reply, &candidate_addr).await;
 
-            // start own election in background; use the connection's outgoing sender (refactor?)
             let mut peers = Vec::with_capacity(self.other_replicas.len() + 1);
             peers.extend(self.other_replicas.iter().cloned());
             peers.push(self.leader_addr);
 
             let bully = self.bully.clone();
-            let outgoing = self.connection.outgoing_sender();
+            let conn = self.connection.clone();
             let id = self.id;
             let address = self.address;
             tokio::spawn(async move {
                 crate::node::election::bully::conduct_election(
-                    bully, outgoing, peers, id, address
+                    bully, conn, peers, id, address
                 ).await;
             });
         }
@@ -133,13 +131,13 @@ impl Node for Replica {
         peers.extend(self.other_replicas.iter().cloned());
         peers.push(self.leader_addr);
         let bully = self.bully.clone();
-        let outgoing = self.connection.outgoing_sender();
+        let conn = self.connection.clone();
         let id = self.id;
         let address = self.address;
 
         tokio::spawn(async move {
             crate::node::election::bully::conduct_election(
-                bully, outgoing, peers, id, address
+                bully, conn, peers, id, address
             ).await;
         });
     }
@@ -200,7 +198,7 @@ impl Replica {
             other_replicas,
             bully: Arc::new(Mutex::new(Bully::new(id, address))),
             operations: HashMap::new(),
-            connection: Connection::start(address, max_conns).await?,
+            connection: Arc::new(Mutex::new(Connection::start(address, max_conns).await?)),
             actor_rx,
             is_offline: false,
             offline_queue: VecDeque::new(),

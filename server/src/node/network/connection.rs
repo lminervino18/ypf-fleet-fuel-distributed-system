@@ -20,7 +20,6 @@ pub struct Connection {
     messages_tx: Arc<Sender<Message>>, // sólo para pasarle a quienes me mandan (Receiver)
     messages_rx: Receiver<Message>,
     max_conns: usize,
-    outgoing_tx: Arc<Sender<(Message, SocketAddr)>>,
 }
 
 // TODO: tanto send como recv tienen que retornar un Result que pueda contener el error
@@ -31,33 +30,8 @@ impl Connection {
         let active = Arc::new(Mutex::new(HashMap::new()));
         let (messages_tx, messages_rx) = mpsc::channel(MSG_BUFF_SIZE);
         let messages_tx = Arc::new(messages_tx);
-        // outgoing channel for requests to send messages; processed by a background task
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<(Message, SocketAddr)>(MSG_BUFF_SIZE);
-        let outgoing_tx = Arc::new(outgoing_tx);
         let acceptor_handle =
             Acceptor::start(address, active.clone(), messages_tx.clone(), max_conns).await?;
-        // Spawn background worker that performs actual sends requested through outgoing_rx.
-        let active_clone = active.clone();
-        let max_conns_clone = max_conns;
-        let messages_tx_worker = messages_tx.clone();
-        tokio::spawn(async move {
-            while let Some((msg, addr)) = outgoing_rx.recv().await {
-                // for each outgoing request, ensure handler exists and send
-                let mut guard = active_clone.lock().await;
-                if !guard.contains_key(&addr) {
-                    if let Ok(handler) = Handler::start(&addr, messages_tx_worker.clone()).await {
-                        add_handler_from(&mut guard, handler, max_conns_clone);
-                    } else {
-                        // failed to start handler, skip this send
-                        continue;
-                    }
-                }
-
-                if let Some(h) = guard.get_mut(&addr) {
-                    let _ = h.send(msg).await;
-                }
-            }
-        });
 
         Ok(Self {
             active,
@@ -65,12 +39,10 @@ impl Connection {
             messages_tx,
             messages_rx,
             max_conns,
-            outgoing_tx,
         })
     }
 
     pub async fn send(&mut self, msg: Message, address: &SocketAddr) -> AppResult<()> {
-        // preserve original immediate-send behaviour for callers that have &mut Connection
         let mut guard = self.active.lock().await;
         if !guard.contains_key(address) {
             let handler = Handler::start(address, self.messages_tx.clone()).await?;
@@ -83,13 +55,6 @@ impl Connection {
 
     pub async fn recv(&mut self) -> AppResult<Message> {
         self.messages_rx.recv().await.ok_or(AppError::ChannelClosed)
-    }
-
-    /// Returns a cloneable sender that can be used by background tasks to request sends
-    /// without needing &mut Connection. Each request is processed by the connection's
-    /// internal sender task which performs the real network send.
-    pub fn outgoing_sender(&self) -> Sender<(Message, SocketAddr)> {
-        (*self.outgoing_tx).clone()
     }
 }
 
