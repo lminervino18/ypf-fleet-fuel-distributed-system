@@ -93,3 +93,47 @@ impl Bully {
         self.received_ok = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::network::Connection;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn bully_new_sets_fields() {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 40000);
+        let b = Bully::new(42, addr);
+        assert_eq!(b.id, 42);
+        assert_eq!(b.address, addr);
+        assert!(!b.election_in_progress);
+        assert!(!b.received_ok);
+        assert!(b.leader_id.is_none());
+    }
+
+    #[test]
+    fn on_coordinator_updates_state() {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 40001);
+        let mut b = Bully::new(7, addr);
+        let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 50000);
+        b.on_coordinator(99, leader_addr);
+        assert_eq!(b.leader_id, Some(99));
+        assert_eq!(b.leader_addr, Some(leader_addr));
+        assert!(!b.election_in_progress);
+    }
+
+    // This test only checks that start_election flips internal flags when called
+    // with an empty peers list (so no actual network sends are attempted).
+    #[tokio::test]
+    async fn start_election_sets_state() {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        // start a Connection bound to an ephemeral port; we won't send to peers
+        let mut conn = Connection::start(addr, 1).await.expect("start connection");
+        let mut b = Bully::new(3, addr);
+
+        // Call start_election with empty peer list: should set election_in_progress
+        b.start_election(&mut conn, &[]);
+        assert!(b.election_in_progress);
+        assert!(!b.received_ok);
+    }
+}

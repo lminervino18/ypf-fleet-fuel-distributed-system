@@ -330,7 +330,7 @@ impl Node for Leader {
     }
 
     async fn start_election(&mut self) {
-        // Leader doesn't start elections in this simplified model.
+        // Leader doesn't start elections
     }
 }
 
