@@ -21,8 +21,10 @@ pub enum Message {
         candidate_addr: SocketAddr,
     },
     /// OK reply sent by a higher-id process to a candidate.
-    ElectionOk {},
-    
+    ElectionOk { 
+        responder_id: u64,      // util para debuguear
+    },
+
     /// Coordinator announcement sent by the new leader to all processes.
     Coordinator {
         leader_id: u64,

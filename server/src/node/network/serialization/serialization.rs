@@ -73,10 +73,12 @@ impl From<Message> for Vec<u8> {
                 srl.extend(addr_srl);
                 srl
             }
-            ElectionOk { } => {
+            ElectionOk { responder_id } => {
                 let type_srl = [TYPE_ELECTION_OK];
+                let responder_id_srl = responder_id.to_be_bytes();
                 let mut srl = vec![];
                 srl.extend(type_srl);
+                srl.extend(responder_id_srl);
                 srl
             }
             Coordinator { leader_id, leader_addr } => {

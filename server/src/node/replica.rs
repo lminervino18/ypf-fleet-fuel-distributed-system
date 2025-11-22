@@ -96,7 +96,7 @@ impl Node for Replica {
         // If we have higher id, reply ElectionOk and start our own election.
         let should_reply = { let b = self.bully.lock().await; b.should_reply_ok(candidate_id) };
         if should_reply {
-            let reply = Message::ElectionOk {};
+            let reply = Message::ElectionOk { responder_id: self.id };
             let _ = self.connection.lock().await.send(reply, &candidate_addr).await;
 
             let mut peers = Vec::with_capacity(self.other_replicas.len() + 1);
@@ -115,9 +115,9 @@ impl Node for Replica {
         }
     }
 
-    async fn handle_election_ok(&mut self) {
+    async fn handle_election_ok(&mut self, responder_id: u64) {
         let mut b = self.bully.lock().await;
-        b.on_election_ok();
+        b.on_election_ok(responder_id);
     }
 
     async fn handle_coordinator(&mut self, leader_id: u64, leader_addr: SocketAddr) {

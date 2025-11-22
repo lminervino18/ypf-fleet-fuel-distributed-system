@@ -315,14 +315,14 @@ impl Node for Leader {
     async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr) {
         // If our id is higher than the candidate, reply with ElectionOk
         if self.id > candidate_id {
-            let reply = Message::ElectionOk {};
+            let reply = Message::ElectionOk { responder_id: self.id };
 
             let mut conn = self.connection.lock().await;
             let _ = conn.send(reply, &candidate_addr).await;
         }
     }
 
-    async fn handle_election_ok(&mut self) {
+    async fn handle_election_ok(&mut self, _responder_id: u64) {
         // Leader ignores election OKs
     }
 

@@ -1,12 +1,7 @@
 use crate::node::message::Message;
 use std::net::SocketAddr;
 
-/// Simple, modular Bully algorithm helper.
-///
-/// This struct contains minimal state and helpers to send/receive
-/// bully messages. It is intentionally lightweight; the surrounding
-/// node (Leader/Replica) drives when to call these methods and provides
-/// the peer list and connection instance.
+/// Bully algorithm helper
 pub struct Bully {
     pub id: u64,
     pub address: SocketAddr,
@@ -24,6 +19,7 @@ use crate::node::network::Connection;
 /// (send Election, wait for replies, promote to coordinator). It receives an
 /// `Arc<Mutex<Bully>>` so it can be spawned as a background task without the
 /// caller holding the lock across await points.
+/// peers: list of all other nodes (replicas + leader)
 pub async fn conduct_election(
     bully: Arc<Mutex<Bully>>,
     connection: Arc<Mutex<Connection>>,
@@ -45,7 +41,10 @@ pub async fn conduct_election(
     {
         let mut conn = connection.lock().await;
         for p in &peers {
+            // NOTE: se puede ahorrar la cantidad de mensajes enviados comparando ids
+            // ahora mismo se envia a todos y ellos se encargan de responder o no
             let _ = conn.send(msg.clone(), p).await;
+            println!("Sent Election to {}", p);
         }
     }
 
@@ -93,18 +92,21 @@ impl Bully {
     /// If this node has higher id, reply `ElectionOk` to candidate.
     /// Decide whether we should reply OK to a candidate (higher id wins).
     pub fn should_reply_ok(&self, candidate_id: u64) -> bool {
+        println!("Nodo con id {} recibe Election de candidato con id {}", self.id, candidate_id);
         self.id > candidate_id
     }
 
     /// Handle an OK reply to our election request.
-    pub fn on_election_ok(&mut self) {
+    pub fn on_election_ok(&mut self, responder_id: u64) {
         // Record that at least one higher process is alive.
+        println!("Soy un nodo con id {} y he recibido un OK de un nodo con id: {}", self.id, responder_id);
         self.received_ok = true;
     }
 
     /// Broadcast that this node is the coordinator/leader.
     /// Mark coordinator in state
     pub fn mark_coordinator(&mut self) {
+        println!("Nodo con id {} se convierte en coordinador", self.id);
         self.leader_id = Some(self.id);
         self.leader_addr = Some(self.address);
         self.election_in_progress = false;
