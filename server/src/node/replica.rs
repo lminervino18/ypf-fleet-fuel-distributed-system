@@ -3,6 +3,7 @@ use crate::{
     actors::actor_router::ActorRouter,
     actors::messages::ActorEvent,
     errors::{AppError, AppResult},
+    node::election::bully::Bully,
     node::station::{NodeToStationMsg, StationToNodeMsg},
 };
 use actix::{Addr, Actor};
@@ -43,10 +44,7 @@ pub struct Replica {
     address: SocketAddr,
     leader_addr: SocketAddr,
     other_replicas: Vec<SocketAddr>,
-    current_term: u64,
-    voted_for: Option<u64>,
-    election_in_progress: bool,
-    votes_received: usize,
+    bully: Bully,
     operations: HashMap<u32, Operation>,
     connection: Connection,
     actor_rx: mpsc::Receiver<ActorEvent>,
@@ -93,74 +91,27 @@ impl Node for Replica {
         // Replicas don't service station pumps; ignore or log.
     }
 
-    async fn handle_vote_request(&mut self, term: u64, candidate_id: u64, candidate_addr: SocketAddr) {
-        // Simple voting rule: if term is newer, reset vote state. If we haven't voted this term,
-        // grant vote and record voter.
-        if term > self.current_term {
-            self.current_term = term;
-            self.voted_for = None;
-        }
-
-        let mut grant = false;
-        if self.voted_for.is_none() || self.voted_for == Some(candidate_id) {
-            self.voted_for = Some(candidate_id);
-            grant = true;
-        }
-
-        let reply = Message::Vote {
-            term: self.current_term,
-            voter_id: self.id,
-            voter_addr: self.address,
-            granted: grant,
-        };
-
-        self.connection.send(reply, &candidate_addr);
+    async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr) {
+        // Delegate to bully helper: reply OK if we have higher id.
+        self.bully
+            .on_election_received(&mut self.connection, candidate_id, candidate_addr);
     }
 
-    async fn handle_vote(&mut self, term: u64, _voter_id: u64, _voter_addr: SocketAddr, granted: bool) {
-        if !self.election_in_progress {
-            return;
-        }
+    async fn handle_election_ok(&mut self, responder_id: u64, responder_addr: SocketAddr) {
+        self.bully.on_election_ok(responder_id, responder_addr);
+    }
 
-        if term != self.current_term {
-            // stale vote
-            return;
-        }
-
-        if granted {
-            self.votes_received += 1;
-            let total_peers = 1 + self.other_replicas.len(); // candidate + replicas (leader also counted separately)
-            // majority: > total_peers/2
-            if self.votes_received > total_peers / 2 {
-                // Won election
-                self.election_in_progress = false;
-                // For now we only log detection of leadership. Transition is future work.
-                // println!("[Replica:{}] WON election for term {}", self.id, self.current_term);
-            }
-        }
+    async fn handle_coordinator(&mut self, leader_id: u64, leader_addr: SocketAddr) {
+        self.bully.on_coordinator(leader_id, leader_addr);
     }
 
     async fn start_election(&mut self) {
-        if self.election_in_progress {
-            return;
-        }
+        // Build peer list: include leader and other replicas
+        let mut peers = Vec::with_capacity(self.other_replicas.len() + 1);
+        peers.extend(self.other_replicas.iter().cloned());
+        peers.push(self.leader_addr);
 
-        self.election_in_progress = true;
-        self.current_term = self.current_term.saturating_add(1);
-        self.voted_for = Some(self.id);
-        self.votes_received = 1; // vote for self
-
-        let msg = Message::RequestVote {
-            term: self.current_term,
-            candidate_id: self.id,
-            candidate_addr: self.address,
-        };
-
-        // send to leader and other replicas
-        let _ = self.connection.send(msg.clone(), &self.leader_addr);
-        for peer in &self.other_replicas {
-            let _ = self.connection.send(msg.clone(), peer);
-        }
+        self.bully.start_election(&mut self.connection, &peers);
     }
 
     
@@ -209,17 +160,15 @@ impl Replica {
             });
         });
 
+        let id = rand::random::<u64>();
         let mut replica = Self {
-            id: rand::random::<u64>(),
+            id,
             coords,
             max_conns,
             address,
             leader_addr,
             other_replicas,
-            current_term: 0,
-            voted_for: None,
-            election_in_progress: false,
-            votes_received: 0,
+            bully: Bully::new(id, address),
             operations: HashMap::new(),
             connection: Connection::start(address, max_conns).await?,
             actor_rx,

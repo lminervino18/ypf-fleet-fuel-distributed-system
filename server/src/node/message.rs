@@ -13,19 +13,21 @@ pub enum Message {
     /// Acknowledgement reply sent by a replica after receiving a valid `Log` message from the
     /// coordinator.
     Ack { id: u32 },
-    /* Leader election */
-    /// RequestVote sent by a candidate to ask for votes.
-    RequestVote {
-        term: u64,
+    /* Bully election */
+    /// Election message sent by a candidate to notify peers.
+    Election {
         candidate_id: u64,
         candidate_addr: SocketAddr,
     },
-    /// Vote reply sent by a follower to a candidate.
-    Vote {
-        term: u64,
-        voter_id: u64,
-        voter_addr: SocketAddr,
-        granted: bool,
+    /// OK reply sent by a higher-id process to a candidate.
+    ElectionOk {
+        responder_id: u64,
+        responder_addr: SocketAddr,
+    },
+    /// Coordinator announcement sent by the new leader to all processes.
+    Coordinator {
+        leader_id: u64,
+        leader_addr: SocketAddr,
     },
     /* Leader election
      ***/

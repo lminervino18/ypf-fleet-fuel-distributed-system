@@ -79,6 +79,7 @@ struct OfflineQueuedCharge {
 pub struct Leader {
     id: u64,
     coords: (f64, f64),
+    address: SocketAddr,
     max_conns: usize,
     replicas: Vec<SocketAddr>,
     operations: HashMap<u32, (usize, SocketAddr, Operation)>,
@@ -307,6 +308,30 @@ impl Node for Leader {
             }
         }
     }
+
+    async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr) {
+        // If our id is higher than the candidate, reply with ElectionOk
+        if self.id > candidate_id {
+            let reply = Message::ElectionOk {
+                responder_id: self.id,
+                responder_addr: self.address,
+            };
+
+            self.connection.send(reply, &candidate_addr);
+        }
+    }
+
+    async fn handle_election_ok(&mut self, _responder_id: u64, _responder_addr: SocketAddr) {
+        // Leader ignores election OKs
+    }
+
+    async fn handle_coordinator(&mut self, _leader_id: u64, _leader_addr: SocketAddr) {
+        // Leader ignores coordinator announcements for now
+    }
+
+    async fn start_election(&mut self) {
+        // Leader doesn't start elections in this simplified model.
+    }
 }
 
 impl Leader {
@@ -356,6 +381,7 @@ impl Leader {
         let mut leader = Self {
             id: rand::random::<u64>(),
             coords,
+            address,
             max_conns,
             replicas,
             operations: HashMap::new(),

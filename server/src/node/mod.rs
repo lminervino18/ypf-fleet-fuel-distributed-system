@@ -1,6 +1,7 @@
 mod leader;
 mod message;
 mod network;
+mod election;
 mod node;
 mod operation;
 mod replica;
