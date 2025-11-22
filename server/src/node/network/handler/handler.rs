@@ -37,7 +37,7 @@ impl Handler {
         receiver_tx: Arc<Sender<Message>>,
     ) -> AppResult<Self> {
         let (messages_tx, sender_rx) = mpsc::channel(MSG_BUFF_SIZE);
-        let address = stream.local_addr().map_err(|e| AppError::Unexpected {
+        let address = stream.peer_addr().map_err(|e| AppError::Unexpected {
             details: e.to_string(),
         })?;
 
@@ -49,10 +49,10 @@ impl Handler {
         self.messages_tx
             .send(msg)
             .await
-            .map_err(|_| AppError::ConnectionClosed {})
+            .map_err(|_| AppError::ConnectionClosed { addr: self.address })
     }
 
-    pub async fn stop(&mut self) {
+    pub fn stop(&mut self) {
         self.handle.abort();
     }
 
@@ -74,7 +74,10 @@ impl Handler {
         })
     }
 
-    fn run(mut sender: StreamSender<Message>, mut receiver: StreamReceiver) -> JoinHandle<()> {
+    fn run(
+        mut sender: StreamSender<Message>,
+        mut receiver: StreamReceiver<Message>,
+    ) -> JoinHandle<()> {
         task::spawn(async move {
             loop {
                 select! {
@@ -83,14 +86,112 @@ impl Handler {
                             Err(AppError::ChannelClosed) => { break; },
                             _ => todo!(),
                         }},
-                        received = receiver.recv() => {
-                            match received {
+                        received = receiver.recv() => { match received {
                                 Ok(()) => {},
+                                Err(AppError::ChannelClosed) => { break; },
                                 _ => todo!(),
                             }
                         }
                 }
             }
         })
+    }
+}
+
+impl Drop for Handler {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        time::Duration,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        task,
+    };
+
+    #[tokio::test]
+    async fn test_succesful_recv_with_a_valid_stream() {
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12351);
+        let message = Message::Ack { id: 1 };
+        let message_copy = message.clone();
+        let handle = task::spawn(async move {
+            let (mut stream, _) = TcpListener::bind(address)
+                .await
+                .unwrap()
+                .accept()
+                .await
+                .unwrap();
+
+            let mut len_srl = 5u16.to_be_bytes().to_vec();
+            let message_srl: Vec<u8> = message_copy.into();
+            len_srl.extend(message_srl);
+            let _ = stream.write(&len_srl).await.unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_secs(1)).await; // wait for listener
+        let (receiver_tx, mut receiver_rx) = mpsc::channel(1);
+        let handler = Handler::start(&address, Arc::new(receiver_tx))
+            .await
+            .unwrap();
+        let received = receiver_rx.recv().await.unwrap();
+        assert_eq!(received, message);
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_succesful_send_with_a_valid_stream() {
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12352);
+        let message = Message::Ack { id: 1 };
+        let message_copy = message.clone();
+        let listener = TcpListener::bind(address).await.unwrap();
+        let handle = task::spawn(async move {
+            let (receiver_tx, _) = mpsc::channel(1);
+            let mut handler = Handler::start(&address, Arc::new(receiver_tx))
+                .await
+                .unwrap();
+            handler.send(message_copy).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 64];
+        let _ = stream.read(&mut buf).await.unwrap();
+        buf = buf[2..].to_vec();
+        let received: Message = buf.try_into().unwrap();
+        assert_eq!(received, message);
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_successful_send_and_receive_between_two_handlers() {
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12353);
+        let message = Message::Ack { id: 1 };
+        let message_copy = message.clone();
+        let listener = TcpListener::bind(address).await.unwrap();
+        let handle1 = task::spawn(async move {
+            let (receiver_tx, _) = mpsc::channel(1);
+            let mut handler = Handler::start(&address, Arc::new(receiver_tx))
+                .await
+                .unwrap();
+            handler.send(message_copy).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let (stream2, _) = listener.accept().await.unwrap();
+        let (receiver_tx, mut receiver_rx) = mpsc::channel(1);
+        let handler2 = Handler::start_from(stream2, Arc::new(receiver_tx))
+            .await
+            .unwrap();
+        let received = receiver_rx.recv().await.unwrap();
+        assert_eq!(received, message);
+        handle1.await.unwrap();
     }
 }

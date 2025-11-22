@@ -43,16 +43,46 @@ impl Connection {
 
     pub async fn send(&mut self, msg: Message, address: &SocketAddr) -> AppResult<()> {
         let mut guard = self.active.lock().await;
-        if !guard.contains_key(&address) {
+        if !guard.contains_key(address) {
             let handler = Handler::start(address, self.messages_tx.clone()).await?;
             add_handler_from(&mut guard, handler, self.max_conns);
         }
 
-        guard.get_mut(&address).unwrap().send(msg).await?;
+        guard.get_mut(address).unwrap().send(msg).await?;
         Ok(())
     }
 
     pub async fn recv(&mut self) -> AppResult<Message> {
         self.messages_rx.recv().await.ok_or(AppError::ChannelClosed)
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.acceptor_handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+    use tokio::task;
+
+    #[tokio::test]
+    async fn test_successful_send_and_recv_between_connections() {
+        let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12354);
+        let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12355);
+        let message = Message::Ack { id: 1 };
+        let message_copy = message.clone();
+        let mut connection2 = Connection::start(address2, 1).await.unwrap();
+        let handle1 = task::spawn(async move {
+            let mut connection1 = Connection::start(address1, 1).await.unwrap();
+            connection1.send(message_copy, &address2).await.unwrap();
+        });
+
+        let received = connection2.recv().await.unwrap();
+        assert_eq!(received, message);
+        handle1.await.unwrap();
     }
 }
