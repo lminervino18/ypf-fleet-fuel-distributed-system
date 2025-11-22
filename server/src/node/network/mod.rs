@@ -2,6 +2,6 @@ mod acceptor;
 mod active_helpers;
 mod connection;
 mod handler;
-mod serialization;
+mod serials;
 
 pub use connection::Connection;

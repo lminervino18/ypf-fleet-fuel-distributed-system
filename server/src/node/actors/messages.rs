@@ -1,7 +1,6 @@
 use actix::prelude::*;
 
-use crate::domain::Operation;
-use crate::errors::VerifyError;
+use crate::{errors::VerifyError, node::operation::Operation};
 
 /// Events sent by the ActorRouter to the Node.
 ///
@@ -15,10 +14,10 @@ pub enum ActorEvent {
     /// - `success == true`  → all checks passed and state was updated,
     ///   or the operation came from an offline station and was applied
     ///   unconditionally by design.
-/// - `success == false` → some business rule failed for an ONLINE
+    /// - `success == false` → some business rule failed for an ONLINE
     ///   operation; from the Node perspective the operation is rejected.
     OperationResult {
-        op_id: u64,
+        op_id: u32,
         operation: Operation,
         success: bool,
         /// Domain/business error, if any (limits, invalid updates, etc.).
@@ -47,10 +46,7 @@ pub enum RouterCmd {
     /// - account-level limit checks in AccountActor (unless
     ///   `from_offline_station == true`),
     /// - applying card + account consumption.
-    Execute {
-        op_id: u64,
-        operation: Operation,
-    },
+    Execute { op_id: u32, operation: Operation },
 
     /// Debug / introspection of the router.
     GetLog,
@@ -88,8 +84,8 @@ pub enum AccountMsg {
     ///       - skip all limit checks and apply unconditionally,
     /// 2) reply to the card via `reply_to`.
     ApplyChargeFromCard {
-        op_id: u64,
-        amount: f64,
+        op_id: u32,
+        amount: f32,
         card_id: u64,
         /// Whether this charge comes from an offline-station replay.
         /// If true, the AccountActor will skip all limit checks and
@@ -105,10 +101,7 @@ pub enum AccountMsg {
     /// 1) verify that `new_limit` is not below already consumed usage,
     /// 2) apply the new limit if allowed,
     /// 3) notify the router via `RouterInternalMsg::OperationCompleted`.
-    ApplyAccountLimit {
-        op_id: u64,
-        new_limit: Option<f64>,
-    },
+    ApplyAccountLimit { op_id: u32, new_limit: Option<f32> },
 }
 
 /// Reply from AccountActor back to CardActor for a specific charge.
@@ -119,7 +112,7 @@ pub enum AccountMsg {
 #[derive(Debug, Clone, Message)]
 #[rtype(result = "()")]
 pub struct AccountChargeReply {
-    pub op_id: u64,
+    pub op_id: u32,
     pub success: bool,
     pub error: Option<VerifyError>,
 }
@@ -146,10 +139,10 @@ pub struct AccountChargeReply {
 pub enum CardMsg {
     /// Execute a charge for this card.
     ExecuteCharge {
-        op_id: u64,
+        op_id: u32,
         account_id: u64,
         card_id: u64,
-        amount: f64,
+        amount: f32,
         /// Whether this charge originates from a previously OFFLINE
         /// station. If true, CardActor will skip card-level limit
         /// checks and forward it to AccountActor as an offline replay.
@@ -157,10 +150,7 @@ pub enum CardMsg {
     },
 
     /// Execute a card-limit change.
-    ExecuteLimitChange {
-        op_id: u64,
-        new_limit: Option<f64>,
-    },
+    ExecuteLimitChange { op_id: u32, new_limit: Option<f32> },
 
     /// Generic debug / diagnostic for the card.
     Debug(String),
@@ -182,7 +172,7 @@ pub enum RouterInternalMsg {
     /// A business operation has finished from the perspective of the
     /// actor layer (card and/or account).
     OperationCompleted {
-        op_id: u64,
+        op_id: u32,
         success: bool,
         error: Option<VerifyError>,
     },

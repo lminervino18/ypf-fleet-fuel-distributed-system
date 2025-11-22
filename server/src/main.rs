@@ -1,5 +1,3 @@
-mod actors;
-pub mod domain;
 mod errors;
 mod node;
 
@@ -17,7 +15,7 @@ use std::{net::SocketAddr, process::ExitCode, str::FromStr};
 ///   • station  (future dedicated mode)
 ///
 /// Example:
-///     cargo run --bin server -- leader --replicas 127.0.0.1:5001 --pumps 4
+//     cargo run --bin server -- leader --replicas 127.0.0.1:5001 --pumps 4
 ///
 /// Example (replica):
 ///     cargo run --bin server -- replica --leader-addr 127.0.0.1:5000 --pumps 4

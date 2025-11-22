@@ -2,18 +2,13 @@ use actix::prelude::*;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-use crate::actors::messages::{
-    AccountMsg,
-    ActorEvent,
-    CardMsg,
-    RouterCmd,
-    RouterInternalMsg,
+use crate::node::actors::messages::{
+    AccountMsg, ActorEvent, CardMsg, RouterCmd, RouterInternalMsg,
 };
-use crate::domain::Operation;
-use crate::errors::VerifyError;
 
 use super::account::AccountActor;
 use super::card::CardActor;
+use crate::node::operation::Operation;
 
 /// Router actor that owns and routes to AccountActor and CardActor instances.
 ///
@@ -33,7 +28,7 @@ pub struct ActorRouter {
     ///
     /// This lets the router attach the original operation to the
     /// final `ActorEvent::OperationResult`.
-    pub operations: HashMap<u64, Operation>,
+    pub operations: HashMap<u32, Operation>,
 
     /// Channel for sending ActorEvent messages to the Node.
     pub event_tx: mpsc::Sender<ActorEvent>,
@@ -134,10 +129,7 @@ impl Handler<RouterCmd> for ActorRouter {
                         new_limit,
                     } => {
                         let acc = self.get_or_create_account(account_id, ctx);
-                        acc.do_send(AccountMsg::ApplyAccountLimit {
-                            op_id,
-                            new_limit,
-                        });
+                        acc.do_send(AccountMsg::ApplyAccountLimit { op_id, new_limit });
                     }
 
                     Operation::LimitCard {
