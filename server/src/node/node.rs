@@ -1,8 +1,7 @@
-use super::{message::Message, operation::Operation, station::StationToNodeMsg};
-use crate::{
-    actors::ActorEvent,
-    errors::{AppResult, VerifyError},
+use super::{
+    actors::ActorEvent, message::Message, operation::Operation, station::StationToNodeMsg,
 };
+use crate::errors::{AppResult, VerifyError};
 use std::net::SocketAddr;
 use tokio::select;
 
@@ -15,15 +14,20 @@ pub enum NodeRole {
 }
 
 pub trait Node {
-    async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr) -> AppResult<()>;
+    async fn handle_request(
+        &mut self,
+        op_id: u32,
+        op: Operation,
+        client_addr: SocketAddr,
+    ) -> AppResult<()>;
 
-    async fn handle_log(&mut self, op: Operation);
+    async fn handle_log(&mut self, op_id: u32, op: Operation);
 
     async fn handle_ack(&mut self, id: u32);
 
     async fn handle_operation_result(
         &mut self,
-        op_id: u64,
+        op_id: u32,
         operation: Operation,
         success: bool,
         error: Option<VerifyError>,
@@ -56,7 +60,6 @@ pub trait Node {
 
     async fn handle_charge_request(
         &mut self,
-        op_id: u32,
         pump_id: usize,
         account_id: u64,
         card_id: u64,
@@ -156,20 +159,21 @@ pub trait Node {
 
     async fn handle_node_msg(&mut self, msg: Message) {
         match msg {
-            Message::Request { op, addr } => {
-                self.handle_request(op, addr).await;
+            Message::Request { op_id, op, addr } => {
+                self.handle_request(op_id, op, addr).await;
             }
-            Message::Log { op } => {
-                self.handle_log(op).await;
+            Message::Log { op_id, op } => {
+                self.handle_log(op_id, op).await;
             }
-            Message::Ack { op_id: id } => {
-                self.handle_ack(id).await;
+            Message::Ack { op_id } => {
+                self.handle_ack(op_id).await;
             }
         }
     }
 
     async fn run(&mut self) -> AppResult<()> {
-        loop {
+        todo!();
+        /*         loop {
             select! {
                 node_msg = self.recv_node_msg() =>{
                     match node_msg {
@@ -196,6 +200,6 @@ pub trait Node {
                     }
                 }
             }
-        }
+        } */
     }
 }

@@ -1,10 +1,11 @@
-use super::{message::Message, network::Connection, node::Node, operation::Operation};
-use crate::{
-    actors::{actor_router::ActorRouter, messages::ActorEvent},
-    domain::Operation,
-    errors::AppResult,
-    node::station::StationToNodeMsg,
+use super::{
+    actors::{actor_router::ActorRouter, ActorEvent},
+    message::Message,
+    network::Connection,
+    node::Node,
+    operation::Operation,
 };
+use crate::{errors::AppResult, node::station::StationToNodeMsg};
 use actix::Addr;
 use std::{collections::HashMap, net::SocketAddr};
 use tokio::sync::mpsc;
@@ -29,20 +30,52 @@ pub struct Replica {
 }
 
 impl Node for Replica {
-    async fn handle_request(&mut self, op: Operation, addr: SocketAddr) {
-        // redirect to leader node
-        self.connection
-            .send(Message::Request { op, addr }, &self.leader_addr)
-            .await;
+    async fn handle_charge_request(
+        &mut self,
+        pump_id: usize,
+        account_id: u64,
+        card_id: u64,
+        amount: f32,
+        request_id: u64,
+    ) {
+        todo!();
     }
 
-    async fn handle_log(&mut self, new_op: Operation) {
-        let new_op_id = new_op.id;
-        self.operations.insert(new_op_id, new_op);
+    async fn recv_station_message(&mut self) -> Option<StationToNodeMsg> {
+        todo!();
+    }
+
+    async fn handle_operation_result(
+        &mut self,
+        op_id: u32,
+        operation: Operation,
+        success: bool,
+        error: Option<crate::errors::VerifyError>,
+    ) {
+        todo!();
+    }
+
+    async fn handle_request(
+        &mut self,
+        op_id: u32,
+        op: Operation,
+        addr: SocketAddr,
+    ) -> AppResult<()> {
+        // redirect to leader node
+        self.connection
+            .send(Message::Request { op_id, addr, op }, &self.leader_addr)
+            .await
+            .unwrap();
+        todo!();
+    }
+
+    async fn handle_log(&mut self, op_id: u32, new_op: Operation) {
+        self.operations.insert(op_id, new_op);
         // self.commit_operation(new_op_id - 1).await; // TODO: this logic should be in actors mod
         self.connection
-            .send(Message::Ack { op_id: new_op_id }, &self.leader_addr)
-            .await;
+            .send(Message::Ack { op_id }, &self.leader_addr)
+            .await
+            .unwrap();
         todo!();
     }
 

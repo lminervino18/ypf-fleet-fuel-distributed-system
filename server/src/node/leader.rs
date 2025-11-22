@@ -95,9 +95,17 @@ pub struct Leader {
 // Node trait implementation
 // ==========================================================
 impl Node for Leader {
-    async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr) -> AppResult<()> {
-        self.operations.insert(op.id, (0, client_addr, op.clone()));
-        let msg = Message::Log { op: op.clone() };
+    async fn handle_request(
+        &mut self,
+        op_id: u32,
+        op: Operation,
+        client_addr: SocketAddr,
+    ) -> AppResult<()> {
+        self.operations.insert(op_id, (0, client_addr, op.clone()));
+        let msg = Message::Log {
+            op_id,
+            op: op.clone(),
+        };
         for replica in &self.replicas {
             self.connection.send(msg.clone(), replica).await?;
         }
@@ -105,12 +113,12 @@ impl Node for Leader {
         Ok(())
     }
 
-    async fn handle_log(&mut self, op: Operation) {
+    async fn handle_log(&mut self, op_id: u32, op: Operation) {
         todo!(); // TODO: leader should not receive any Log msgs
     }
 
-    async fn handle_ack(&mut self, id: u32) {
-        let Some((ack_count, _, _)) = self.operations.get_mut(&id) else {
+    async fn handle_ack(&mut self, op_id: u32) {
+        let Some((ack_count, _, _)) = self.operations.get_mut(&op_id) else {
             todo!() // TODO: handle this case
         };
 
@@ -125,7 +133,7 @@ impl Node for Leader {
 
     async fn handle_operation_result(
         &mut self,
-        op_id: u64,
+        op_id: u32,
         operation: Operation,
         success: bool,
         error: Option<VerifyError>,
@@ -149,7 +157,6 @@ impl Node for Leader {
 
     async fn handle_charge_request(
         &mut self,
-        op_id: u32,
         pump_id: usize,
         account_id: u64,
         card_id: u64,
@@ -200,7 +207,6 @@ impl Node for Leader {
 
         // Build the domain operation for the actor layer.
         let op = Operation::Charge {
-            op_id: 0,
             account_id,
             card_id,
             amount,
@@ -209,7 +215,7 @@ impl Node for Leader {
 
         // Trigger the full execute flow in the actor system.
         self.router.do_send(RouterCmd::Execute {
-            op_id: request_id,
+            op_id: 0,
             operation: op,
         });
     }
@@ -235,7 +241,7 @@ impl Leader {
         let (station_result_tx, station_result_rx) = mpsc::channel::<NodeToStationMsg>(128);
         let station_cmd_tx_for_station = station_cmd_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::node::station::run_station_simulator(
+            if let Err(_e) = crate::node::station::run_station_simulator(
                 pumps,
                 station_cmd_tx_for_station,
                 station_result_rx,

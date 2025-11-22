@@ -73,20 +73,15 @@ use std::collections::VecDeque;
 
 use super::account::AccountActor;
 use super::actor_router::ActorRouter;
-use super::messages::{
-    AccountChargeReply,
-    AccountMsg,
-    CardMsg,
-    RouterInternalMsg,
-};
+use super::messages::{AccountChargeReply, AccountMsg, CardMsg, RouterInternalMsg};
 use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
 
 /// Internal representation of a card-level charge.
 #[derive(Debug, Clone, Copy)]
 struct CardChargeOp {
-    op_id: u64,
+    op_id: u32,
     account_id: u64,
-    amount: f64,
+    amount: f32,
     /// Whether this charge originates from a previously OFFLINE station.
     /// If `true`, all local limit checks (card + account) are skipped.
     from_offline_station: bool,
@@ -99,7 +94,7 @@ struct CardChargeOp {
 #[derive(Debug, Clone, Copy)]
 enum CardTask {
     Charge(CardChargeOp),
-    LimitChange { op_id: u64, new_limit: Option<f64> },
+    LimitChange { op_id: u32, new_limit: Option<f32> },
 }
 
 /// Actor responsible for a single card's state and limit enforcement.
@@ -108,10 +103,10 @@ pub struct CardActor {
     pub account_id: u64,
 
     /// Per-card limit. None means "no limit".
-    limit: Option<f64>,
+    limit: Option<f32>,
 
     /// Total amount consumed by this card (already applied).
-    consumed: f64,
+    consumed: f32,
 
     /// Optional in-flight task currently being processed.
     current_task: Option<CardTask>,
@@ -156,7 +151,7 @@ impl CardActor {
     /// We do not try to predict the effect of queued operations or
     /// assume they will succeed; each task is validated when it
     /// actually becomes the current task.
-    fn check_charge_limit(&self, amount: f64) -> Result<(), LimitCheckError> {
+    fn check_charge_limit(&self, amount: f32) -> Result<(), LimitCheckError> {
         if let Some(limit) = self.limit {
             if self.consumed + amount > limit {
                 return Err(LimitCheckError::CardLimitExceeded);
@@ -167,10 +162,7 @@ impl CardActor {
 
     /// Check whether we can set a new card limit, given the current
     /// applied consumption.
-    fn can_set_new_limit(
-        &self,
-        new_limit: Option<f64>,
-    ) -> Result<(), LimitUpdateError> {
+    fn can_set_new_limit(&self, new_limit: Option<f32>) -> Result<(), LimitUpdateError> {
         match new_limit {
             None => Ok(()), // "no limit" is always allowed
             Some(lim) if lim >= self.consumed => Ok(()),
@@ -253,7 +245,7 @@ impl CardActor {
     /// or failure), notify the router and move to the next queued task.
     fn finish_current_task(
         &mut self,
-        op_id: u64,
+        op_id: u32,
         success: bool,
         error: Option<VerifyError>,
         ctx: &mut Context<Self>,
@@ -309,9 +301,7 @@ impl Handler<CardMsg> for CardActor {
                     self.send_internal(RouterInternalMsg::OperationCompleted {
                         op_id,
                         success: false,
-                        error: Some(VerifyError::ChargeLimit(
-                            LimitCheckError::CardLimitExceeded,
-                        )),
+                        error: Some(VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded)),
                     });
                     return;
                 }
