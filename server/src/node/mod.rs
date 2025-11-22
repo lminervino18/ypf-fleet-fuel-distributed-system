@@ -6,7 +6,6 @@ mod election;
 mod node;
 mod operation;
 mod replica;
-mod station;
 mod test;
 mod utils;
 

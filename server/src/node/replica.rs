@@ -5,13 +5,12 @@ use super::{
     network::Connection,
     node::Node,
     operation::Operation,
-    station::NodeToStationMsg,
     utils::get_id_given_addr,
 };
 use crate::{
     errors::{AppError, AppResult},
-    node::station::StationToNodeMsg,
 };
+use common::{Station, StationToNodeMsg, NodeToStationMsg};
 use actix::{Actor, Addr};
 use std::{
     collections::{HashMap, VecDeque},
@@ -25,10 +24,10 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 ///
 /// Same wiring as the Leader, but intended to be a follower in the
 /// distributed system. For station-originated charges it uses the
-/// exact same Execute (verify + apply interno) flow as the Leader
+/// exact same Execute (verify + apply inside actors) flow as the Leader
 /// when ONLINE, and the same offline queueing behavior when OFFLINE.
 /// Internal state for a charge coming from a station pump while the node is
-/// ONLINE. (kept locally in replica implementation)
+/// ONLINE (kept locally in replica implementation).
 #[derive(Debug, Clone)]
 struct StationPendingCharge {
     account_id: u64,
@@ -57,8 +56,9 @@ pub struct Replica {
     actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
     offline_queue: VecDeque<OfflineQueuedCharge>,
-    station_cmd_rx: mpsc::Receiver<StationToNodeMsg>,
-    station_result_tx: mpsc::Sender<NodeToStationMsg>,
+    /// High-level station abstraction (internally runs the simulator task).
+    station: Station,
+    /// Pending station-originated charges while ONLINE.
     station_requests: HashMap<u64, StationPendingCharge>,
     router: Addr<ActorRouter>,
 }
@@ -76,7 +76,7 @@ impl Node for Replica {
     }
 
     async fn recv_station_message(&mut self) -> Option<StationToNodeMsg> {
-        todo!();
+        self.station.recv().await
     }
 
     async fn handle_operation_result(
@@ -95,7 +95,7 @@ impl Node for Replica {
         op: Operation,
         addr: SocketAddr,
     ) -> AppResult<()> {
-        // redirect to leader node
+        // Redirect to leader node.
         self.connection
             .send(Message::Request { op_id, addr, op }, &self.leader_addr)
             .await
@@ -105,7 +105,7 @@ impl Node for Replica {
 
     async fn handle_log(&mut self, op_id: u32, new_op: Operation) {
         self.operations.insert(op_id, new_op);
-        // self.commit_operation(new_op_id - 1).await; // TODO: this logic should be in actors mod
+        // self.commit_operation(new_op_id - 1).await; // TODO: this logic should be in actors module.
         self.connection
             .send(Message::Ack { op_id }, &self.leader_addr)
             .await
@@ -114,7 +114,7 @@ impl Node for Replica {
     }
 
     async fn handle_ack(&mut self, _id: u32) {
-        todo!(); // TODO: replicas should not receive any ACK msgs
+        todo!(); // TODO: replicas should not receive any ACK messages.
     }
 
     async fn recv_node_msg(&mut self) -> AppResult<Message> {
@@ -135,10 +135,6 @@ impl Node for Replica {
 
     async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr) {
         // If we have higher id, reply ElectionOk and start our own election.
-        // println!(
-        //     "[Replica ID={}] Received Election from candidate ID={}",
-        //     self.id, candidate_id
-        // );
         let should_reply = {
             let b = self.bully.lock().await;
             b.should_reply_ok(candidate_id)
@@ -149,7 +145,7 @@ impl Node for Replica {
             };
             let _ = self.connection.send(reply, &candidate_addr).await;
 
-            // Start own election immediately
+            // Start own election immediately.
             self.start_election().await;
         }
     }
@@ -164,12 +160,13 @@ impl Node for Replica {
         b.on_coordinator(leader_id, leader_addr);
 
         // TODO:
-        // la replica ahora se convierte en lider, supongo que cambiando el rol
-        // con el enum NodeRole, pero habria que unificar un poco más replica.rs y leader.rs
+        // The replica now becomes leader, presumably by changing its role
+        // with the NodeRole enum, but this would require further unification
+        // between replica.rs and leader.rs.
     }
 
     async fn start_election(&mut self) {
-        // Build peer_ids map: include leader and other replicas
+        // Build peer_ids map: include leader and other replicas.
         let mut peer_ids = HashMap::new();
         peer_ids.insert(get_id_given_addr(self.leader_addr), self.leader_addr);
         for addr in &self.other_replicas {
@@ -190,7 +187,7 @@ impl Node for Replica {
 impl Replica {
     /// - boots the ConnectionManager (TCP),
     /// - boots the ActorRouter in a dedicated Actix system thread,
-    /// - spawns the station simulator with `pumps` pumps on stdin,
+    /// - starts the Station abstraction (which internally spawns the simulator with `pumps` pumps on stdin),
     /// - then enters the main async event loop.
     pub async fn start(
         address: SocketAddr,
@@ -202,23 +199,9 @@ impl Replica {
     ) -> AppResult<()> {
         let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
         let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
-        let (station_cmd_tx, station_cmd_rx) = mpsc::channel::<StationToNodeMsg>(128);
-        let (station_result_tx, station_result_rx) = mpsc::channel::<NodeToStationMsg>(128);
-        let station_cmd_tx_for_station = station_cmd_tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = crate::node::station::run_station_simulator(
-                pumps,
-                station_cmd_tx_for_station,
-                station_result_rx,
-            )
-            .await
-            {
-                // println!("[Station] simulator error: {e:?}");
-            }
-        });
 
+        // Spawns a thread for Actix that runs inside a Tokio runtime.
         std::thread::spawn(move || {
-            // spawns a thread for Actix that runs inside a Tokio runtime
             let sys = actix::System::new();
             sys.block_on(async move {
                 let router = ActorRouter::new(actor_tx).start();
@@ -226,9 +209,12 @@ impl Replica {
                     // println!("[ERROR] Failed to deliver ActorRouter addr to Replica");
                 }
 
-                pending::<()>().await; // Keep the actix system running indefinitely
+                pending::<()>().await; // Keep the Actix system running indefinitely.
             });
         });
+
+        // Start the reusable Station abstraction (stdin-based simulator runs inside it).
+        let station = Station::start(pumps).await?;
 
         let id = get_id_given_addr(address);
         let mut replica = Self {
@@ -244,8 +230,7 @@ impl Replica {
             actor_rx,
             is_offline: false,
             offline_queue: VecDeque::new(),
-            station_cmd_rx,
-            station_result_tx,
+            station,
             station_requests: HashMap::new(),
             router: router_rx.await.map_err(|e| AppError::ActorSystem {
                 details: format!("failed to receive ActorRouter address: {e}"),

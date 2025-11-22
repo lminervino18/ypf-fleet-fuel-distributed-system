@@ -1,6 +1,7 @@
 use super::{
-    actors::ActorEvent, message::Message, operation::Operation, station::StationToNodeMsg,
+    actors::ActorEvent, message::Message, operation::Operation,
 };
+use common::{Station, StationToNodeMsg, NodeToStationMsg};
 use crate::errors::{AppResult, VerifyError};
 use rand::Rng;
 use std::net::SocketAddr;

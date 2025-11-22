@@ -3,10 +3,10 @@ use super::{message::Message, network::Connection, node::Node, operation::Operat
 use crate::errors::VerifyError;
 use crate::{
     errors::{AppError, AppResult},
-    node::station::{NodeToStationMsg, StationToNodeMsg},
     node::utils::get_id_given_addr,
 };
 use actix::{Actor, Addr};
+use common::{Station, StationToNodeMsg, NodeToStationMsg};
 use std::{
     collections::{HashMap, VecDeque},
     future::pending,
@@ -48,7 +48,7 @@ struct OfflineQueuedCharge {
 /// The Leader wires together:
 /// - the TCP ConnectionManager (network),
 /// - the local ActorRouter (Actix),
-/// - the station simulator (stdin-driven pumps).
+/// - the Station abstraction (which internally runs the stdin-driven pump simulator).
 ///
 /// ONLINE behavior (default):
 /// --------------------------
@@ -87,8 +87,9 @@ pub struct Leader {
     actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
     offline_queue: VecDeque<OfflineQueuedCharge>,
-    station_cmd_rx: mpsc::Receiver<StationToNodeMsg>,
-    station_result_tx: mpsc::Sender<NodeToStationMsg>,
+    /// High-level Station wrapper (owns the simulator task and channels).
+    station: Station,
+    /// Pending ONLINE station-originated charges.
     station_requests: HashMap<u64, StationPendingCharge>,
     router: Addr<ActorRouter>,
 }
@@ -115,13 +116,13 @@ impl Node for Leader {
         Ok(())
     }
 
-    async fn handle_log(&mut self, op_id: u32, op: Operation) {
-        todo!(); // TODO: leader should not receive any Log msgs
+    async fn handle_log(&mut self, _op_id: u32, _op: Operation) {
+        todo!(); // TODO: leader should not receive any Log messages.
     }
 
     async fn handle_ack(&mut self, op_id: u32) {
         let Some((ack_count, _, _)) = self.operations.get_mut(&op_id) else {
-            todo!() // TODO: handle this case
+            todo!() // TODO: handle this case (unknown op_id).
         };
 
         *ack_count += 1;
@@ -129,16 +130,16 @@ impl Node for Leader {
             return;
         }
 
-        // commit operation TODO
+        // TODO: commit operation once majority is reached.
         todo!();
     }
 
     async fn handle_operation_result(
         &mut self,
-        op_id: u32,
-        operation: Operation,
-        success: bool,
-        error: Option<VerifyError>,
+        _op_id: u32,
+        _operation: Operation,
+        _success: bool,
+        _error: Option<VerifyError>,
     ) {
         todo!();
     }
@@ -152,14 +153,16 @@ impl Node for Leader {
     }
 
     async fn recv_station_message(&mut self) -> Option<StationToNodeMsg> {
-        self.station_cmd_rx.recv().await
+        self.station.recv().await
     }
 
-    async fn handle_actor_event(&mut self, event: ActorEvent) {}
+    async fn handle_actor_event(&mut self, _event: ActorEvent) {
+        // Currently unused; keep as no-op until we wire actor feedback here.
+    }
 
     async fn handle_charge_request(
         &mut self,
-        pump_id: usize,
+        _pump_id: usize,
         account_id: u64,
         card_id: u64,
         amount: f32,
@@ -185,10 +188,9 @@ impl Node for Leader {
                 error: None,
             };
 
-            if let Err(e) = self.station_result_tx.send(msg).await {
+            if let Err(_e) = self.station.send(msg).await {
                 // println!(
-                //     "[Leader][station][OFFLINE][ERROR] failed to send fake-OK result: {}",
-                //     e
+                //     "[Leader][station][OFFLINE][ERROR] failed to send fake-OK result: {e}",
                 // );
             }
 
@@ -223,7 +225,7 @@ impl Node for Leader {
     }
 
     async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr) {
-        // If our id is higher than the candidate, reply with ElectionOk
+        // If our id is higher than the candidate, reply with ElectionOk.
         if self.id > candidate_id {
             let reply = Message::ElectionOk {
                 responder_id: self.id,
@@ -234,15 +236,15 @@ impl Node for Leader {
     }
 
     async fn handle_election_ok(&mut self, _responder_id: u64) {
-        // Leader ignores election OKs
+        // Leader ignores election OKs.
     }
 
     async fn handle_coordinator(&mut self, _leader_id: u64, _leader_addr: SocketAddr) {
-        // Leader ignores coordinator announcements
+        // Leader ignores coordinator announcements.
     }
 
     async fn start_election(&mut self) {
-        // Leader doesn't start elections
+        // Leader doesn't start elections.
     }
 }
 
@@ -251,7 +253,7 @@ impl Leader {
     ///
     /// - boots the ConnectionManager (TCP),
     /// - boots the ActorRouter in a dedicated Actix system thread,
-    /// - spawns the station simulator with `pumps` pumps on stdin,
+    /// - starts the Station abstraction (which internally spawns the pump simulator),
     /// - then enters the main async event loop.
     pub async fn start(
         address: SocketAddr,
@@ -262,23 +264,9 @@ impl Leader {
     ) -> AppResult<()> {
         let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
         let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
-        let (station_cmd_tx, station_cmd_rx) = mpsc::channel::<StationToNodeMsg>(128);
-        let (station_result_tx, station_result_rx) = mpsc::channel::<NodeToStationMsg>(128);
-        let station_cmd_tx_for_station = station_cmd_tx.clone();
-        tokio::spawn(async move {
-            if let Err(_e) = crate::node::station::run_station_simulator(
-                pumps,
-                station_cmd_tx_for_station,
-                station_result_rx,
-            )
-            .await
-            {
-                // println!("[Station] simulator error: {e:?}");
-            }
-        });
 
+        // Spawn a thread for Actix that runs inside a Tokio runtime.
         std::thread::spawn(move || {
-            // spawns a thread for Actix that runs inside a Tokio runtime
             let sys = actix::System::new();
             sys.block_on(async move {
                 let router = ActorRouter::new(actor_tx).start();
@@ -286,9 +274,12 @@ impl Leader {
                     // println!("[ERROR] Failed to deliver ActorRouter addr to Leader");
                 }
 
-                pending::<()>().await; // Keep the actix system running indefinitely
+                pending::<()>().await; // Keep the Actix system running indefinitely.
             });
         });
+
+        // Start the shared Station abstraction (stdin-based simulator).
+        let station = Station::start(pumps).await?;
 
         let mut leader = Self {
             id: get_id_given_addr(address),
@@ -301,8 +292,7 @@ impl Leader {
             actor_rx,
             is_offline: false,
             offline_queue: VecDeque::new(),
-            station_cmd_rx,
-            station_result_tx,
+            station,
             station_requests: HashMap::new(),
             router: router_rx.await.map_err(|e| AppError::ActorSystem {
                 details: format!("failed to receive ActorRouter address: {e}"),
