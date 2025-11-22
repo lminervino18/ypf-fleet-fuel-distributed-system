@@ -11,8 +11,9 @@ use std::{
     collections::{HashMap, VecDeque},
     future::pending,
     net::SocketAddr,
+    sync::Arc,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// Internal state for a charge coming from a station pump
 /// while the node is ONLINE.
@@ -83,7 +84,7 @@ pub struct Leader {
     max_conns: usize,
     replicas: Vec<SocketAddr>,
     operations: HashMap<u32, (usize, SocketAddr, Operation)>,
-    connection: Connection,
+    connection: Arc<Mutex<Connection>>,
     actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
     offline_queue: VecDeque<OfflineQueuedCharge>,
@@ -101,7 +102,8 @@ impl Node for Leader {
         self.operations.insert(op.id, (0, client_addr, op.clone()));
         let msg = Message::Log { op: op.clone() };
         for replica in &self.replicas {
-            self.connection.send(msg.clone(), replica);
+            let mut conn = self.connection.lock().await;
+            let _ = conn.send(msg.clone(), replica).await;
         }
     }
 
@@ -123,7 +125,8 @@ impl Node for Leader {
     }
 
     async fn recv_node_msg(&mut self) -> AppResult<Message> {
-        self.connection.recv().await
+        let mut conn = self.connection.lock().await;
+        conn.recv().await
     }
 
     async fn recv_actor_event(&mut self) -> Option<ActorEvent> {
@@ -312,16 +315,14 @@ impl Node for Leader {
     async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr) {
         // If our id is higher than the candidate, reply with ElectionOk
         if self.id > candidate_id {
-            let reply = Message::ElectionOk {
-                responder_id: self.id,
-                responder_addr: self.address,
-            };
+            let reply = Message::ElectionOk {};
 
-            self.connection.send(reply, &candidate_addr);
+            let mut conn = self.connection.lock().await;
+            let _ = conn.send(reply, &candidate_addr).await;
         }
     }
 
-    async fn handle_election_ok(&mut self, _responder_id: u64, _responder_addr: SocketAddr) {
+    async fn handle_election_ok(&mut self) {
         // Leader ignores election OKs
     }
 
@@ -385,7 +386,7 @@ impl Leader {
             max_conns,
             replicas,
             operations: HashMap::new(),
-            connection: Connection::start(address, max_conns).await?,
+            connection: Arc::new(Mutex::new(Connection::start(address, max_conns).await?)),
             actor_rx,
             is_offline: false,
             offline_queue: VecDeque::new(),

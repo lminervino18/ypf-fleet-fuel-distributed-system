@@ -73,22 +73,10 @@ impl From<Message> for Vec<u8> {
                 srl.extend(addr_srl);
                 srl
             }
-            ElectionOk { responder_id, responder_addr } => {
+            ElectionOk { } => {
                 let type_srl = [TYPE_ELECTION_OK];
-                let responder_id_srl = responder_id.to_be_bytes();
-                let addr_srl: [u8; 6] = match responder_addr.ip() {
-                    std::net::IpAddr::V4(ip) => {
-                        let [a, b, c, d] = ip.octets();
-                        let [p0, p1] = responder_addr.port().to_be_bytes();
-                        [a, b, c, d, p0, p1]
-                    }
-                    _ => panic!(),
-                };
-
                 let mut srl = vec![];
                 srl.extend(type_srl);
-                srl.extend(responder_id_srl);
-                srl.extend(addr_srl);
                 srl
             }
             Coordinator { leader_id, leader_addr } => {

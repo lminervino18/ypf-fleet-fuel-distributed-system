@@ -1,5 +1,4 @@
 use crate::node::message::Message;
-use crate::node::network::Connection;
 use std::net::SocketAddr;
 
 /// Simple, modular Bully algorithm helper.
@@ -17,6 +16,53 @@ pub struct Bully {
     pub received_ok: bool,
 }
 
+use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
+
+/// Conduct a Bully election: owns the coordination flow
+/// (send Election, wait for replies, promote to coordinator). It receives an
+/// `Arc<Mutex<Bully>>` so it can be spawned as a background task without the
+/// caller holding the lock across await points.
+pub async fn conduct_election(
+    bully: Arc<Mutex<Bully>>,
+    outgoing: Sender<(Message, SocketAddr)>,
+    peers: Vec<SocketAddr>,
+    id: u64,
+    address: SocketAddr,
+) {
+    // attempt to start election; return early if another election is active
+    if !bully.lock().await.mark_start_election() {
+        return;
+    }
+
+    let msg = Message::Election {
+        candidate_id: id,
+        candidate_addr: address,
+    };
+
+    // broadcast Election
+    for p in &peers {
+        let _ = outgoing.send((msg.clone(), *p)).await;
+    }
+
+    // wait for responses window
+    let window_ms: u64 = 400;
+    tokio::time::sleep(std::time::Duration::from_millis(window_ms)).await;
+
+    let got_ok = { let b = bully.lock().await; b.received_ok };
+    if !got_ok {
+        // become coordinator/leader
+        let mut b = bully.lock().await;
+        b.mark_coordinator();
+
+        let coordinator_msg = Message::Coordinator { leader_id: id, leader_addr: address };
+        for p in &peers {
+            let _ = outgoing.send((coordinator_msg.clone(), *p)).await;
+        }
+    }
+}
+
 impl Bully {
     pub fn new(id: u64, address: SocketAddr) -> Self {
         Self {
@@ -29,60 +75,36 @@ impl Bully {
         }
     }
 
-    /// Start an election: broadcast `Election` to all peers.
-    pub fn start_election(&mut self, conn: &mut Connection, peers: &[SocketAddr]) {
+    /// Mark that an election has started (state only).
+    pub fn mark_start_election(&mut self) -> bool {
         if self.election_in_progress {
-            return;
+            return false;
         }
         self.election_in_progress = true;
         self.received_ok = false;
-
-        let msg = Message::Election {
-            candidate_id: self.id,
-            candidate_addr: self.address,
-        };
-
-        // send to all peers (they will reply OK if they have higher id)
-        for peer in peers {
-            let _ = conn.send(msg.clone(), peer);
-        }
+        true
     }
 
     /// Handle an incoming Election message from a candidate.
     /// If this node has higher id, reply `ElectionOk` to candidate.
-    pub fn on_election_received(&mut self, conn: &mut Connection, candidate_id: u64, candidate_addr: SocketAddr) {
-        if self.id > candidate_id {
-            let reply = Message::ElectionOk {
-                responder_id: self.id,
-                responder_addr: self.address,
-            };
-
-            let _ = conn.send(reply, &candidate_addr);
-            // Optionally start our own election to take over
-            // (the caller can decide to trigger start_election as well)
-        }
+    /// Decide whether we should reply OK to a candidate (higher id wins).
+    pub fn should_reply_ok(&self, candidate_id: u64) -> bool {
+        self.id > candidate_id
     }
 
     /// Handle an OK reply to our election request.
-    pub fn on_election_ok(&mut self, _responder_id: u64, _responder_addr: SocketAddr) {
+    pub fn on_election_ok(&mut self) {
         // Record that at least one higher process is alive.
         self.received_ok = true;
     }
 
     /// Broadcast that this node is the coordinator/leader.
-    pub fn announce_coordinator(&mut self, conn: &mut Connection, peers: &[SocketAddr]) {
+    /// Mark coordinator in state
+    pub fn mark_coordinator(&mut self) {
         self.leader_id = Some(self.id);
         self.leader_addr = Some(self.address);
         self.election_in_progress = false;
-
-        let msg = Message::Coordinator {
-            leader_id: self.id,
-            leader_addr: self.address,
-        };
-
-        for peer in peers {
-            let _ = conn.send(msg.clone(), peer);
-        }
+        self.received_ok = false;
     }
 
     /// Handle an incoming Coordinator announcement.
@@ -128,11 +150,11 @@ mod tests {
     async fn start_election_sets_state() {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
         // start a Connection bound to an ephemeral port; we won't send to peers
-        let mut conn = Connection::start(addr, 1).await.expect("start connection");
+        let _conn = Connection::start(addr, 1).await.expect("start connection");
         let mut b = Bully::new(3, addr);
 
-        // Call start_election with empty peer list: should set election_in_progress
-        b.start_election(&mut conn, &[]);
+        // Call mark_start_election with empty peer list: should set election_in_progress
+        b.mark_start_election();
         assert!(b.election_in_progress);
         assert!(!b.received_ok);
     }

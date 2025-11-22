@@ -11,8 +11,9 @@ use std::{
     collections::{HashMap, VecDeque},
     future::pending,
     net::SocketAddr,
+    sync::Arc,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// Replica node.
 ///
@@ -44,7 +45,7 @@ pub struct Replica {
     address: SocketAddr,
     leader_addr: SocketAddr,
     other_replicas: Vec<SocketAddr>,
-    bully: Bully,
+    bully: Arc<Mutex<Bully>>,
     operations: HashMap<u32, Operation>,
     connection: Connection,
     actor_rx: mpsc::Receiver<ActorEvent>,
@@ -59,16 +60,16 @@ pub struct Replica {
 impl Node for Replica {
     async fn handle_request(&mut self, op: Operation, addr: SocketAddr) {
         // redirect to leader node
-        self.connection
-            .send(Message::Request { op, addr }, &self.leader_addr);
+        let _ = self.connection
+            .send(Message::Request { op, addr }, &self.leader_addr).await;
     }
 
     async fn handle_log(&mut self, new_op: Operation) {
         let new_op_id = new_op.id;
         self.operations.insert(new_op_id, new_op);
         // self.commit_operation(new_op_id - 1).await; // TODO: this logic should be in actors mod
-        self.connection
-            .send(Message::Ack { id: new_op_id }, &self.leader_addr);
+        let _ = self.connection
+            .send(Message::Ack { id: new_op_id }, &self.leader_addr).await;
     }
 
     async fn handle_ack(&mut self, _id: u32) {
@@ -80,29 +81,50 @@ impl Node for Replica {
     }
 
     async fn recv_actor_event(&mut self) -> Option<ActorEvent> {
-        self.actor_rx.recv().await
+        todo!()
     }
 
-    async fn handle_actor_event(&mut self, _event: ActorEvent) {
-        // Replica-specific actor events handling will go here.
+    async fn handle_actor_event(&mut self, event: ActorEvent) {
+        todo!()
     }
 
-    async fn handle_station_msg(&mut self, _msg: StationToNodeMsg) {
-        // Replicas don't service station pumps; ignore or log.
+    async fn handle_station_msg(&mut self, msg: StationToNodeMsg) {
+        todo!()
     }
 
     async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr) {
-        // Delegate to bully helper: reply OK if we have higher id.
-        self.bully
-            .on_election_received(&mut self.connection, candidate_id, candidate_addr);
+        // If we have higher id, reply ElectionOk and start our own election.
+        let should_reply = { let b = self.bully.lock().await; b.should_reply_ok(candidate_id) };
+        if should_reply {
+            let reply = Message::ElectionOk {};
+            // reply using direct connection
+            let _ = self.connection.send(reply, &candidate_addr).await;
+
+            // start own election in background; use the connection's outgoing sender (refactor?)
+            let mut peers = Vec::with_capacity(self.other_replicas.len() + 1);
+            peers.extend(self.other_replicas.iter().cloned());
+            peers.push(self.leader_addr);
+
+            let bully = self.bully.clone();
+            let outgoing = self.connection.outgoing_sender();
+            let id = self.id;
+            let address = self.address;
+            tokio::spawn(async move {
+                crate::node::election::bully::conduct_election(
+                    bully, outgoing, peers, id, address
+                ).await;
+            });
+        }
     }
 
-    async fn handle_election_ok(&mut self, responder_id: u64, responder_addr: SocketAddr) {
-        self.bully.on_election_ok(responder_id, responder_addr);
+    async fn handle_election_ok(&mut self) {
+        let mut b = self.bully.lock().await;
+        b.on_election_ok();
     }
 
     async fn handle_coordinator(&mut self, leader_id: u64, leader_addr: SocketAddr) {
-        self.bully.on_coordinator(leader_id, leader_addr);
+        let mut b = self.bully.lock().await;
+        b.on_coordinator(leader_id, leader_addr);
     }
 
     async fn start_election(&mut self) {
@@ -110,8 +132,16 @@ impl Node for Replica {
         let mut peers = Vec::with_capacity(self.other_replicas.len() + 1);
         peers.extend(self.other_replicas.iter().cloned());
         peers.push(self.leader_addr);
+        let bully = self.bully.clone();
+        let outgoing = self.connection.outgoing_sender();
+        let id = self.id;
+        let address = self.address;
 
-        self.bully.start_election(&mut self.connection, &peers);
+        tokio::spawn(async move {
+            crate::node::election::bully::conduct_election(
+                bully, outgoing, peers, id, address
+            ).await;
+        });
     }
 
     
@@ -168,7 +198,7 @@ impl Replica {
             address,
             leader_addr,
             other_replicas,
-            bully: Bully::new(id, address),
+            bully: Arc::new(Mutex::new(Bully::new(id, address))),
             operations: HashMap::new(),
             connection: Connection::start(address, max_conns).await?,
             actor_rx,
