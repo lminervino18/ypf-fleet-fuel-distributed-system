@@ -7,6 +7,7 @@ mod operation;
 mod replica;
 mod station;
 mod test;
+mod utils;
 
 pub use leader::Leader;
 pub use replica::Replica;

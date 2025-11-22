@@ -12,18 +12,17 @@ pub struct Bully {
 }
 
 use std::sync::Arc;
+use std::collections::HashMap;
 use tokio::sync::Mutex;
 use crate::node::network::Connection;
 
-/// Conduct a Bully election: owns the coordination flow
-/// (send Election, wait for replies, promote to coordinator). It receives an
-/// `Arc<Mutex<Bully>>` so it can be spawned as a background task without the
-/// caller holding the lock across await points.
-/// peers: list of all other nodes (replicas + leader)
+/// Conduct a Bully election: sends Election to higher-ID peers,
+/// waits for replies, and promotes to coordinator if no ElectionOk received.
+/// peer_ids: map of peer_id -> SocketAddr for all other nodes
 pub async fn conduct_election(
-    bully: Arc<Mutex<Bully>>,
-    connection: Arc<Mutex<Connection>>,
-    peers: Vec<SocketAddr>,
+    bully: &Arc<Mutex<Bully>>,
+    connection: &mut Connection,
+    peer_ids: HashMap<u64, SocketAddr>,
     id: u64,
     address: SocketAddr,
 ) {
@@ -37,32 +36,38 @@ pub async fn conduct_election(
         candidate_addr: address,
     };
 
-    // broadcast Election
-    {
-        let mut conn = connection.lock().await;
-        for p in &peers {
-            // NOTE: se puede ahorrar la cantidad de mensajes enviados comparando ids
-            // ahora mismo se envia a todos y ellos se encargan de responder o no
-            let _ = conn.send(msg.clone(), p).await;
-            println!("Sent Election to {}", p);
-        }
+    // Send Election ONLY to nodes with higher ID (Bully algorithm rule)
+    let higher_peers: Vec<SocketAddr> = peer_ids
+        .iter()
+        .filter(|(peer_id, _)| **peer_id > id)
+        .map(|(_, addr)| *addr)
+        .collect();
+
+    // println!("[Bully ID={}] Starting election, sending to {} higher peers", id, higher_peers.len());
+    // println!("Higher peers: {:?}", higher_peers);
+    for p in &higher_peers {
+        let _ = connection.send(msg.clone(), p).await;
     }
 
-    // wait for responses window
-    let window_ms: u64 = 400;
-    tokio::time::sleep(std::time::Duration::from_millis(window_ms)).await;
+    // wait for responses
+    const WINDOW_MS: u64 = 200;
+    tokio::time::sleep(std::time::Duration::from_millis(WINDOW_MS)).await;
 
     let got_ok = { let b = bully.lock().await; b.received_ok };
     if !got_ok {
-        // become coordinator/leader
+        // become coordinator/leader (no higher process responded)
+        // println!("[Bully ID={}] No ElectionOk received, becoming coordinator", id);
         let mut b = bully.lock().await;
         b.mark_coordinator();
 
+        // Announce to ALL peers
+        let all_peers: Vec<SocketAddr> = peer_ids.values().copied().collect();
         let coordinator_msg = Message::Coordinator { leader_id: id, leader_addr: address };
-        let mut conn = connection.lock().await;
-        for p in &peers {
-            let _ = conn.send(coordinator_msg.clone(), p).await;
+        for p in &all_peers {
+            let _ = connection.send(coordinator_msg.clone(), p).await;
         }
+    } else {
+        // println!("[Bully ID={}] Received ElectionOk, stepping down", id);
     }
 }
 
@@ -92,21 +97,18 @@ impl Bully {
     /// If this node has higher id, reply `ElectionOk` to candidate.
     /// Decide whether we should reply OK to a candidate (higher id wins).
     pub fn should_reply_ok(&self, candidate_id: u64) -> bool {
-        println!("Nodo con id {} recibe Election de candidato con id {}", self.id, candidate_id);
         self.id > candidate_id
     }
 
     /// Handle an OK reply to our election request.
     pub fn on_election_ok(&mut self, responder_id: u64) {
         // Record that at least one higher process is alive.
-        println!("Soy un nodo con id {} y he recibido un OK de un nodo con id: {}", self.id, responder_id);
         self.received_ok = true;
     }
 
     /// Broadcast that this node is the coordinator/leader.
     /// Mark coordinator in state
     pub fn mark_coordinator(&mut self) {
-        println!("Nodo con id {} se convierte en coordinador", self.id);
         self.leader_id = Some(self.id);
         self.leader_addr = Some(self.address);
         self.election_in_progress = false;

@@ -5,15 +5,15 @@ use crate::{
     actors::actor_router::ActorRouter,
     errors::{AppError, AppResult},
     node::station::{NodeToStationMsg, StationToNodeMsg},
+    node::utils::get_id_given_addr,
 };
 use actix::{Actor, Addr};
 use std::{
     collections::{HashMap, VecDeque},
     future::pending,
     net::SocketAddr,
-    sync::Arc,
 };
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot};
 
 /// Internal state for a charge coming from a station pump
 /// while the node is ONLINE.
@@ -84,7 +84,7 @@ pub struct Leader {
     max_conns: usize,
     replicas: Vec<SocketAddr>,
     operations: HashMap<u32, (usize, SocketAddr, Operation)>,
-    connection: Arc<Mutex<Connection>>,
+    connection: Connection,
     actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
     offline_queue: VecDeque<OfflineQueuedCharge>,
@@ -102,8 +102,7 @@ impl Node for Leader {
         self.operations.insert(op.id, (0, client_addr, op.clone()));
         let msg = Message::Log { op: op.clone() };
         for replica in &self.replicas {
-            let mut conn = self.connection.lock().await;
-            let _ = conn.send(msg.clone(), replica).await;
+            let _ = self.connection.send(msg.clone(), replica);
         }
     }
 
@@ -125,8 +124,7 @@ impl Node for Leader {
     }
 
     async fn recv_node_msg(&mut self) -> AppResult<Message> {
-        let mut conn = self.connection.lock().await;
-        conn.recv().await
+        self.connection.recv().await
     }
 
     async fn recv_actor_event(&mut self) -> Option<ActorEvent> {
@@ -317,8 +315,7 @@ impl Node for Leader {
         if self.id > candidate_id {
             let reply = Message::ElectionOk { responder_id: self.id };
 
-            let mut conn = self.connection.lock().await;
-            let _ = conn.send(reply, &candidate_addr).await;
+            let _ = self.connection.send(reply, &candidate_addr).await;
         }
     }
 
@@ -380,13 +377,13 @@ impl Leader {
         });
 
         let mut leader = Self {
-            id: rand::random::<u64>(),
+            id: get_id_given_addr(address),
             coords,
             address,
             max_conns,
             replicas,
             operations: HashMap::new(),
-            connection: Arc::new(Mutex::new(Connection::start(address, max_conns).await?)),
+            connection: Connection::start(address, max_conns).await?,
             actor_rx,
             is_offline: false,
             offline_queue: VecDeque::new(),
