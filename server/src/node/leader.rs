@@ -324,7 +324,7 @@ impl Node for Leader {
     }
 
     async fn handle_coordinator(&mut self, _leader_id: u64, _leader_addr: SocketAddr) {
-        // Leader ignores coordinator announcements for now
+        // Leader ignores coordinator announcements
     }
 
     async fn start_election(&mut self) {

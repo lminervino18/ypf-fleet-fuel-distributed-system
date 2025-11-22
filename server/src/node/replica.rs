@@ -115,6 +115,10 @@ impl Node for Replica {
     async fn handle_coordinator(&mut self, leader_id: u64, leader_addr: SocketAddr) {
         let mut b = self.bully.lock().await;
         b.on_coordinator(leader_id, leader_addr);
+
+        // TODO: 
+        // la replica ahora se convierte en lider, supongo que cambiando el rol
+        // con el enum NodeRole, pero habria que unificar un poco más replica.rs y leader.rs
     }
 
     async fn start_election(&mut self) {
