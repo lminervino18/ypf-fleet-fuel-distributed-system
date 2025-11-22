@@ -29,7 +29,7 @@ pub enum Operation {
         op_id: u32,
         account_id: u64,
         card_id: u64,
-        amount: f64,
+        amount: f32,
         from_offline_station: bool,
     },
 
@@ -43,7 +43,7 @@ pub enum Operation {
     LimitAccount {
         op_id: u32,
         account_id: u64,
-        new_limit: Option<f64>,
+        new_limit: Option<f32>,
     },
 
     /// Change the limit for a specific card within an account.
@@ -58,7 +58,7 @@ pub enum Operation {
         op_id: u32,
         account_id: u64,
         card_id: u64,
-        new_limit: Option<f64>,
+        new_limit: Option<f32>,
     },
 }
 
