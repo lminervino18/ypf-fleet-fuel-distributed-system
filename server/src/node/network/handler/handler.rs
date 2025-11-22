@@ -120,7 +120,7 @@ mod test {
     #[tokio::test]
     async fn test_succesful_recv_with_a_valid_stream() {
         let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12351);
-        let message = Message::Ack { id: 1 };
+        let message = Message::Ack { op_id: 1 };
         let message_copy = message.clone();
         let handle = task::spawn(async move {
             let (mut stream, _) = TcpListener::bind(address)
@@ -149,7 +149,7 @@ mod test {
     #[tokio::test]
     async fn test_succesful_send_with_a_valid_stream() {
         let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12352);
-        let message = Message::Ack { id: 1 };
+        let message = Message::Ack { op_id: 1 };
         let message_copy = message.clone();
         let listener = TcpListener::bind(address).await.unwrap();
         let handle = task::spawn(async move {
@@ -173,7 +173,7 @@ mod test {
     #[tokio::test]
     async fn test_successful_send_and_receive_between_two_handlers() {
         let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12353);
-        let message = Message::Ack { id: 1 };
+        let message = Message::Ack { op_id: 1 };
         let message_copy = message.clone();
         let listener = TcpListener::bind(address).await.unwrap();
         let handle1 = task::spawn(async move {

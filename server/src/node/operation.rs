@@ -26,7 +26,6 @@ pub enum Operation {
     ///   a charge that was originally accepted while the station/node
     ///   was in offline mode.
     Charge {
-        op_id: u32,
         account_id: u64,
         card_id: u64,
         amount: f32,
@@ -41,7 +40,6 @@ pub enum Operation {
     /// - `from_offline_station`: true if this limit change was originated
     ///   while the station/node was offline (for example, a replay).
     LimitAccount {
-        op_id: u32,
         account_id: u64,
         new_limit: Option<f32>,
     },
@@ -55,7 +53,6 @@ pub enum Operation {
     /// - `from_offline_station`: true if this limit change comes from
     ///   an operation originally accepted in offline mode.
     LimitCard {
-        op_id: u32,
         account_id: u64,
         card_id: u64,
         new_limit: Option<f32>,

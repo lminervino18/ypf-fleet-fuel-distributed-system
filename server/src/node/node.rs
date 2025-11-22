@@ -56,10 +56,11 @@ pub trait Node {
 
     async fn handle_charge_request(
         &mut self,
+        op_id: u32,
         pump_id: usize,
         account_id: u64,
         card_id: u64,
-        amount: f64,
+        amount: f32,
         request_id: u64,
     );
 
@@ -161,7 +162,7 @@ pub trait Node {
             Message::Log { op } => {
                 self.handle_log(op).await;
             }
-            Message::Ack { id } => {
+            Message::Ack { op_id: id } => {
                 self.handle_ack(id).await;
             }
         }

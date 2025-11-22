@@ -1,9 +1,7 @@
+use super::actors::{actor_router::ActorRouter, ActorEvent, RouterCmd};
 use super::{message::Message, network::Connection, node::Node, operation::Operation};
-use crate::actors::{ActorEvent, RouterCmd};
-use crate::domain::Operation as ActorOperation;
 use crate::errors::VerifyError;
 use crate::{
-    actors::actor_router::ActorRouter,
     errors::{AppError, AppResult},
     node::station::{NodeToStationMsg, StationToNodeMsg},
 };
@@ -24,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 struct StationPendingCharge {
     account_id: u64,
     card_id: u64,
-    amount: f64,
+    amount: f32,
 }
 
 /// Internal state for a charge coming from a station pump
@@ -41,7 +39,7 @@ struct OfflineQueuedCharge {
     request_id: u64,
     account_id: u64,
     card_id: u64,
-    amount: f64,
+    amount: f32,
 }
 
 /// Leader node.
@@ -151,10 +149,11 @@ impl Node for Leader {
 
     async fn handle_charge_request(
         &mut self,
+        op_id: u32,
         pump_id: usize,
         account_id: u64,
         card_id: u64,
-        amount: f64,
+        amount: f32,
         request_id: u64,
     ) {
         if self.is_offline {
@@ -200,7 +199,8 @@ impl Node for Leader {
         );
 
         // Build the domain operation for the actor layer.
-        let op = ActorOperation::Charge {
+        let op = Operation::Charge {
+            op_id: 0,
             account_id,
             card_id,
             amount,

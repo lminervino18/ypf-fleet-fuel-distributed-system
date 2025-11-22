@@ -65,7 +65,7 @@ mod test {
 
     #[tokio::test]
     async fn test_successful_receive_with_valid_stream() {
-        let sent_message = Message::Ack { id: 0 };
+        let sent_message = Message::Ack { op_id: 0 };
         let sent_message_copy = sent_message.clone();
         let server_address = "127.0.0.1:12350";
         let client = task::spawn(async move {

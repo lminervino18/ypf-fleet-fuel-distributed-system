@@ -41,7 +41,7 @@ impl Node for Replica {
         self.operations.insert(new_op_id, new_op);
         // self.commit_operation(new_op_id - 1).await; // TODO: this logic should be in actors mod
         self.connection
-            .send(Message::Ack { id: new_op_id }, &self.leader_addr)
+            .send(Message::Ack { op_id: new_op_id }, &self.leader_addr)
             .await;
         todo!();
     }
