@@ -17,7 +17,21 @@ pub enum Message {
     /// Acknowledgement reply sent by a replica after receiving a valid `Log` message from the
     /// coordinator.
     Ack { op_id: u32 },
-    /* Leader election
-     ***/
-    // ...
+
+    /* Leader election (bully) */
+    /// Election message sent by a candidate to notify peers.
+    Election {
+        candidate_id: u64,
+        candidate_addr: SocketAddr,
+    },
+    /// OK reply sent by a higher-id process to a candidate.
+    ElectionOk {
+        responder_id: u64, // util para debuguear
+    },
+
+    /// Coordinator announcement sent by the new leader to all processes.
+    Coordinator {
+        leader_id: u64,
+        leader_addr: SocketAddr,
+    },
 }

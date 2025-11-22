@@ -10,6 +10,9 @@ impl From<Message> for Vec<u8> {
             Request { op_id, addr, op } => serialize_request_message(op_id, addr, op),
             Log { op_id, op } => serialize_log_message(op_id, op),
             Ack { op_id } => serialize_ack_message(op_id),
+            _ => {
+                todo!()
+            }
         }
     }
 }
