@@ -1,13 +1,18 @@
 use clap::Parser;
 use crate::commands::Commands;
 
+// center of Argentina
+const DEFAULT_COORD_LAT: f64 = -34.6989;
+const DEFAULT_COORD_LON: f64 = -64.7597;
+const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:9000";
+
 /// YPF client
 #[derive(Parser, Debug)]
 #[command(name = "ypf_client")]
 #[command(about = "YPF Ruta client - admin CLI")]
 pub struct Cli {
     /// Server address
-    #[arg(long, default_value = "127.0.0.1:9000")]
+    #[arg(long, default_value = DEFAULT_SERVER_ADDR)]
     pub server: String,
 
     #[command(subcommand)]
@@ -51,8 +56,18 @@ mod tests {
 
     #[test]
     fn test_connect() {
+        // Create a temporary TCP listener to simulate a server
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        
+        // Spawn a thread to accept one connection
+        std::thread::spawn(move || {
+            let _ = listener.accept();
+        });
+
         let cli = Cli {
-            server: "127.0.0.1:9000".to_string(),
+            server: addr.to_string(),
+            coords: vec![DEFAULT_COORD_LAT, DEFAULT_COORD_LON],
             command: Commands::QueryAccount,
         };
         let result = cli.connect();
@@ -63,6 +78,7 @@ mod tests {
     fn test_connect_invalid_address() {
         let cli = Cli {
             server: "invalid_address".to_string(),
+            coords: vec![DEFAULT_COORD_LAT, DEFAULT_COORD_LON],
             command: Commands::QueryAccount,
         };
         let result = cli.connect();
@@ -73,7 +89,9 @@ mod tests {
     fn test_cli_parsing_default_server() {
         let args = vec!["ypf_client", "query-account"];
         let cli = Cli::parse_from(args);
-        assert_eq!(cli.server, "127.0.0.1:9000");
+        assert_eq!(cli.server, DEFAULT_SERVER_ADDR);
+        assert_eq!(cli.coords, vec![DEFAULT_COORD_LAT, DEFAULT_COORD_LON]);
+    }
     }
 
     #[test]
@@ -81,13 +99,13 @@ mod tests {
         let args = vec![
             "ypf_client",
             "--server",
-            "127.0.0.1:9000",
+            DEFAULT_SERVER_ADDR,
             "limit-account",
             "--amount",
             "1000.0",
         ];
         let cli = Cli::parse_from(args);
-        assert_eq!(cli.server, "127.0.0.1:9000");
+        assert_eq!(cli.server, DEFAULT_SERVER_ADDR);
         match cli.command {
             Commands::LimitAccount { amount } => {
                 assert_eq!(amount, 1000.0);
@@ -101,7 +119,7 @@ mod tests {
         let args = vec![
             "ypf_client",
             "--server",
-            "127.0.0.1:9000",
+            DEFAULT_SERVER_ADDR,
             "limit-card",
             "--card-id",
             "card",
@@ -109,7 +127,7 @@ mod tests {
             "500.0",
         ];
         let cli = Cli::parse_from(args);
-        assert_eq!(cli.server, "127.0.0.1:9000");
+        assert_eq!(cli.server, DEFAULT_SERVER_ADDR);
         match cli.command {
             Commands::LimitCard { card_id, amount } => {
                 assert_eq!(card_id, "card");
