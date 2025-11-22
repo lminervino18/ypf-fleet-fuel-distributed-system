@@ -1,6 +1,7 @@
 use super::{message::Message, network::Connection, node::Node, operation::Operation};
 use crate::actors::{ActorEvent, RouterCmd};
 use crate::domain::Operation as ActorOperation;
+use crate::errors::VerifyError;
 use crate::{
     actors::actor_router::ActorRouter,
     errors::{AppError, AppResult},
@@ -96,12 +97,14 @@ pub struct Leader {
 // Node trait implementation
 // ==========================================================
 impl Node for Leader {
-    async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr) {
+    async fn handle_request(&mut self, op: Operation, client_addr: SocketAddr) -> AppResult<()> {
         self.operations.insert(op.id, (0, client_addr, op.clone()));
         let msg = Message::Log { op: op.clone() };
         for replica in &self.replicas {
-            self.connection.send(msg.clone(), replica);
+            self.connection.send(msg.clone(), replica).await?;
         }
+
+        Ok(())
     }
 
     async fn handle_log(&mut self, op: Operation) {
@@ -118,6 +121,17 @@ impl Node for Leader {
             return;
         }
 
+        // commit operation TODO
+        todo!();
+    }
+
+    async fn handle_operation_result(
+        &mut self,
+        op_id: u64,
+        operation: Operation,
+        success: bool,
+        error: Option<VerifyError>,
+    ) {
         todo!();
     }
 
@@ -129,183 +143,75 @@ impl Node for Leader {
         self.actor_rx.recv().await
     }
 
+    async fn recv_station_message(&mut self) -> Option<StationToNodeMsg> {
+        self.station_cmd_rx.recv().await
+    }
+
     async fn handle_actor_event(&mut self, event: ActorEvent) {}
-    /// Handle a message coming from the station (pump simulator).
-    ///
-    /// - ONLINE:
-    ///   `ChargeRequest` is mapped to `Operation::Charge` and goes
-    ///   through the internal Execute flow (verify + apply).
-    ///
-    /// - OFFLINE:
-    ///   `ChargeRequest` is enqueued into `offline_queue` and immediately
-    ///   acknowledged to the station as OK, without touching the actor layer.
-    ///
-    /// - `DisconnectNode`:
-    ///   switches the node into OFFLINE mode.
-    ///
-    /// - `ConnectNode`:
-    ///   switches the node back into ONLINE mode **and replays**
-    ///   all offline-queued charges into the ActorRouter as
-    ///   `from_offline_station = true`.
-    async fn handle_station_msg(&mut self, msg: StationToNodeMsg) {
-        match msg {
-            StationToNodeMsg::ChargeRequest {
-                pump_id: _,
+
+    async fn handle_charge_request(
+        &mut self,
+        pump_id: usize,
+        account_id: u64,
+        card_id: u64,
+        amount: f64,
+        request_id: u64,
+    ) {
+        if self.is_offline {
+            // OFFLINE MODE:
+            // -------------
+            // Queue the logical operation so that, when we reconnect,
+            // a reconciliation step can replay it into the actor layer.
+            self.offline_queue.push_back(OfflineQueuedCharge {
+                request_id,
                 account_id,
                 card_id,
                 amount,
+            });
+
+            // Immediately respond to the station as if the
+            // operation had succeeded.
+            let msg = NodeToStationMsg::ChargeResult {
                 request_id,
-            } => {
-                if self.is_offline {
-                    // OFFLINE MODE:
-                    // -------------
-                    // Queue the logical operation so that, when we reconnect,
-                    // a reconciliation step can replay it into the actor layer.
-                    self.offline_queue.push_back(OfflineQueuedCharge {
-                        request_id,
-                        account_id,
-                        card_id,
-                        amount,
-                    });
+                allowed: true,
+                error: None,
+            };
 
-                    // Immediately respond to the station as if the
-                    // operation had succeeded.
-                    let msg = NodeToStationMsg::ChargeResult {
-                        request_id,
-                        allowed: true,
-                        error: None,
-                    };
-
-                    if let Err(e) = self.station_result_tx.send(msg).await {
-                        // println!(
-                        //     "[Leader][station][OFFLINE][ERROR] failed to send fake-OK result: {}",
-                        //     e
-                        // );
-                    }
-
-                    return;
-                }
-
-                // ONLINE MODE:
-                // ------------
-                // Keep minimal state to be able to log and confirm later.
-                self.station_requests.insert(
-                    request_id,
-                    StationPendingCharge {
-                        account_id,
-                        card_id,
-                        amount,
-                    },
-                );
-
-                // Build the domain operation for the actor layer.
-                let op = ActorOperation::Charge {
-                    account_id,
-                    card_id,
-                    amount,
-                    from_offline_station: false,
-                };
-
-                // Trigger the full execute flow in the actor system.
-                self.router.do_send(RouterCmd::Execute {
-                    op_id: request_id,
-                    operation: op,
-                });
+            if let Err(e) = self.station_result_tx.send(msg).await {
+                // println!(
+                //     "[Leader][station][OFFLINE][ERROR] failed to send fake-OK result: {}",
+                //     e
+                // );
             }
 
-            StationToNodeMsg::DisconnectNode => {
-                if self.is_offline {
-                    // Already offline; just inform the station.
-                    let _ = self
-                        .station_result_tx
-                        .send(NodeToStationMsg::Debug(
-                            "[Leader] Node is already in OFFLINE mode; pump operations are auto-approved."
-                                .to_string(),
-                        ))
-                        .await;
-                } else {
-                    // Switch to OFFLINE mode.
-                    self.is_offline = true;
-
-                    // Optional: here we could instruct the ConnectionManager
-                    // to shut down or stop accepting new connections via a
-                    // ManagerCmd if such a command existed.
-                    //
-                    // For now, we simply:
-                    // - ignore future network events (see run_loop),
-                    // - keep the existing connections alive but inert.
-
-                    let _ = self
-                        .station_result_tx
-                        .send(NodeToStationMsg::Debug(
-                            "[Leader] Node switched to OFFLINE mode. Cluster traffic will be ignored and pump operations will be queued and auto-approved."
-                                .to_string(),
-                        ))
-                        .await;
-
-                    // println!("[Leader] OFFLINE mode enabled");
-                }
-            }
-
-            StationToNodeMsg::ConnectNode => {
-                if !self.is_offline {
-                    // Already online; just inform the station.
-                    let _ = self
-                        .station_result_tx
-                        .send(NodeToStationMsg::Debug(
-                            "[Leader] Node is already in ONLINE mode; pump operations go through normal verification."
-                                .to_string(),
-                        ))
-                        .await;
-                } else {
-                    // Switch back to ONLINE mode.
-                    self.is_offline = false;
-
-                    // Take the number of queued operations *before* draining.
-                    let queued = self.offline_queue.len();
-
-                    // Replay all queued offline charges into the actor system.
-                    //
-                    // We reuse `request_id` as `op_id` so that, if needed,
-                    // logs can correlate them directly with the original
-                    // offline pump requests. We deliberately do NOT insert
-                    // them into `station_requests`, so OperationResult
-                    // events for these ops will be treated as non-station
-                    // events and ignored by `handle_actor_event`.
-                    while let Some(OfflineQueuedCharge {
-                        request_id,
-                        account_id,
-                        card_id,
-                        amount,
-                    }) = self.offline_queue.pop_front()
-                    {
-                        let op = ActorOperation::Charge {
-                            account_id,
-                            card_id,
-                            amount,
-                            from_offline_station: true,
-                        };
-
-                        self.router.do_send(RouterCmd::Execute {
-                            op_id: request_id,
-                            operation: op,
-                        });
-                    }
-
-                    let _ = self
-                        .station_result_tx
-                        .send(NodeToStationMsg::Debug(
-                            format!(
-                                "[Leader] Node switched back to ONLINE mode. Replayed {} queued offline operations into the actor system (they were already confirmed to the station).",
-                                queued
-                            ),
-                        ))
-                        .await;
-
-                    // println!("[Leader] ONLINE mode enabled, offline_queue replayed: {}", queued);
-                }
-            }
+            return;
         }
+
+        // ONLINE MODE:
+        // ------------
+        // Keep minimal state to be able to log and confirm later.
+        self.station_requests.insert(
+            request_id,
+            StationPendingCharge {
+                account_id,
+                card_id,
+                amount,
+            },
+        );
+
+        // Build the domain operation for the actor layer.
+        let op = ActorOperation::Charge {
+            account_id,
+            card_id,
+            amount,
+            from_offline_station: false,
+        };
+
+        // Trigger the full execute flow in the actor system.
+        self.router.do_send(RouterCmd::Execute {
+            op_id: request_id,
+            operation: op,
+        });
     }
 }
 

@@ -1,6 +1,8 @@
 use super::{message::Message, network::Connection, node::Node, operation::Operation};
 use crate::{
-    actors::actor_router::ActorRouter, actors::messages::ActorEvent, errors::AppResult,
+    actors::{actor_router::ActorRouter, messages::ActorEvent},
+    domain::Operation,
+    errors::AppResult,
     node::station::StationToNodeMsg,
 };
 use actix::Addr;
