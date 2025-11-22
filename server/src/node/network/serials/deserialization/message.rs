@@ -29,11 +29,11 @@ fn deserialize_op_id(payload: &[u8]) -> AppResult<u32> {
         });
     }
 
-    Ok(u32::from_be_bytes(payload.try_into().map_err(|e| {
-        AppError::InvalidProtocol {
+    Ok(u32::from_be_bytes(payload[0..4].try_into().map_err(
+        |e| AppError::InvalidProtocol {
             details: format!("failed to deserialize op_id in `Request` message: {e}"),
-        }
-    })?))
+        },
+    )?))
 }
 
 fn deserialize_socket_address_srl(payload: &[u8]) -> AppResult<SocketAddr> {
