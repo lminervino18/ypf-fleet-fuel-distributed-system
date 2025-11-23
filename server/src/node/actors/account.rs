@@ -6,25 +6,25 @@
 //!
 //! Flows:
 //! - Charges (from cards):
-//!     CardActor → AccountActor:
-//!       `AccountMsg::ApplyChargeFromCard`
-//!     The account:
-//!       * if `from_offline_station == false`:
-//!           - checks account-wide limit,
-//!           - applies the charge if allowed,
-//!       * if `from_offline_station == true`:
-//!           - **skips all limit checks** and unconditionally applies
-//!             the charge (these correspond to previously-confirmed
-//!             offline operations that must be reconciled),
-//!       * replies to the card via `AccountChargeReply`.
+//!   CardActor → AccountActor:
+//!   `AccountMsg::ApplyChargeFromCard`
+//!   The account:
+//!     * if `from_offline_station == false`:
+//!         - checks account-wide limit,
+//!         - applies the charge if allowed,
+//!     * if `from_offline_station == true`:
+//!         - **skips all limit checks** and unconditionally applies
+//!           the charge (these correspond to previously-confirmed
+//!           offline operations that must be reconciled),
+//!     * replies to the card via `AccountChargeReply`.
 //!
 //! - Account limit changes (from router):
-//!     Router → AccountActor:
-//!       `AccountMsg::ApplyAccountLimit`
-//!     The account:
-//!       * checks that the new limit is not below already consumed,
-//!       * applies the new limit if allowed,
-//!       * notifies the router via `RouterInternalMsg::OperationCompleted`.
+//!   Router → AccountActor:
+//!   `AccountMsg::ApplyAccountLimit`
+//!   The account:
+//!     * checks that the new limit is not below already consumed,
+//!     * applies the new limit if allowed,
+//!     * notifies the router via `RouterInternalMsg::OperationCompleted`.
 
 use actix::prelude::*;
 
@@ -114,7 +114,7 @@ impl Handler<AccountMsg> for AccountActor {
                     // - always report success.
                     self.account_consumed += amount;
 
-                    let _ = reply_to.do_send(AccountChargeReply {
+                    reply_to.do_send(AccountChargeReply {
                         op_id,
                         success: true,
                         error: None,
@@ -135,7 +135,7 @@ impl Handler<AccountMsg> for AccountActor {
                         // Apply charge at account level.
                         self.account_consumed += amount;
 
-                        let _ = reply_to.do_send(AccountChargeReply {
+                        reply_to.do_send(AccountChargeReply {
                             op_id,
                             success: true,
                             error: None,
@@ -143,7 +143,7 @@ impl Handler<AccountMsg> for AccountActor {
                     }
                     Err(err) => {
                         // Do not update account_consumed; just notify the card.
-                        let _ = reply_to.do_send(AccountChargeReply {
+                        reply_to.do_send(AccountChargeReply {
                             op_id,
                             success: false,
                             error: Some(err),

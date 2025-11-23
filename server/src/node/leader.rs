@@ -338,7 +338,7 @@ impl Leader {
             members: members_vec,
         };
         // Broadcast the updated view to all members.
-        for (_id, peer_addr) in &self.members {
+        for peer_addr in self.members.values() {
             let _ = connection.send(view_msg.clone(), peer_addr).await;
         }
     }

@@ -81,7 +81,7 @@ pub enum AccountMsg {
     /// 1) if `from_offline_station == false`:
     ///       - verify account-wide limits for the charge,
     ///       - apply the charge to its own state if allowed,
-    ///    if `from_offline_station == true`:
+    ///         if `from_offline_station == true`:
     ///       - skip all limit checks and apply unconditionally,
     /// 2) reply to the card via `reply_to`.
     ApplyChargeFromCard {
@@ -137,9 +137,9 @@ pub struct AccountChargeReply {
 ///   * local limit checks (card),
 ///   * sending a request to the account,
 ///   * applying card state after account confirms.
-///   When `from_offline_station == true`, **all limit checks are
-///   skipped**; the charge is treated as already confirmed and must
-///   be applied.
+///     When `from_offline_station == true`, **all limit checks are
+///     skipped**; the charge is treated as already confirmed and must
+///     be applied.
 /// - `ExecuteLimitChange`: change the limit of this card only.
 ///
 /// The card will report final outcomes back to the router via

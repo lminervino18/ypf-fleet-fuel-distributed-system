@@ -224,7 +224,13 @@ pub trait Node {
     async fn handle_node_msg(&mut self, connection: &mut Connection, msg: Message) {
         match msg {
             Message::Request { op_id, op, addr } => {
-                self.handle_request(connection, op_id, op, addr).await;
+                match self.handle_request(connection, op_id, op, addr).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // Handle error (e.g., log it)
+                        println!("[Node][ERROR] Failed to handle node msg: {e:?}");
+                    }
+                }
             }
             Message::Log { op_id, op } => {
                 self.handle_log(connection, op_id, op).await;
@@ -264,7 +270,7 @@ pub trait Node {
     /// - node-to-node messages (Raft / Bully / cluster membership),
     /// - Station messages (pump simulator),
     /// - Actor events (operation results),
-    /// and periodically checks for liveness to decide when to trigger a Bully election.
+    ///   and periodically checks for liveness to decide when to trigger a Bully election.
     async fn run(
         &mut self,
         mut connection: Connection,
