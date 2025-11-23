@@ -288,7 +288,6 @@ pub trait Node {
                         // For actual leaders, `start_election` can be a no-op;
                         // for replicas, it should orchestrate `conduct_election`.
                         self.start_election(&mut connection).await;
-
                         // Update last_seen to avoid continuous restarts.
                         last_seen = Instant::now();
                     }
