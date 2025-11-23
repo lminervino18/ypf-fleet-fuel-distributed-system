@@ -57,6 +57,28 @@ pub enum Operation {
         card_id: u64,
         new_limit: Option<f32>,
     },
+
+    /// Query the current balance of an account.
+    QueryAccount {
+        account_id: u64,
+    },
+
+    /// Query the balances of all cards for an account.
+    QueryCards {
+        account_id: u64,
+    },
+
+    /// Query the current balance of a specific card.
+    QueryCard {
+        account_id: u64,
+        card_id: u64,
+    },
+
+    /// Perform billing for an account, optionally for a specific period.
+    Bill {
+        account_id: u64,
+        period: Option<String>,
+    },
 }
 
 /// Scope of a limit (card or account), useful for logging

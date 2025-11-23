@@ -28,23 +28,6 @@ struct StationPendingCharge {
     amount: f32,
 }
 
-/// Internal state for a charge coming from a station pump
-/// while the node is OFFLINE.
-///
-/// These operations are:
-/// - immediately acknowledged to the station as OK,
-/// - not sent to the actor system while offline,
-/// - stored in this queue so that, once connectivity is restored,
-///   they can be replayed into the ActorRouter with the
-///   `from_offline_station = true` flag set.
-#[derive(Debug, Clone)]
-struct OfflineQueuedCharge {
-    request_id: u32,
-    account_id: u64,
-    card_id: u64,
-    amount: f32,
-}
-
 /// Leader node.
 ///
 /// The Leader wires together:
@@ -83,18 +66,10 @@ pub struct Leader {
     current_op_id: u32,
     coords: (f64, f64),
     address: SocketAddr,
-    max_conns: usize,
-    /// Current cluster membership: node_id -> address (including self).
     members: HashMap<u64, SocketAddr>,
-    /// Stored operations indexed by op_id.
     operations: HashMap<u32, PendingOperation>,
-    // connection: Connection,
-    // actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
-    /// High-level Station wrapper (owns the simulator task and channels).
-    // station: Station,
-    /// Pending ONLINE station-originated charges.
     station_requests: HashMap<u32, (usize, StationPendingCharge)>,
     router: Addr<ActorRouter>,
 }
@@ -181,21 +156,27 @@ impl Node for Leader {
         };
 
         if pending.client_addr == self.address {
-            station.send(NodeToStationMsg::ChargeResult {
-                request_id: pending.request_id,
-                allowed: success,
-                error,
-            });
+            station
+                .send(NodeToStationMsg::ChargeResult {
+                    request_id: pending.request_id,
+                    allowed: success,
+                    error,
+                })
+                .await
+                .unwrap();
             return;
         }
 
-        connection.send(
-            Message::Response {
-                req_id: pending.request_id,
-                result: error,
-            },
-            &pending.client_addr,
-        );
+        connection
+            .send(
+                Message::Response {
+                    req_id: pending.request_id,
+                    result: error,
+                },
+                &pending.client_addr,
+            )
+            .await
+            .unwrap();
     }
 
     async fn handle_election(
@@ -240,9 +221,9 @@ impl Node for Leader {
             members: self.members.iter().map(|(id, addr)| (*id, *addr)).collect(),
         };
         // le mandamos el clúster view al que entró
-        connection.send(view_msg, &addr);
-        // y le mandamos sólo el nuevo al resto de las réplicas
-        for (_, replica_addr) in &self.members {
+        connection.send(view_msg, &addr).await.unwrap(); // TODO: handle this errors!!
+                                                         // y le mandamos sólo el nuevo al resto de las réplicas
+        for replica_addr in self.members.values() {
             let _ = connection
                 .send(
                     Message::ClusterUpdate {
@@ -313,7 +294,6 @@ impl Leader {
             current_op_id: 0,
             coords,
             address,
-            max_conns,
             members,
             operations: HashMap::new(),
             is_offline: false,

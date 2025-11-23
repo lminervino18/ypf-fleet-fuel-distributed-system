@@ -140,6 +140,26 @@ impl Handler<RouterCmd> for ActorRouter {
                         let card = self.get_or_create_card(account_id, card_id, ctx);
                         card.do_send(CardMsg::ExecuteLimitChange { op_id, new_limit });
                     }
+
+                    Operation::QueryAccount { account_id } => {
+                        let acc = self.get_or_create_account(account_id, ctx);
+                        acc.do_send(AccountMsg::ExecuteQueryAccount { op_id });
+                    }
+
+                    Operation::QueryCards { account_id } => {
+                        let acc = self.get_or_create_account(account_id, ctx);
+                        acc.do_send(AccountMsg::ExecuteQueryCards { op_id });
+                    }
+
+                    Operation::QueryCard { account_id, card_id } => {
+                        let card = self.get_or_create_card(account_id, card_id, ctx);
+                        card.do_send(CardMsg::ExecuteQueryCard { op_id });
+                    }
+
+                    Operation::Bill { account_id, period } => {
+                        let acc = self.get_or_create_account(account_id, ctx);
+                        acc.do_send(AccountMsg::ExecuteBilling { op_id, period });
+                    }
                 }
             }
 
@@ -175,8 +195,7 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                         // This should not normally happen: we got a completion
                         // for an operation we never registered.
                         self.emit(ActorEvent::Debug(format!(
-                            "[Router] OperationCompleted for unknown op_id={}",
-                            op_id
+                            "[Router] OperationCompleted for unknown op_id={op_id}",
                         )));
                         return;
                     }

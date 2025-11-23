@@ -314,7 +314,7 @@ pub trait Node {
     /// - node-to-node messages (Raft / Bully / cluster membership),
     /// - Station messages (pump simulator),
     /// - Actor events (operation results),
-    /// and periodically checks for liveness to decide when to trigger a Bully election.
+    ///   and periodically checks for liveness to decide when to trigger a Bully election.
     async fn run(
         &mut self,
         mut connection: Connection,
