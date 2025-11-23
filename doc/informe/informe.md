@@ -1,227 +1,445 @@
-\newpage
+
 # Introducción
-En este trabajo se desarrolla **YPF Ruta**, un sistema que permite a las empresas centralizar el pago y el control de gasto de combustilble para su flota de vehículos.  
-Las empresas tienen una cuenta principal y tarjetas asociadas para cada uno de los conductores de sus vehículos. Cuando un vehículo necesita cargar en cualquiera de las 1600 estaciones distribuídas alrededor del país, puede utilizar dicha tarjeta para autorizar la carga; siendo luego facturado mensualmente el monto total de todas las tarjetas a la compañía.
 
-\newpage
-# Aplicaciones
-## Server
-El servidor consiste de un *clúster de consenso*. Hay un nodo **líder**, que recibe todas las requests de los clientes y nodos **replica**, que mantienen una copia de la información de la *base de datos* (implementada en memoria con modelo de actores) que reside en el líder.  
-Para asegurar la sincronización del estado de los nodos del clúster de consenso se utiliza el algoritmo de transacciones distribuidas **Raft**:
+En este trabajo se presenta **YPF Ruta**, un sistema distribuido que permite a las empresas
+centralizar el pago y el control del gasto de combustible de su flota de vehículos.
 
-- Los clientes (administradores y estaciones que no cumplen un rol en el clúster de consenso) envían requests al líder.
-- El líder guarda las operaciones de los requests entrantes y envía el mensaje *Log* con la operación a las réplicas.
-- Cuando las réplicas reciben el mensaje *Log*, guardan la operación, ejecutan la operación con id anterior a la que llegó, y envían el mensaje *ACK*.
-- Cuando el líder recibe el *ACK* de la mayoría de las réplicas, *commitea* la operación y contesta al cliente con el nuevo estado de la base de datos.
+Cada empresa dispone de una cuenta principal y de tarjetas asociadas a los distintos conductores.
+Cuando un vehículo necesita cargar combustible en cualquiera de las más de 1600 estaciones
+distribuidas en el país, el conductor utiliza su tarjeta para autorizar la operación. El sistema
+registra cada consumo y, posteriormente, factura a la empresa el monto total acumulado en todas
+sus tarjetas durante el período de facturación.
 
-En caso de que el líder deje de funcionar, cuando una de las réplicas lo detecta llama a una *elección de líder*. Para ésta elección se utiliza el algoritmo **Bully**.
+# Panorama general del sistema
 
-## Cliente
-Los clientes del servidor son tanto las *estaciones que no cumplen un rol en el clúster de consenso* así como los *administradores de las cuentas que residen en el sistema*. Estos últimos pueden:
+En esta sección se describe, a grandes rasgos, cómo se organiza **YPF Ruta**: qué actores
+intervienen, cómo se conectan entre sí y qué problemas busca resolver el sistema a nivel de
+negocio y de infraestructura distribuida.
 
-- Limitar los montos disponibles en su cuenta.
-- Limitar los montos disponibles en las tarjetas de la cuenta.
-- Consultar los saldos de las cuentas.
-- Consultar los saldos de las tarjetas de la cuenta.
-- Realizar la facturación de la cuenta.
+## Contexto de uso
 
-### Surtidores
-Los surtidores de las estaciones se conectan por I/O a la terminal de la estación. De esta manera cada estación puede escuchar de manera asincrónica a cada uno de sus surtidores, para así enviar los requests correspondientes y luego informar a los surtidores de las respuestas entrantes.
+YPF Ruta modela un escenario en el que empresas con flotas de vehículos cargan combustible en una
+red amplia de estaciones de servicio. Cada conductor utiliza una tarjeta asociada a la cuenta de
+su empresa para autorizar la carga, mientras que el sistema central:
 
-\newpage
-# Arquitectura del servidor
-Como ya se mencionó, el servidor está implementado de manera distribuida. El foco principal del diseño de la arquitectura está en reducir la cantidad de mensajes entre nodos que tienen viajar en la red.  
+- valida los límites de consumo de la tarjeta y de la cuenta,
+- registra cada operación de cobro,
+- permite consultas de consumo y facturación posterior.
 
-Dado que la información se encuentra centralizada en el *clúster de consenso*, se vuelve necesario que las estaciones consulten el estado de la información de la cuenta a la cuál pertenece la tarjeta que quiere realizar el pago en ellas.  
-Para ésto, las estaciones conocen incialmente *quién* es el nodo líder. Cualquier consulta que precisen hacer se la envían al mismo. Si el líder dejara de funcionar, se ejecutaría entonces el *bully leader-election algorithm* para elegir un nuevo líder de entre las réplicas. Los clientes del servidor se enteran del resultado de la elección a partir de la dirección del nodo que les conteste su próxima request: esto es, cuando un nodo réplica recibe una request, la reenvía al líder, que luego contesta al cliente que nota la diferencia entre la dirección del líder que tiene guardada y la del emisor de la contestación que recibió.
+Desde el punto de vista técnico, el sistema asume un entorno distribuido con múltiples nodos
+comunicados por red, posibles fallas de nodos, desconexiones temporales y estaciones que pueden
+funcionar momentáneamente sin conectividad directa al clúster de consenso.
 
-De esta manera todos los nodos necesitan un único socket para comunicarse con el nodo líder, salvo éste último que necesita tantos sockets como estaciones existan además de él. Esto ocurre a nivel lógico, ya que estaciones poco concurridas no necesitan estar constantemente conectadas con el nodo líder, por lo que el mismo sólo mantiene un top $N$ de conexiones con el resto de las estaciones. Cuando se alcanza el límite de conexiones y se instancia una conexión entrante, se elimina la *last recently used*.
+## Objetivos y alcance del sistema
 
-## Modelo de actores
-El server se basa entonces en el modelo de actores. Cada nodo es una entidad que recibe mensajes y que los procesa según su rol en el clúster de consenso.  
-Los mensajes que circulan son los que respectan al algoritmo *Raft*:
+El objetivo principal de YPF Ruta es proporcionar una infraestructura distribuida que permita:
 
-- `Request { operation }`
-- `Log { id, operation, client_address }`,
-- `ACK { id }`
+- Centralizar el control del gasto de combustible de una flota mediante cuentas y tarjetas.
+- Replicar el estado de cuentas y tarjetas entre varios nodos (líder y réplicas) manteniendo
+  consistencia mediante un log replicado.
+- Tolerar la caída del líder mediante una elección automática de nuevo líder (algoritmo Bully).
+- Soportar políticas de cobro en escenarios de desconexión (modo OFFLINE) y reconciliar los
+  consumos una vez recuperada la conectividad.
+- Ofrecer una interfaz de administración (CLI) para limitar cuentas y tarjetas, consultar
+  consumos y disparar procesos de facturación.
 
-, a la elección de líder *Bully* y a las requests de los clientes.
-
-<!-- \begin{figure}[H]
-\centering
-\includesvg[width=0.8\textwidth]{diagrams/account-clusters-overview.svg}
-\caption{Clúster de cuenta.}
-\end{figure} -->
-
-<!-- \begin{figure}[H]
-\centering
-\includesvg[width=0.8\textwidth]{diagrams/distributed-system-overview.svg}
-\caption{*Overview* del sistema distribuido global.}
-\end{figure} -->
-
-\newpage
-<!-- \begin{figure}[H]
-\centering
-\includesvg[width=0.8\textwidth]{diagrams/recovery-initial-state}
-\caption{Estado inicial del sistema. Dos cuentas, una con las tarjetas $T_1$ y $T_2$ y la otra con $T_3$, $T_4$ y $T_5$.}
-\end{figure} -->
-
-## Política de cobro en estaciones sin conexión
-Si una estación se encuentra sin conexión, no hay nada que hacer si se trata de un nodo que está fuera del clúster de consenso. Se puede o bien realizar el cobro o no.  
-Tampoco hay mucho más que hacer cuando cuando se trata de un nodo réplica o líder, más que tomar una política de asumir que la información que se tiene está actualizada o no. En el primer caso, el nodo réplica o líder, revisa el saldo restante de la tarjeta (y de la cuenta a la que pertenece) y realiza el cobro en base a esa información-si no hay saldo suficiente niega la operación. En el segundo caso, la operación se lleva a cabo sin revisar el registro de la tarjeta (ni el de la cuenta a la que pertenece).  
-
-Sin importar el nodo o la política que se le aplique, en caso de que el cobro finalmente se efectúe, la actualización del registro de la tarjeta debe ser encolada para poder ser enviada al líder del clúster de consenso una vez recuperada la conexión.  
-
-Si fuera el nodo líder el que perdió la conexión, entonces cuando la recuperase, ya se habría elegido a otro y por tanto sería a ese nuevo líder al que se enviarían las actualizaciones encoladas si así las hubiera.
+El sistema se implementa como un prototipo académico: el almacenamiento es en memoria, la lógica
+de negocio se modela mediante actores y la comunicación entre nodos se realiza sobre TCP con un
+protocolo de aplicación propio.
 
 
-## Actores
-<!-- TODO -->
+# Server distribuido
 
-## Mensajes del sistema
+En esta sección se describe la arquitectura interna del servidor de **YPF Ruta** como sistema
+distribuido. El foco está en el clúster de consenso (líder y réplicas), en el flujo de las
+operaciones de negocio y en cómo se mantiene un estado consistente entre nodos a través de un log
+replicado.
 
-| Mensaje | Descripción |
-|----------|-------------|
-| **COBRAR** | Solicitud de cobro iniciada por un surtidor o reenviada entre nodos |
-| **RESPUESTA_COBRO** | Confirmación o rechazo del cobro (por límite de tarjeta o de cuenta) |
-| **ACCEPT** | Guardar la operación en el log |
-| **LEARN** | Confirmar el guardado de la operación, listo para ejecutar |
-| **COMMIT** | Aplicar la operación en el log (se envía el id) |
-| **ELECTION** | Iniciar elección de líder entre los nodos del consenso |
-| **OK_LEADER** | Asumo la responsabilidad de propagar la elección de líder |
-| **LEADER** | Anuncio de líder |
+## Clúster de consenso (líder y réplicas)
 
-\newpage
-## Representación en pseudocódigo Rust
+El servidor está organizado alrededor de un *clúster de consenso* formado por un nodo **líder** y
+uno o más nodos **réplica**. Todos ellos mantienen una copia lógica del mismo estado de negocio:
+cuentas, tarjetas, límites y consumos. Ese estado residente en memoria se implementa mediante un
+modelo de actores (ActorRouter, AccountActor, CardActor), aislando la lógica de negocio de la
+lógica de comunicación distribuida.
 
-```rust
-// ======== ActorRouter ========
-struct ActorRouter {
-    cards: HashMap<CardId, ActorAddr>,
-    wx_node: Channel,
-}
+Desde el punto de vista del clúster:
 
-impl ActorRouter {
-    // para el nodo
-    fn handle_send(msg: ActorMessage, card: AccountId) {
-        if not card in self.accounts {
-            // create account
-        }
+- El **líder** es el único nodo que decide el *orden global* de las operaciones y coordina el
+  commit. Cada vez que recibe una nueva operación (por ejemplo, un `Charge` generado por una
+  estación o un `LimitAccount` solicitado por un administrador) la registra en su log local y
+  desencadena el proceso de replicación hacia las réplicas.
+- Las **réplicas** reciben del líder las entradas del log y las aplican en el mismo orden,
+  manteniendo su propio sistema de actores sincronizado con el del líder. No toman decisiones de
+  orden ni de commit por sí mismas: siguen la secuencia que les envía el líder.
 
-        self.accounts.get(card).send(msg)
-    }
+El flujo simplificado para una operación es el siguiente (esquema inspirado en Raft):
 
-    fn handle_send(msg: ActorMessage, card: CardId) {
-        if not card in self.cards {
-            // create card
-            // create card's account
-        }
+1. Una operación de alto nivel (`Operation`) llega a algún nodo del sistema (líder, réplica o
+   estación que proxyea) y termina siendo entregada al líder en forma de mensaje `Request`.
+2. El líder asigna un nuevo identificador de operación (`op_id`), la guarda en su estructura de
+   `PendingOperation` y crea una entrada de log asociada.
+3. El líder envía a cada réplica un mensaje `Log { op_id, op }` a través de la capa de red
+   (abstracción `Connection`).
+4. Cada réplica, al recibir un `Log`, almacena la operación en su propio log y ejecuta, a través
+   de su `Database` (ActorRouter + actores), la operación inmediatamente anterior. Una vez que la
+   ejecución termina, la réplica responde al líder con un mensaje `Ack { op_id }`.
+5. El líder va contabilizando los `Ack` recibidos. Cuando una operación tiene *ack* de la
+   mayoría de las réplicas, se considera *committed*. En ese momento el líder ejecuta la
+   operación en su propio sistema de actores y traduce el resultado a una respuesta:
+   - si el origen era una estación, genera un `NodeToStationMsg::ChargeResult` hacia la Station;
+   - si el origen era un cliente TCP (CLI administrativo), envía un `Message::Response` con el
+     `OperationResult` correspondiente.
 
-        self.cards.get(card).send(msg)
-    }
+De esta manera, el log replicado define un orden total de las operaciones y garantiza que tanto el
+líder como las réplicas apliquen exactamente la misma secuencia sobre su estado en memoria. La
+consistencia del clúster se logra sin compartir memoria entre nodos: toda la coordinación se hace
+mediante mensajes (`Request`, `Log`, `Ack`, `Response`) sobre TCP.
 
-    fn handle_actor_messages(result: ActorMessage) {
-        wx_node.send(result);
-    }
-}
+## Estaciones y clientes administrativos
 
-// ======== Tarjeta ========
-struct Tarjeta {
-    id: TarjetaId,
-    cuenta: CuentaAddr,
-    limite: f64,
-    consumo_total: f64,
-    router: ActorRouterAddr,
-}
+Aunque el clúster de consenso está formado únicamente por el líder y las réplicas, **no todas las
+estaciones de servicio forman parte de ese clúster**. En YPF Ruta distinguimos dos tipos de
+clientes del servidor:
 
-impl Tarjeta {
-    fn handle_cobrar(
-        monto: f64,
-    ) {
-        self.cuenta.send(Cobrar(monto));
-        self.consumo_total += monto;
-    }
+- Estaciones que no cumplen rol en el clúster de consenso (nodos “externos” al consenso).
+- Clientes administrativos (CLI) utilizados por las empresas para gestionar sus cuentas.
 
-    fn handle_update(new_limit: f64) {
-        self.limit = new_limit;
-    }
+Ambos tipos de cliente generan operaciones de alto nivel (`Operation`) que, directa o
+indirectamente, terminan llegando al líder.
 
-    fn handle_check_limit(
-        monto: f64,
-        origen: ActorID,
-    ) {
-        if self.consumo_total + monto >= self.limite {
-            origen.enviar(Mensaje::NotOk);
-            return;
-        }
+### Estaciones de servicio
 
-        self.cuenta.send(CheckLimit(monto));
-    }
+Cada estación cuenta con un simulador de surtidores (`Station`) que:
 
-    fn handle_ok_not_ok() {
-        if ok {
-            router.enviar(OK);
-            return;
-        }
+- lee comandos desde stdin (uno por operación de cobro),
+- los traduce a mensajes de alto nivel (`StationToNodeMsg::ChargeRequest`),
+- y espera la respuesta correspondiente (`NodeToStationMsg::ChargeResult`).
 
-        router.enviar(NotOK)
-    }
-}
+Según dónde esté corriendo la estación:
 
-// ======== Cuenta ========
-struct Cuenta {
-    id: CuentaID,
-    limite: f64,
-    consumo_total: f64,
-}
+- Si se ejecuta en el mismo proceso que un **nodo líder** o una **réplica**, la `Station` se
+  conecta internamente a ese nodo y éste actúa como “frente” de la estación frente al clúster de
+  consenso.
+- Si la estación está completamente **afuera del clúster**, se conecta por TCP a algún nodo
+  (típicamente el líder) y ese nodo toma el rol de entrada para sus operaciones.
 
-impl Cuenta {
-    fn handle_cobrar(
-        monto: f64,
-    ) {
-        self.consumo_total += monto;
-    }
+En cualquier caso, la estación no necesita conocer la topología interna del clúster ni cómo se
+implementa la replicación: únicamente envía requests de cobro y recibe resultados admitido/denegado
+con información opcional de error (`VerifyError`).
 
-    fn handle_update(new_limit: f64) {
-        self.limit = new_limit;
-    }
+### Clientes administrativos (CLI)
 
-    fn handle_check_limit(
-        monto: f64,
-        origen: ActorID,
-    ) {
-        if self.consumo_total + monto >= self.limite {
-            origen.enviar(Mensaje::NotOk);
-        } else {
-            origen.enviar(Mensaje::OK);
-        }
-    }
-}
-```
+El cliente administrativo se implementa como un binario independiente (`client`) que ofrece un
+CLI para interactuar con el sistema. A través de este cliente es posible:
 
-\newpage
+- limitar el monto disponible en una cuenta (`Operation::LimitAccount`),
+- limitar el monto disponible en una tarjeta (`Operation::LimitCard`),
+- consultar el consumo de una cuenta (`Operation::AccountQuery`),
+- iniciar procesos de facturación (`Operation::Bill`).
+
+El CLI serializa estas operaciones a un formato binario propio y las envía por TCP al servidor.
+Desde la perspectiva del clúster, un comando del CLI es simplemente otra `Operation` que ingresa
+al líder mediante un mensaje `Request`, sigue el mismo flujo de replicación y commit que un cobro
+originado en una estación, y termina en una respuesta `OperationResult` que el cliente muestra por
+stdout.
+
+## Tolerancia a fallas y elección de líder (Bully)
+
+El clúster de consenso está pensado para seguir funcionando incluso si algunos nodos dejan de
+responder, en particular el líder. Mientras al menos una réplica y la mayoría de los nodos sigan
+activos, el sistema puede elegir un nuevo líder y continuar procesando operaciones.
+
+Cuando se detecta la caída del líder, una de las réplicas inicia una **elección de líder** usando el
+algoritmo Bully. La idea básica es:
+
+- Cada nodo del clúster tiene un identificador único (ID numérico).
+- El nodo que detecta la falla se postula como candidato y envía mensajes de *elección* a los nodos
+  con ID más alto que el suyo.
+- Si ningún nodo con ID mayor responde, el candidato se proclama nuevo líder y anuncia su rol al
+  resto del clúster.
+- Si algún nodo con ID mayor responde, ese nodo “toma la posta” y continúa el proceso de elección,
+  hasta que finalmente el nodo con ID más alto disponible se convierta en líder.
+
+De esta forma, el liderazgo siempre recae en el nodo “más fuerte” (ID más alto) que siga activo.
+Para las estaciones y los clientes administrativos, este proceso es casi transparente: pueden
+seguir enviando operaciones a los nodos del clúster, que se encargan de redirigirlas internamente
+hacia el líder vigente.
+
+# Clientes
+
+En esta sección se describen los dos tipos principales de clientes que interactúan con
+**YPF Ruta**: las estaciones de servicio (a través de sus surtidores) y los usuarios
+administrativos de las empresas, que operan mediante un cliente de línea de comandos (CLI).
+
+## Estaciones de servicio y surtidores
+
+Cada estación se modela como una terminal que agrupa varios surtidores. En el prototipo,
+esta terminal está representada por el componente `Station`, que:
+
+- lee comandos ingresados por el operador (uno por cada intento de carga),
+- los traduce a solicitudes de cobro de alto nivel hacia el nodo con el que está conectada,
+- y muestra en pantalla el resultado de la operación (aprobada o rechazada, con el motivo).
+
+Desde la perspectiva de la estación, el flujo típico es:
+
+1. El operador ingresa los datos de la operación (surtidor, cuenta, tarjeta, monto).
+2. La estación envía una solicitud de cobro al sistema.
+3. El sistema responde indicando si la operación fue aceptada o no, y por qué
+   (por ejemplo, límite de tarjeta o de cuenta excedido).
+
+El detalle de cómo se replica esa operación dentro del clúster (líder, réplicas, log, ACKs)
+queda oculto detrás de esta interfaz simple de “solicitud de cobro / resultado”.
+
+## Cliente administrativo (CLI) para empresas
+
+Las empresas que utilizan YPF Ruta cuentan además con un cliente administrativo en modo
+texto (CLI), pensado para tareas de gestión sobre sus cuentas. A través de este cliente es
+posible:
+
+- establecer o modificar el límite global de una cuenta,
+- fijar límites individuales para cada tarjeta asociada,
+- consultar el consumo acumulado de una cuenta y su desglose por tarjeta,
+- iniciar procesos de facturación sobre una cuenta.
+
+Cada comando del CLI se traduce internamente en una `Operation` (por ejemplo,
+`LimitAccount`, `LimitCard`, `AccountQuery` o `Bill`) que se envía al servidor y sigue el
+mismo flujo de consenso que las operaciones de cobro. El usuario administrativo, sin
+embargo, sólo ve una interfaz simple de consulta y actualización de parámetros de su cuenta.
+
+
+# Implementación del nodo
+
+Cada proceso del servidor (líder o réplica) se modela como un **nodo** que se comunica
+simultáneamente con tres “mundos” distintos:
+
+- otros nodos del clúster (consenso y replicación),
+- la estación local (surtidores simulados),
+- la base de datos lógica implementada con actores.
+
+Estos comportamientos se abstraen en el trait `Node`, que es implementado por `Leader` y
+`Replica`.
+
+## Visión general y bucle principal del nodo
+
+El corazón de la implementación es el bucle principal definido en `Node::run`. Este bucle
+asincrónico se ejecuta mientras el nodo está vivo y resuelve, mediante un `tokio::select!`,
+tres tipos de eventos:
+
+- mensajes que llegan desde otros nodos a través de la capa de red (`Connection`),
+- mensajes que llegan desde la estación local (`StationToNodeMsg`),
+- eventos emitidos por el mundo de actores (`ActorEvent`) a través de `Database`.
+
+Según el tipo de evento, el nodo delega en los métodos del trait `Node`:
+
+- `handle_node_msg` para mensajes de consenso y replicación (`Request`, `Log`, `Ack`,
+  `Election`, etc.),
+- `handle_station_msg` para solicitudes de cobro y cambios de modo ONLINE/OFFLINE,
+- `handle_actor_event` para resultados de operaciones de negocio.
+
+De esta forma, la lógica específica de líder o réplica se concentra en la implementación del
+trait, mientras que el bucle principal es común a todos los roles.
+
+## Comunicación con otros nodos (Connection / Message)
+
+La comunicación entre nodos se encapsula en la abstracción `Connection`, que ofrece una
+interfaz uniforme para:
+
+- aceptar conexiones entrantes y establecer conexiones salientes,
+- enviar mensajes tipados (`Message`) a una dirección (`SocketAddr`),
+- recibir mensajes desde la red de forma asincrónica.
+
+El enum `Message` representa todos los mensajes de “mundo nodo”:
+
+- mensajes de operaciones (`Request`, `Response`, `Log`, `Ack`),
+- mensajes de elección de líder (`Election`, `ElectionOk`, `Coordinator`),
+- mensajes de membresía del clúster (`Join`, `ClusterView`, `ClusterUpdate`).
+
+El método `handle_node_msg` del trait `Node` actúa como *dispatcher*: desempaqueta el
+`Message` recibido y llama a los handlers específicos (`handle_request`, `handle_log`,
+`handle_ack`, `handle_election`, etc.) que implementan la semántica de líder o réplica.
+
+## Comunicación con la estación (Station, StationToNodeMsg, NodeToStationMsg)
+
+La interacción con los surtidores de una estación se modela mediante el tipo `Station`, que
+corre en una tarea de fondo y se comunica con el nodo por canales asincrónicos:
+
+- `StationToNodeMsg`: mensajes que la estación envía al nodo.
+- `NodeToStationMsg`: mensajes que el nodo envía de vuelta a la estación.
+
+Los mensajes principales son:
+
+- `StationToNodeMsg::ChargeRequest` para solicitar un cobro (cuenta, tarjeta, monto).
+- `StationToNodeMsg::DisconnectNode` y `ConnectNode` para cambiar el modo ONLINE/OFFLINE.
+- `NodeToStationMsg::ChargeResult` para devolver el resultado final de una operación de
+  cobro, incluyendo si fue permitida o no y un posible `VerifyError`.
+- `NodeToStationMsg::Debug` para enviar mensajes informativos al operador.
+
+El método `handle_station_msg` del trait `Node` encapsula la política de qué hacer ante cada
+mensaje: en el caso de un `ChargeRequest`, construye una `Operation::Charge` y la inyecta en
+el flujo normal del clúster (pasando por el líder y la replicación).
+
+## Comunicación con la base de datos lógica (Database, ActorEvent)
+
+La **base de datos lógica** del sistema está implementada como un conjunto de actores y se
+encapsula detrás del tipo `Database`. Desde el punto de vista del nodo, `Database` ofrece
+dos operaciones:
+
+- `send(DatabaseCmd)`: para enviar comandos de alto nivel (por ahora, `Execute { op_id,
+  operation }`).
+- `recv()`: para recibir eventos producidos por el mundo de actores (`ActorEvent`).
+
+El actor principal es el `ActorRouter`, que coordina:
+
+- actores de cuenta (`AccountActor`) responsables de los límites y consumos a nivel cuenta,
+- actores de tarjeta (`CardActor`) responsables de los límites y consumos por tarjeta.
+
+Cuando el líder decide *commit* de una operación, en lugar de aplicar la lógica de negocio
+directamente, envía un `DatabaseCmd::Execute` a `Database`. El resultado llega luego como un
+`ActorEvent::OperationResult`, que el nodo traduce a:
+
+- una respuesta a la estación (`NodeToStationMsg::ChargeResult`), o
+- una respuesta al cliente administrativo (`Message::Response` con un `OperationResult`).
+
+Esta separación permite que el nodo se concentre en coordinación distribuida y tolerancia a
+fallas, mientras que la consistencia y verificación de las operaciones de negocio se
+resuelven dentro del modelo de actores.
+
+
+# Modelo de actores de la base de datos
+
+La base de datos lógica de **YPF Ruta** se modela con el patrón de **actores**: cada entidad
+de negocio (cuenta, tarjeta) se representa como un actor con estado propio, que solo se
+modifica a través de mensajes. El nodo no toca ese estado directamente: envía operaciones
+de alto nivel y espera un resultado tipado.
+
+## ActorRouter
+
+`ActorRouter` es el “front” del mundo de actores. Desde el punto de vista del nodo:
+
+- recibe una operación de negocio, por ejemplo `Execute(op_id, Operation)`,
+- se asegura de tener los actores necesarios (cuenta y tarjetas),
+- distribuye el trabajo y, cuando todo termina, emite un único resultado
+  `OperationResult(op_id, Operation, Resultado)`.
+
+Es decir, convierte un pedido de alto nivel en mensajes internos y vuelve a condensar todas
+esas interacciones en una respuesta única para el nodo.
+
+## AccountActor
+
+Cada `AccountActor` encapsula el estado de una cuenta:
+
+- límite global de la cuenta,
+- consumo acumulado,
+- estado temporal para consultas (cuando se pide un resumen con detalle por tarjeta).
+
+A nivel conceptual maneja tres tipos de mensajes:
+
+- `ApplyCharge(amount, from_offline_station)`
+- `ApplyAccountLimit(new_limit)`
+- `AccountQueryStep(card_id, consumed)`
+
+Con ellos:
+
+- valida y aplica cargos a nivel cuenta,
+- valida y actualiza el límite global,
+- agrega la información que le van reportando las tarjetas para construir la respuesta de una
+  consulta de cuenta.
+
+## CardActor
+
+Cada `CardActor` representa una tarjeta individual:
+
+- límite por tarjeta,
+- consumo acumulado,
+- cola de tareas para procesar sus operaciones en orden.
+
+Recibe, de forma conceptualmente simple, mensajes del estilo:
+
+- `ExecuteCharge(amount, from_offline_station)`
+- `ExecuteLimitChange(new_limit)`
+- `ReportStateForAccountQuery()`
+
+Con estos mensajes:
+
+- verifica el límite de tarjeta antes de un cargo,
+- delega en la cuenta la verificación del límite global,
+- responde con su consumo actual cuando se arma una consulta de cuenta.
+
+## Mensajes, operaciones y resultados (Operation, OperationResult)
+
+Para desacoplar nodo y actores se define un conjunto pequeño de operaciones y resultados
+de alto nivel:
+
+Operation =
+- `Charge(account_id, card_id, amount, from_offline_station)`
+- `LimitAccount(account_id, new_limit)`
+- `LimitCard(account_id, card_id, new_limit)`
+- `AccountQuery(account_id)`
+- `Bill(account_id, period)`
+
+OperationResult =
+- `ChargeResult(Ok | Failed(VerifyError))`
+- `LimitAccountResult(Ok | Failed(VerifyError))`
+- `LimitCardResult(Ok | Failed(VerifyError))`
+- `AccountQueryResult(account_id, total_spent, per_card_spent)`
+
+El flujo completo es:
+
+1. El nodo recibe una `Operation` y decide cuándo se *commitea* (según el consenso).
+2. Una vez decidido, envía `Execute(op_id, Operation)` al modelo de actores.
+3. Los actores de cuenta y tarjeta procesan la operación solo mediante mensajes.
+4. `ActorRouter` devuelve un único `OperationResult`, que el nodo traduce en la respuesta
+   a la estación o al cliente administrativo.
+
+
 # Protocolo de comunicación
-Por tratarse de un sistema distribuido tienen que comunicarse por red. Es por esto que se hace necesario introducir un protocolo de aplicación y el elegir un protocolo de capa de transporte.
 
-## Protocolo de capa de aplicación
-Si bien los nodos tienen acceso al código de la implementación de las entidades del sistema, no comparten memoria, si no que se comunican enviando mensajes por red, y por tanto se hace necesario introducir un **protocolo** de *serialización* y *deserialización* de las tiras de bytes que se envían.  
-El protocolo es simple, todos los mensajes tienen 1 byte para el tipo de mensaje (disponibilidad para $2^{1\times 8}=256$ tipos de mensaje distintos), de manera tal que el resto de la deserialización se lleva a cabo según este tipo. Además, cuando un actor quiere comunicarse con otro actor, delega esta comunicación a la abstracción de envío de mensajes entre actores en distintos nodos, por lo tanto todos los mensajes están *wrappeados* en un protocolo de más bajo nivel que contiene la información de la comunicación entre los nodos. Para los mensajes descriptos en la descripción del modelo de autores, se propone la siguiente estructura:
+## Protocolo de aplicación (formato de mensajes y serialización)
 
-- **`Cobrar`.** `req_id`: ID de un actor, `tarjeta_id`: ID de una tarjeta, `monto`: doble precisión, `origen_id`: ID de un actor.
-- **`RespuestaCobro`.** `req_id`: ID de un actor, `ok`: booleano, `razon`: enum de tipos de error, `monto`: doble precisión.
-- **`RegistroCobro`.** `req_id`: ID de un actor, `registro`: *registro de tarjeta*.
-- **`Actualización`.** `tarjeta`: ID de una tarjeta, `delta`: doble precisión.
+Los distintos procesos de **YPF Ruta** se comunican mediante un protocolo de aplicación
+binario propio. Cada mensaje comienza con un byte de tipo que identifica la variante
+(`Request`, `Log`, `Ack`, `Election`, etc.), seguido por los campos específicos de ese tipo
+codificados en binario (enteros, `f32`, banderas, etc.).
 
-El *registro de tarjeta* es **`RegistroTarjeta`:** `tarjeta`: ID de la tarjeta, `cuenta`: ID de la cuenta, `saldo_usado`: doble precisión, `limite_tarjeta`: doble precisión, `ttl`: entero positivo, `lider_id`: ID de un actor.  
+Este formato se usa de manera uniforme tanto entre nodos del clúster de consenso como entre
+clientes (estaciones o CLI administrativo) y el nodo al que se conectan. Por encima de estos
+mensajes de bajo nivel, la lógica del sistema trabaja con operaciones de negocio (`Operation`)
+y resultados (`OperationResult`), lo que permite separar las decisiones de dominio de los
+detalles de serialización.
 
-Por último, los campos están definidos de la siguiente manera:
+## Protocolo de transporte (TCP)
 
-- **ID de una tarjeta.** No sabemos cuántas tarjetas hay, por lo que usamos 4 bytes para representar sus IDs ($2^{4\times 8}$, más de 4 mil millones de IDs distintos).
-- **ID de un actor.** Debería haber más capacidad para actores que tarjetas en el sistema, por lo que se utilizan para definirlos 5 bytes.
-- **Doble precisión.** Usamos el estándar 754 de la IEEE de doble precisión para todos los números que representan montos y fracciones de tiempo. Son 8 bytes: 1 bit de signo, 11 bits para el exponente y el resto de los 52 bits para la mantisa. En Rust esto es un `f64`.
-- **Entero positivo.** Si sólo se usase para el TTL entonces bastaría con tener un byte para este campo.
-- **Enum de tipos de error.** Un sólo byte para poder representar hasta 256 tipos de erorres distintos. Luego durante la deserialización debería traducirse el tipo a un mensaje legible por el usuario (si es que no se trata de un error del sistema que pueda ser manejable por el mismo).
+Para el transporte se utiliza **TCP**, que ofrece un canal fiable, orientado a conexión y con
+entrega ordenada de los bytes. Estas propiedades son fundamentales en un sistema de cobros,
+donde cada mensaje representa una operación económica y cada entrada de log debe aplicarse en
+el mismo orden en todos los nodos del clúster. Además, el cierre o error en la conexión TCP
+se usa como señal de caída de un nodo o cliente, disparando los mecanismos de tolerancia a
+fallas cuando corresponde.
 
-## Protocolo de capa de transporte
-En el sistema **YPF Ruta** se utiliza el protocolo **TCP (Transmission Control Protocol)** para la comunicación local entre los distintos nodos del sistema.  
-TCP garantiza la **entrega confiable y ordenada** de los mensajes, propiedad esencial en un entorno donde cada operación representa una transacción económica. Además provee la detección de interrupciones de comunicación, que es muy útil a la hora de detectar fallas de nodos.
+
+# Política de cobro en estaciones sin conexión
+
+## Nodo fuera del clúster
+
+Cuando una estación que **no forma parte del clúster de consenso** pierde conexión con la red, el sistema central no puede verificar límites ni saldos. En ese escenario la decisión de aceptar o rechazar el cobro queda íntegramente del lado de la estación: puede operar en modo “confío y anoto localmente” o en modo “no autorizo sin conexión”, pero cualquier política que adopte será necesariamente local y no consistente con el resto del sistema hasta que se recupere la conectividad.
+
+## Nodo réplica / líder en modo OFFLINE
+
+Si quien pierde conectividad es un nodo del clúster (líder o réplica), puede entrar explícitamente en modo **OFFLINE**. En este modo el nodo deja de participar del consenso, pero sigue atendiendo a sus surtidores: cada cobro se acepta inmediatamente y la operación se registra en una cola de “cargos offline” marcada como tal (`from_offline_station = true`). La idea es priorizar la continuidad de servicio en la estación, posponiendo la verificación global de límites para cuando el nodo vuelva a estar en línea.
+
+## Reconciliación al recuperar la conexión
+
+Al volver a modo **ONLINE**, el nodo reproduce secuencialmente todas las operaciones encoladas contra la base de datos lógica y las replica al clúster de consenso. Como esas operaciones están etiquetadas como provenientes de una estación offline, se aplican directamente sobre el estado (sin volver a bloquear al cliente) para reconstruir un historial consistente. Si durante la desconexión se eligió un nuevo líder, las actualizaciones pendientes se envían a ese líder vigente, de modo que el clúster converge nuevamente a un único estado acordado.
+
+
+# Conclusiones
+
+El desarrollo de **YPF Ruta** permitió diseñar e implementar un sistema distribuido capaz de centralizar el control de gasto de combustible de una flota, manteniendo al mismo tiempo un nivel alto de disponibilidad en las estaciones. La combinación de un clúster de consenso (líder + réplicas) con un modelo de actores para la base de datos lógica separa con claridad las preocupaciones: por un lado, la replicación y el acuerdo sobre el orden de las operaciones; por otro, la consistencia de las reglas de negocio sobre cuentas y tarjetas.
+
+El rol del **líder** como punto de compromiso de las operaciones, junto con las **réplicas** que mantienen copias sincronizadas del estado, aporta tolerancia a fallas a nivel de nodo. La elección de líder basada en el algoritmo **Bully** permite recuperar un coordinador válido cuando se detecta la caída del nodo actual, evitando que el sistema quede indefinidamente sin un responsable de avanzar el log de operaciones. Desde el punto de vista de los clientes (estaciones y CLI administrativo) esta transición es transparente: basta con reenviar la operación al nodo que responde efectivamente.
+
+El uso del **modelo de actores** para representar cuentas y tarjetas introduce un esquema de concurrencia que evita compartir memoria mutable entre hilos y nodos. Todas las modificaciones de estado se expresan como mensajes de alto nivel (`Operation`) y sus correspondientes resultados (`OperationResult`), lo que simplifica tanto el razonamiento sobre la lógica de negocio como la integración con el protocolo de replicación. La política explícita para el **modo OFFLINE** en estaciones o nodos del clúster, junto con la reconciliación posterior, permite balancear continuidad de servicio y consistencia eventual del sistema.
+
+En conjunto, la arquitectura propuesta muestra que es posible construir un servicio de cobros distribuido que combina: replicación y consenso sobre operaciones, encapsulamiento de la lógica de negocio en actores y un protocolo de comunicación binario simple pero suficiente para las necesidades del dominio. A partir de esta base se pueden explorar extensiones naturales, como nuevas operaciones administrativas, métricas de uso por estación, o políticas más sofisticadas de manejo de riesgo en m
+
