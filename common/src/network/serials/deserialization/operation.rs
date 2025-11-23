@@ -1,3 +1,4 @@
+use super::helpers::{deserialize_account_id, deserialize_amount, deserialize_card_id};
 use crate::{
     errors::{AppError, AppResult},
     network::serials::protocol::*,
@@ -22,36 +23,6 @@ impl TryFrom<&[u8]> for Operation {
 }
 
 // attribute deserialization
-fn deserialize_account_id(payload: &[u8]) -> AppResult<u64> {
-    Ok(u64::from_be_bytes(
-        payload[0..ACC_ID_SRL_LEN]
-            .try_into()
-            .map_err(|e| AppError::InvalidProtocol {
-                details: format!("failed to deserialize account id in charge operation: {e}"),
-            })?,
-    ))
-}
-
-fn deserialize_card_id(payload: &[u8]) -> AppResult<u64> {
-    Ok(u64::from_be_bytes(
-        payload[0..CARD_ID_SRL_LEN]
-            .try_into()
-            .map_err(|e| AppError::InvalidProtocol {
-                details: format!("failed to deserialize card id in charge operation: {e}"),
-            })?,
-    ))
-}
-
-fn deserialize_amount(payload: &[u8]) -> AppResult<f32> {
-    Ok(f32::from_be_bytes(
-        payload[0..AMOUNT_SRL_LEN]
-            .try_into()
-            .map_err(|e| AppError::InvalidProtocol {
-                details: format!("failed to deserialize amount in charge operation: {e}"),
-            })?,
-    ))
-}
-
 fn deserialize_limit(payload: &[u8]) -> AppResult<Option<f32>> {
     let limit = deserialize_amount(payload)?;
     Ok(match limit {
@@ -155,7 +126,6 @@ fn deserialize_bill_operation(payload: &[u8]) -> AppResult<Operation> {
     let mut ptr = 0;
     let account_id = deserialize_account_id(&payload[ptr..])?;
     ptr += ACC_ID_SRL_LEN;
-
     let period = if payload.len() > ptr {
         let period_bytes = &payload[ptr..];
         let byte_of_len_size = 1;
