@@ -15,7 +15,6 @@ use crate::errors::{AppError, AppResult, VerifyError};
 pub enum StationToNodeMsg {
     /// Charge request from a pump.
     ChargeRequest {
-        pump_id: usize,
         account_id: u64,
         card_id: u64,
         amount: f32,
@@ -250,7 +249,6 @@ async fn run_station_simulator(
                                 );
 
                                 let msg = StationToNodeMsg::ChargeRequest {
-                                    pump_id,
                                     account_id,
                                     card_id,
                                     amount,
