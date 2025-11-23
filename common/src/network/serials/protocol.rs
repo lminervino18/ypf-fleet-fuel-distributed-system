@@ -21,6 +21,14 @@ pub const LIMIT_ACCOUNT_RESULT: u8 = 0x02;
 pub const LIMIT_CARD_RESULT: u8 = 0x03;
 pub const ACC_QUERY_RESULT: u8 = 0x04;
 
+// verify error types
+pub const LIMIT_UPDATE_ERR: u8 = 0x00;
+pub const CHARGE_LIMIT_ERR: u8 = 0x01;
+pub const LIMIT_CHECK_ERR: u8 = 0x01;
+pub const BELOW_CURRENT_USAGE: u8 = 0x00;
+pub const CARD_LIMIT_EXCEEDED: u8 = 0x01;
+pub const ACC_LIMIT_EXCEEDED: u8 = 0x02;
+
 // attribute variants
 pub const NO_LIMIT: f32 = -1.0;
 pub const TRUE: u8 = 0x01;
