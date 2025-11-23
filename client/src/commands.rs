@@ -1,5 +1,6 @@
 //! CLI parser for the client
 use clap::Subcommand;
+use common::operation::Operation;
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
@@ -32,4 +33,47 @@ pub enum Commands {
         #[arg(long)]
         period: Option<String>,
     },
+}
+
+impl From<Commands> for Operation {
+    fn from(cmd: Commands) -> Self {
+        match cmd {
+            Commands::LimitAccount { amount } => Operation::LimitAccount {
+                account_id: 0, // to be filled by the client
+                new_limit: Some(amount as f32),
+            },
+            Commands::LimitCard { card_id, amount } => Operation::LimitCard {
+                account_id: 0, // to be filled by the client
+                card_id: card_id.parse().unwrap_or(0),
+                new_limit: Some(amount as f32),
+            },
+            Commands::QueryAccount => Operation::QueryAccount {
+                account_id: 0, // to be filled by the client
+            },
+            Commands::QueryCards => Operation::QueryCards {
+                account_id: 0, // to be filled by the client
+            },
+            Commands::Bill { period } => Operation::Bill {
+                account_id: 0, // to be filled by the client
+                period,
+            },
+        }
+    }
+}
+
+impl Clone for Commands {
+    fn clone(&self) -> Self {
+        match self {
+            Commands::LimitAccount { amount } => Commands::LimitAccount { amount: *amount },
+            Commands::LimitCard { card_id, amount } => Commands::LimitCard {
+                card_id: card_id.clone(),
+                amount: *amount,
+            },
+            Commands::QueryAccount => Commands::QueryAccount,
+            Commands::QueryCards => Commands::QueryCards,
+            Commands::Bill { period } => Commands::Bill {
+                period: period.clone(),
+            },
+        }
+    }
 }
