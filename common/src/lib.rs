@@ -1,6 +1,7 @@
 pub mod errors;
 pub mod network;
 pub mod operation;
+pub mod operation_result;
 pub mod station;
 
 pub use errors::{AppError, AppResult, ApplyError, LimitCheckError, LimitUpdateError, VerifyError};
