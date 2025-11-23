@@ -14,8 +14,8 @@ use std::{net::SocketAddr, process::ExitCode, str::FromStr};
 ///   • replica
 ///   • station  (future dedicated mode)
 ///
-/// Example:
-//     cargo run --bin server -- leader --replicas 127.0.0.1:5001 --pumps 4
+/// Example (leader):
+///     cargo run --bin server -- leader --pumps 4
 ///
 /// Example (replica):
 ///     cargo run --bin server -- replica --leader-addr 127.0.0.1:5000 --pumps 4
@@ -59,22 +59,23 @@ enum RoleArgs {
         leader_addr: SocketAddr,
     },
 
-    /// Leader node with optional replica addresses.
+    /// Leader node.
+    ///
+    /// Initial cluster membership will be discovered dynamically
+    /// via Join / ClusterView messages; the CLI no longer needs replica
+    /// addresses here.
     Leader {
-        #[arg(long, num_args = 0.., value_name = "IP:PORT")]
-        replicas: Vec<SocketAddr>,
-
         #[arg(long, default_value_t = 16)]
         max_conns: usize,
     },
 
     /// Replica node.
+    ///
+    /// The replica only needs to know the leader address; the rest of the
+    /// cluster topology will be learned from the leader via Join / ClusterView.
     Replica {
         #[arg(long, value_name = "IP:PORT")]
         leader_addr: SocketAddr,
-
-        #[arg(long, num_args = 0.., value_name = "IP:PORT")]
-        other_replicas: Vec<SocketAddr>,
 
         #[arg(long, default_value_t = 16)]
         max_conns: usize,
@@ -85,7 +86,7 @@ enum RoleArgs {
 async fn main() -> ExitCode {
     match run().await {
         Ok(_) => ExitCode::SUCCESS,
-        Err(e) => {
+        Err(_e) => {
             //println!("[FATAL] {e:?}");
             ExitCode::FAILURE
         }
@@ -99,23 +100,24 @@ async fn run() -> AppResult<()> {
     let pumps = args.pumps;
 
     match args.role {
-        RoleArgs::Leader {
-            replicas,
-            max_conns,
-        } => {
-            Leader::start(args.address, coords, replicas, max_conns, pumps).await?;
+        RoleArgs::Leader { max_conns } => {
+            // Leader::start(address, coords, max_conns, pumps)
+            // Membership is initially seeded with self; other nodes
+            // will be discovered via Join / ClusterView messages.
+            Leader::start(args.address, coords, max_conns, pumps).await?;
         }
 
         RoleArgs::Replica {
             leader_addr,
-            other_replicas,
             max_conns,
         } => {
+            // Replica::start(address, leader_addr, coords, max_conns, pumps)
+            // The replica only knows the leader at startup; any
+            // other peers will be learned from the leader.
             Replica::start(
                 args.address,
                 leader_addr,
                 coords,
-                other_replicas,
                 max_conns,
                 pumps,
             )

@@ -7,9 +7,7 @@ use super::{
     operation::Operation,
     utils::get_id_given_addr,
 };
-use crate::{
-    errors::{AppError, AppResult},
-};
+use crate::errors::{AppError, AppResult};
 use common::{Station, StationToNodeMsg, NodeToStationMsg};
 use actix::{Actor, Addr};
 use std::{
@@ -26,6 +24,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 /// distributed system. For station-originated charges it uses the
 /// exact same Execute (verify + apply inside actors) flow as the Leader
 /// when ONLINE, and the same offline queueing behavior when OFFLINE.
+///
 /// Internal state for a charge coming from a station pump while the node is
 /// ONLINE (kept locally in replica implementation).
 #[derive(Debug, Clone)]
@@ -48,8 +47,10 @@ pub struct Replica {
     coords: (f64, f64),
     max_conns: usize,
     address: SocketAddr,
+    /// Current leader address (updated on Coordinator messages).
     leader_addr: SocketAddr,
-    other_replicas: Vec<SocketAddr>,
+    /// Current cluster membership: node_id -> address (including self & leader).
+    members: HashMap<u64, SocketAddr>,
     bully: Arc<Mutex<Bully>>,
     operations: HashMap<u32, Operation>,
     connection: Connection,
@@ -66,12 +67,13 @@ pub struct Replica {
 impl Node for Replica {
     async fn handle_charge_request(
         &mut self,
-        pump_id: usize,
-        account_id: u64,
-        card_id: u64,
-        amount: f32,
-        request_id: u64,
+        _pump_id: usize,
+        _account_id: u64,
+        _card_id: u64,
+        _amount: f32,
+        _request_id: u64,
     ) {
+        // Not wired yet: replicas do not handle station-originated charges directly.
         todo!();
     }
 
@@ -81,11 +83,12 @@ impl Node for Replica {
 
     async fn handle_operation_result(
         &mut self,
-        op_id: u32,
-        operation: Operation,
-        success: bool,
-        error: Option<crate::errors::VerifyError>,
+        _op_id: u32,
+        _operation: Operation,
+        _success: bool,
+        _error: Option<crate::errors::VerifyError>,
     ) {
+        // This will be wired if we ever have replicas executing operations locally.
         todo!();
     }
 
@@ -104,6 +107,7 @@ impl Node for Replica {
     }
 
     async fn handle_log(&mut self, op_id: u32, new_op: Operation) {
+        // Store the replicated operation locally and acknowledge back to the leader.
         self.operations.insert(op_id, new_op);
         // self.commit_operation(new_op_id - 1).await; // TODO: this logic should be in actors module.
         self.connection
@@ -114,7 +118,8 @@ impl Node for Replica {
     }
 
     async fn handle_ack(&mut self, _id: u32) {
-        todo!(); // TODO: replicas should not receive any ACK messages.
+        // Replicas should not receive any ACK messages.
+        todo!();
     }
 
     async fn recv_node_msg(&mut self) -> AppResult<Message> {
@@ -122,15 +127,47 @@ impl Node for Replica {
     }
 
     async fn recv_actor_event(&mut self) -> Option<ActorEvent> {
-        todo!()
+        self.actor_rx.recv().await
     }
 
     async fn handle_actor_event(&mut self, event: ActorEvent) {
-        todo!()
+        // Same behavior as the default Node implementation:
+        match event {
+            ActorEvent::OperationResult {
+                op_id,
+                operation,
+                success,
+                error,
+            } => {
+                self.handle_operation_result(op_id, operation, success, error)
+                    .await;
+            }
+            _ => {
+                todo!();
+            }
+        }
     }
 
     async fn handle_station_msg(&mut self, msg: StationToNodeMsg) {
-        todo!()
+        // Same behavior as the default Node implementation:
+        match msg {
+            StationToNodeMsg::ChargeRequest {
+                pump_id,
+                account_id,
+                card_id,
+                amount,
+                request_id,
+            } => {
+                self.handle_charge_request(pump_id, account_id, card_id, amount, request_id)
+                    .await;
+            }
+            StationToNodeMsg::DisconnectNode => {
+                self.handle_disconnect_node().await;
+            }
+            StationToNodeMsg::ConnectNode => {
+                self.handle_connect_node().await;
+            }
+        }
     }
 
     async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr) {
@@ -159,6 +196,9 @@ impl Node for Replica {
         let mut b = self.bully.lock().await;
         b.on_coordinator(leader_id, leader_addr);
 
+        // Update our local "current leader" pointer as well.
+        self.leader_addr = leader_addr;
+
         // TODO:
         // The replica now becomes leader, presumably by changing its role
         // with the NodeRole enum, but this would require further unification
@@ -166,11 +206,13 @@ impl Node for Replica {
     }
 
     async fn start_election(&mut self) {
-        // Build peer_ids map: include leader and other replicas.
+        // Build peer_ids map from the current membership (excluding self).
         let mut peer_ids = HashMap::new();
-        peer_ids.insert(get_id_given_addr(self.leader_addr), self.leader_addr);
-        for addr in &self.other_replicas {
-            peer_ids.insert(get_id_given_addr(*addr), *addr);
+        for (peer_id, addr) in &self.members {
+            if *peer_id == self.id {
+                continue;
+            }
+            peer_ids.insert(*peer_id, *addr);
         }
 
         crate::node::election::bully::conduct_election(
@@ -182,18 +224,29 @@ impl Node for Replica {
         )
         .await;
     }
+
+    /// Replicas ignore Join themselves — new nodes should always Join via the current leader.
+    async fn handle_join(&mut self, _node_id: u64, _addr: SocketAddr) {
+        // No-op for replicas.
+    }
+
+    /// Replicas update their local membership when receiving a ClusterView snapshot.
+    async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>) {
+        self.handle_cluster_view_message(members);
+    }
 }
 
 impl Replica {
     /// - boots the ConnectionManager (TCP),
     /// - boots the ActorRouter in a dedicated Actix system thread,
     /// - starts the Station abstraction (which internally spawns the simulator with `pumps` pumps on stdin),
+    /// - seeds the cluster membership (self + leader),
+    /// - sends an initial Join message to the leader,
     /// - then enters the main async event loop.
     pub async fn start(
         address: SocketAddr,
         leader_addr: SocketAddr,
         coords: (f64, f64),
-        other_replicas: Vec<SocketAddr>,
         max_conns: usize,
         pumps: usize,
     ) -> AppResult<()> {
@@ -216,17 +269,27 @@ impl Replica {
         // Start the reusable Station abstraction (stdin-based simulator runs inside it).
         let station = Station::start(pumps).await?;
 
+        // Start network connection.
+        let connection = Connection::start(address, max_conns).await?;
+
+        // Seed membership: self + leader.
         let id = get_id_given_addr(address);
+        let mut members: HashMap<u64, SocketAddr> = HashMap::new();
+        members.insert(id, address);
+
+        let leader_id = get_id_given_addr(leader_addr);
+        members.insert(leader_id, leader_addr);
+
         let mut replica = Self {
             id,
             coords,
             max_conns,
             address,
             leader_addr,
-            other_replicas,
+            members,
             bully: Arc::new(Mutex::new(Bully::new(id, address))),
             operations: HashMap::new(),
-            connection: Connection::start(address, max_conns).await?,
+            connection,
             actor_rx,
             is_offline: false,
             offline_queue: VecDeque::new(),
@@ -237,6 +300,31 @@ impl Replica {
             })?,
         };
 
+        // Immediately announce ourselves to the leader so it can
+        // rebroadcast a fresh ClusterView (membership snapshot).
+        let join_msg = Message::Join {
+            node_id: replica.id,
+            addr: replica.address,
+        };
+        let _ = replica
+            .connection
+            .send(join_msg, &replica.leader_addr)
+            .await;
+
         replica.run().await
+    }
+
+    /// Handle an incoming ClusterView snapshot:
+    /// - replace our current membership with the provided one,
+    /// - but ensure we always include ourselves with our known address.
+    pub fn handle_cluster_view_message(&mut self, members: Vec<(u64, SocketAddr)>) {
+        self.members.clear();
+
+        for (id, addr) in members {
+            self.members.insert(id, addr);
+        }
+
+        // Ensure we are present with the correct address.
+        self.members.insert(self.id, self.address);
     }
 }

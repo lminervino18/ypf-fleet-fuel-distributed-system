@@ -81,7 +81,9 @@ pub struct Leader {
     coords: (f64, f64),
     address: SocketAddr,
     max_conns: usize,
-    replicas: Vec<SocketAddr>,
+    /// Current cluster membership: node_id -> address (including self).
+    members: HashMap<u64, SocketAddr>,
+    /// Stored operations indexed by op_id.
     operations: HashMap<u32, (usize, SocketAddr, Operation)>,
     connection: Connection,
     actor_rx: mpsc::Receiver<ActorEvent>,
@@ -104,29 +106,41 @@ impl Node for Leader {
         op: Operation,
         client_addr: SocketAddr,
     ) -> AppResult<()> {
+        // Store the operation locally.
         self.operations.insert(op_id, (0, client_addr, op.clone()));
+
+        // Build the log message to replicate.
         let msg = Message::Log {
             op_id,
             op: op.clone(),
         };
-        for replica in &self.replicas {
-            self.connection.send(msg.clone(), replica).await?;
+
+        // Broadcast the log to all known members except self.
+        for (node_id, addr) in &self.members {
+            if *node_id == self.id {
+                continue;
+            }
+            self.connection.send(msg.clone(), addr).await?;
         }
 
         Ok(())
     }
 
     async fn handle_log(&mut self, _op_id: u32, _op: Operation) {
+        // Leader should not receive Log messages.
         todo!(); // TODO: leader should not receive any Log messages.
     }
 
     async fn handle_ack(&mut self, op_id: u32) {
         let Some((ack_count, _, _)) = self.operations.get_mut(&op_id) else {
-            todo!() // TODO: handle this case (unknown op_id).
+            todo!(); // TODO: handle this case (unknown op_id).
         };
 
         *ack_count += 1;
-        if *ack_count <= self.replicas.len() / 2 {
+
+        // Majority is computed over "replica" count = members - 1 (we are the leader).
+        let replica_count = self.members.len().saturating_sub(1);
+        if *ack_count <= replica_count / 2 {
             return;
         }
 
@@ -141,6 +155,9 @@ impl Node for Leader {
         _success: bool,
         _error: Option<VerifyError>,
     ) {
+        // This will be wired when the ActorRouter sends back OperationResult
+        // events and the leader must translate them into NodeToStationMsg
+        // for the station.
         todo!();
     }
 
@@ -246,6 +263,18 @@ impl Node for Leader {
     async fn start_election(&mut self) {
         // Leader doesn't start elections.
     }
+
+    /// Called when we receive a `Message::Join` through the generic
+    /// Node dispatcher.
+    async fn handle_join(&mut self, node_id: u64, addr: SocketAddr) {
+        self.handle_join_message(node_id, addr).await;
+    }
+
+    /// Called when we receive a `Message::ClusterView` through the
+    /// generic Node dispatcher.
+    async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>) {
+        self.handle_cluster_view_message(members);
+    }
 }
 
 impl Leader {
@@ -254,11 +283,11 @@ impl Leader {
     /// - boots the ConnectionManager (TCP),
     /// - boots the ActorRouter in a dedicated Actix system thread,
     /// - starts the Station abstraction (which internally spawns the pump simulator),
+    /// - seeds the cluster membership with self (other nodes will join dynamically),
     /// - then enters the main async event loop.
     pub async fn start(
         address: SocketAddr,
         coords: (f64, f64),
-        replicas: Vec<SocketAddr>,
         max_conns: usize,
         pumps: usize,
     ) -> AppResult<()> {
@@ -281,12 +310,18 @@ impl Leader {
         // Start the shared Station abstraction (stdin-based simulator).
         let station = Station::start(pumps).await?;
 
+        // Seed membership: leader only. Other members will be
+        // registered via Join / ClusterView messages.
+        let self_id = get_id_given_addr(address);
+        let mut members: HashMap<u64, SocketAddr> = HashMap::new();
+        members.insert(self_id, address);
+
         let mut leader = Self {
-            id: get_id_given_addr(address),
+            id: self_id,
             coords,
             address,
             max_conns,
-            replicas,
+            members,
             operations: HashMap::new(),
             connection: Connection::start(address, max_conns).await?,
             actor_rx,
@@ -300,5 +335,40 @@ impl Leader {
         };
 
         leader.run().await
+    }
+
+    /// Handle an incoming Join message:
+    /// - register the new member in the membership map,
+    /// - broadcast a ClusterView snapshot to all members (including the newcomer),
+    ///   so everyone can converge to the same view.
+    pub async fn handle_join_message(&mut self, node_id: u64, addr: SocketAddr) {
+        self.members.insert(node_id, addr);
+
+        let members_vec: Vec<(u64, SocketAddr)> =
+            self.members.iter().map(|(id, addr)| (*id, *addr)).collect();
+
+        let view_msg = Message::ClusterView {
+            members: members_vec,
+        };
+
+        // Broadcast the updated view to all members.
+        for (_id, peer_addr) in &self.members {
+            let _ = self.connection.send(view_msg.clone(), peer_addr).await;
+        }
+    }
+
+    /// Handle an incoming ClusterView snapshot:
+    /// - replace our current membership with the provided one,
+    /// - but ensure we always include ourselves with our known address.
+    pub fn handle_cluster_view_message(&mut self, members: Vec<(u64, SocketAddr)>) {
+        self.members.clear();
+
+        // Rebuild membership from snapshot.
+        for (id, addr) in members {
+            self.members.insert(id, addr);
+        }
+
+        // Ensure we are present with the correct address.
+        self.members.insert(self.id, self.address);
     }
 }
