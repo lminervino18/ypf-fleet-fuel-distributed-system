@@ -1,12 +1,13 @@
 use super::actors::{actor_router::ActorRouter, ActorEvent, RouterCmd};
-use super::{message::Message, network::Connection, node::Node, operation::Operation};
+use super::node::Node;
 use crate::errors::VerifyError;
 use crate::{
     errors::{AppError, AppResult},
     node::utils::get_id_given_addr,
 };
 use actix::{Actor, Addr};
-use common::{NodeToStationMsg, Station};
+use common::operation::Operation;
+use common::{Connection, Message, NodeToStationMsg, Station};
 use std::{
     collections::{HashMap, VecDeque},
     future::pending,

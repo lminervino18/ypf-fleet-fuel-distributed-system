@@ -1,7 +1,6 @@
-use crate::node::message::Message;
-use crate::node::message::Message::*;
-use crate::node::network::serials::protocol::*;
-use crate::node::operation::Operation;
+use crate::Message::*;
+use crate::network::serials::protocol::*;
+use crate::{Message, operation::Operation};
 use std::net::{IpAddr, SocketAddr};
 
 impl From<Message> for Vec<u8> {

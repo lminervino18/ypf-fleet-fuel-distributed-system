@@ -85,21 +85,14 @@ impl Station {
     /// - consumes `NodeToStationMsg` coming from the node.
     pub async fn start(num_pumps: usize) -> AppResult<Self> {
         // Channel Station -> Node (from simulator task to the caller).
-        let (station_to_node_tx, station_to_node_rx) =
-            mpsc::channel::<StationToNodeMsg>(128);
+        let (station_to_node_tx, station_to_node_rx) = mpsc::channel::<StationToNodeMsg>(128);
 
         // Channel Node -> Station (from caller to the simulator task).
-        let (node_to_station_tx, node_to_station_rx) =
-            mpsc::channel::<NodeToStationMsg>(128);
+        let (node_to_station_tx, node_to_station_rx) = mpsc::channel::<NodeToStationMsg>(128);
 
         // Spawn the task that runs the real simulator.
         let task = tokio::spawn(async move {
-            let _ = run_station_simulator(
-                num_pumps,
-                station_to_node_tx,
-                node_to_station_rx,
-            )
-            .await;
+            let _ = run_station_simulator(num_pumps, station_to_node_tx, node_to_station_rx).await;
         });
 
         Ok(Self {
@@ -113,11 +106,6 @@ impl Station {
     ///
     /// The node typically uses it inside a `select!`:
     ///
-    /// ```rust
-    /// if let Some(msg) = station.recv().await {
-    ///     // handle StationToNodeMsg
-    /// }
-    /// ```
     pub async fn recv(&mut self) -> Option<StationToNodeMsg> {
         self.from_station_rx.recv().await
     }

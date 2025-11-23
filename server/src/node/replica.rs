@@ -1,15 +1,12 @@
 use super::{
     actors::{actor_router::ActorRouter, ActorEvent},
     election::bully::Bully,
-    message::Message,
-    network::Connection,
     node::Node,
-    operation::Operation,
     utils::get_id_given_addr,
 };
 use crate::errors::{AppError, AppResult};
 use actix::{Actor, Addr};
-use common::{Station, StationToNodeMsg};
+use common::{operation::Operation, Connection, Message, Station, StationToNodeMsg};
 use std::{
     collections::{HashMap, VecDeque},
     future::pending,

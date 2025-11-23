@@ -1,6 +1,7 @@
 use actix::prelude::*;
 
-use crate::{errors::VerifyError, node::operation::Operation};
+use crate::errors::VerifyError;
+use common::operation::Operation;
 
 /// Events sent by the ActorRouter to the Node.
 ///

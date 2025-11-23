@@ -1,7 +1,8 @@
+use crate::Message;
+use crate::Message::*;
+use crate::errors::AppError;
 use crate::errors::AppResult;
-use crate::node::message::Message::*;
-use crate::node::network::serials::protocol::*;
-use crate::{errors::AppError, node::message::Message};
+use crate::network::serials::protocol::*;
 use std::net::SocketAddr;
 
 impl TryFrom<Vec<u8>> for Message {
@@ -85,7 +86,7 @@ fn deserialize_ack_message(payload: &[u8]) -> AppResult<Message> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::node::operation::Operation;
+    use crate::operation::Operation;
 
     #[test]
     fn test_deserialize_valid_op_id_srl() {

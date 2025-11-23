@@ -1,6 +1,7 @@
 use crate::{
     errors::{AppError, AppResult},
-    node::{network::serials::protocol::*, operation::Operation},
+    network::serials::protocol::*,
+    operation::Operation,
 };
 
 impl TryFrom<&[u8]> for Operation {
@@ -65,7 +66,7 @@ fn deserialize_from_offline_station(payload: &[u8]) -> AppResult<bool> {
             return Err(AppError::InvalidProtocol {
                 details: "invalid bytes for `from_offline_station` attribute in charge operation"
                     .to_string(),
-            })
+            });
         }
     })
 }
