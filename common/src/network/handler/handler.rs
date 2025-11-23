@@ -1,7 +1,7 @@
 use super::{receiver::StreamReceiver, sender::StreamSender};
 use crate::{
+    Message,
     errors::{AppError, AppResult},
-    node::message::Message,
 };
 use std::{net::SocketAddr, sync::Arc, time::Instant};
 use tokio::{
@@ -138,7 +138,7 @@ mod test {
 
         tokio::time::sleep(Duration::from_secs(1)).await; // wait for listener
         let (receiver_tx, mut receiver_rx) = mpsc::channel(1);
-        let handler = Handler::start(&address, Arc::new(receiver_tx))
+        let _handler = Handler::start(&address, Arc::new(receiver_tx))
             .await
             .unwrap();
         let received = receiver_rx.recv().await.unwrap();
@@ -187,7 +187,7 @@ mod test {
 
         let (stream2, _) = listener.accept().await.unwrap();
         let (receiver_tx, mut receiver_rx) = mpsc::channel(1);
-        let handler2 = Handler::start_from(stream2, Arc::new(receiver_tx))
+        let _handler2 = Handler::start_from(stream2, Arc::new(receiver_tx))
             .await
             .unwrap();
         let received = receiver_rx.recv().await.unwrap();

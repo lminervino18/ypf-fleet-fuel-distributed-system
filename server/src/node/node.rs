@@ -1,14 +1,16 @@
-use super::{
-    actors::ActorEvent, message::Message, operation::Operation, station::StationToNodeMsg,
-};
-use crate::errors::{AppResult, VerifyError};
-use rand::Rng;
+use super::actors::ActorEvent;
+use crate::errors::AppResult;
+use common::operation::Operation;
+use common::operation_result::OperationResult;
+use common::{Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
 use std::net::SocketAddr;
 use tokio::select;
-use tokio::time::{sleep, Duration};
+use tokio::sync::mpsc::Receiver;
+use tokio::time::Duration;
 
 /// Role of a node in the YPF Ruta distributed system.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum NodeRole {
     Leader,
     Replica,
@@ -16,64 +18,109 @@ pub enum NodeRole {
 }
 
 pub trait Node {
+    // messages from connection
     async fn handle_request(
         &mut self,
-        op_id: u32,
+        connection: &mut Connection,
+        req_id: u32,
         op: Operation,
         client_addr: SocketAddr,
     ) -> AppResult<()>;
 
-    async fn handle_log(&mut self, op_id: u32, op: Operation);
+    async fn handle_log(&mut self, connection: &mut Connection, op_id: u32, op: Operation);
 
-    async fn handle_ack(&mut self, id: u32);
+    async fn handle_ack(&mut self, connection: &mut Connection, op_id: u32);
 
+    /// Resultado de una operación que ya pasó por el mundo de actores
+    /// (Router + Account + Card) y volvió como OperationResult.
     async fn handle_operation_result(
         &mut self,
+        connection: &mut Connection,
+        station: &mut Station,
         op_id: u32,
         operation: Operation,
-        success: bool,
-        error: Option<VerifyError>,
+        result: OperationResult,
     );
 
-    async fn handle_actor_event(&mut self, event: ActorEvent) {
+    /// Default dispatcher for Actor events.
+    ///
+    /// Ahora saca el `OperationResult` del ActorEvent y se lo pasa al
+    /// `handle_operation_result`.
+    async fn handle_actor_event(
+        &mut self,
+        connection: &mut Connection,
+        station: &mut Station,
+        event: ActorEvent,
+    ) {
         match event {
             ActorEvent::OperationResult {
                 op_id,
                 operation,
-                success,
-                error,
+                result,
+                // dejamos success/error en el enum pero no los necesitamos acá
+                ..
             } => {
-                self.handle_operation_result(op_id, operation, success, error);
+                self.handle_operation_result(connection, station, op_id, operation, result)
+                    .await;
             }
-            _ => {
-                todo!();
+            ActorEvent::Debug(msg) => {
+                // Por ahora lo ignoramos, o podrías loggear acá.
+                // e.g. println!("[NODE][ACTORS] {msg}");
+                let _ = msg; // para evitar warning de variable sin usar.
             }
         }
     }
 
-    /* OperationResult {
-        op_id: u64,
-        operation: Operation,
-        success: bool,
-        /// Domain/business error, if any (limits, invalid updates, etc.).
-        /// For offline-replayed charges this will always be `None`.
-        error: Option<VerifyError>,
-    },*/
+    fn is_offline(&self) -> bool;
+    fn log_offline_opeartion(&mut self, op: Operation);
+    fn get_address(&self) -> SocketAddr;
 
     async fn handle_charge_request(
         &mut self,
-        pump_id: usize,
+        connection: &mut Connection,
+        station: &mut Station,
         account_id: u64,
         card_id: u64,
         amount: f32,
-        request_id: u64,
-    );
+        request_id: u32,
+    ) {
+        if self.is_offline() {
+            self.log_offline_opeartion(Operation::Charge {
+                account_id,
+                card_id,
+                amount,
+                from_offline_station: true,
+            });
+            let msg = NodeToStationMsg::ChargeResult {
+                request_id,
+                allowed: true,
+                error: None,
+            };
+            if let Err(_e) = station.send(msg).await {}
+            return;
+        }
 
+        let op = Operation::Charge {
+            account_id,
+            card_id,
+            amount,
+            from_offline_station: false,
+        };
+
+        self.handle_request(connection, request_id, op, self.get_address());
+    }
+
+    /// Default OFFLINE transition handler.
+    ///
+    /// Concrete nodes (Leader / Replica) override this to:
+    /// - flip their `is_offline` flag,
+    /// - emit debug messages to the Station,
+    /// - adjust cluster behavior.
     async fn handle_disconnect_node(&mut self) {
-        /*         if self.is_offline {
+        /* Example (Leader):
+        if self.is_offline {
             let _ = self
-                .station_result_tx
-                .send(NodeToStationMsg::Debug(
+                .station.send(NodeToStationMsg::Debug(
                     "[Leader] Node is already in OFFLINE mode; pump operations are auto-approved."
                         .to_string(),
                 ))
@@ -81,24 +128,30 @@ pub trait Node {
         } else {
             self.is_offline = true;
             let _ = self
-                        .station_result_tx
-                        .send(NodeToStationMsg::Debug(
-                            "[Leader] Node switched to OFFLINE mode. Cluster traffic will be ignored and pump operations will be queued and auto-approved."
-                                .to_string(),
-                        ))
-                        .await;
-        } */
+                .station.send(NodeToStationMsg::Debug(
+                    "[Leader] Node switched to OFFLINE mode. Cluster traffic will be ignored and pump operations will be queued and auto-approved."
+                        .to_string(),
+                ))
+                .await;
+        }
+        */
     }
 
+    /// Default ONLINE transition handler.
+    ///
+    /// Concrete nodes (Leader / Replica) override this to:
+    /// - flip their `is_offline` flag,
+    /// - replay queued offline operations into the actor layer,
+    /// - notify the Station via debug messages.
     async fn handle_connect_node(&mut self) {
-        /*         if !self.is_offline {
+        /* Example (Leader):
+        if !self.is_offline {
             let _ = self
-                        .station_result_tx
-                        .send(NodeToStationMsg::Debug(
-                            "[Leader] Node is already in ONLINE mode; pump operations go through normal verification."
-                                .to_string(),
-                        ))
-                        .await;
+                .station.send(NodeToStationMsg::Debug(
+                    "[Leader] Node is already in ONLINE mode; pump operations go through normal verification."
+                        .to_string(),
+                ))
+                .await;
         } else {
             self.is_offline = false;
             let queued = self.offline_queue.len();
@@ -109,7 +162,7 @@ pub trait Node {
                 amount,
             }) = self.offline_queue.pop_front()
             {
-                let op = ActorOperation::Charge {
+                let op = Operation::Charge {
                     account_id,
                     card_id,
                     amount,
@@ -123,18 +176,29 @@ pub trait Node {
             }
 
             let _ = self
-                        .station_result_tx
-                        .send(NodeToStationMsg::Debug(
-                            format!(
-                                "[Leader] Node switched back to ONLINE mode. Replayed {} queued offline operations into the actor system (they were already confirmed to the station).",
-                                queued
-                            ),
-                        ))
-                        .await;
-        } */
+                .station.send(NodeToStationMsg::Debug(
+                    format!(
+                        "[Leader] Node switched back to ONLINE mode. Replayed {} queued offline operations into the actor system (they were already confirmed to the station).",
+                        queued
+                    ),
+                ))
+                .await;
+        }
+        */
     }
 
-    async fn handle_station_msg(&mut self, msg: StationToNodeMsg) {
+    /// Default handler for high-level Station messages.
+    ///
+    /// Dispatches:
+    /// - `ChargeRequest` into `handle_charge_request`,
+    /// - `DisconnectNode` into `handle_disconnect_node`,
+    /// - `ConnectNode` into `handle_connect_node`.
+    async fn handle_station_msg(
+        &mut self,
+        connection: &mut Connection,
+        station: &mut Station,
+        msg: StationToNodeMsg,
+    ) {
         match msg {
             StationToNodeMsg::ChargeRequest {
                 pump_id,
@@ -143,62 +207,111 @@ pub trait Node {
                 amount,
                 request_id,
             } => {
-                self.handle_charge_request(pump_id, account_id, card_id, amount, request_id);
+                self.handle_charge_request(
+                    connection, station, account_id, card_id, amount, request_id,
+                )
+                .await;
             }
-
             StationToNodeMsg::DisconnectNode => {
-                self.handle_disconnect_node();
+                self.handle_disconnect_node().await;
             }
-
             StationToNodeMsg::ConnectNode => {
-                self.handle_connect_node();
+                self.handle_connect_node().await;
             }
         }
     }
-    async fn recv_node_msg(&mut self) -> AppResult<Message>;
-    async fn recv_actor_event(&mut self) -> Option<ActorEvent>;
-    async fn recv_station_message(&mut self) -> Option<StationToNodeMsg>;
-    async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr);
-    async fn handle_election_ok(&mut self, responder_id: u64);
-    async fn handle_coordinator(&mut self, leader_id: u64, leader_addr: SocketAddr);
-    async fn start_election(&mut self);
 
-    async fn handle_node_msg(&mut self, msg: Message) {
+    // === Bully / leader election hooks ===
+    async fn handle_election(
+        &mut self,
+        connection: &mut Connection,
+        candidate_id: u64,
+        candidate_addr: SocketAddr,
+    );
+
+    async fn handle_election_ok(&mut self, connection: &mut Connection, responder_id: u64);
+
+    async fn handle_coordinator(
+        &mut self,
+        connection: &mut Connection,
+        leader_id: u64,
+        leader_addr: SocketAddr,
+    );
+
+    async fn start_election(&mut self, connection: &mut Connection);
+
+    // === Cluster membership hooks (Join / ClusterView) ===
+
+    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr);
+
+    async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>);
+
+    async fn handle_cluster_update(
+        &mut self,
+        connection: &mut Connection,
+        new_member: (u64, SocketAddr),
+    );
+
+    /// Default handler for any node-to-node Message.
+    async fn handle_node_msg(
+        &mut self,
+        connection: &mut Connection,
+        msg: Message,
+    ) -> AppResult<()> {
         match msg {
-            Message::Request { op_id, op, addr } => {
-                self.handle_request(op_id, op, addr).await;
+            Message::Request {
+                req_id: op_id,
+                op,
+                addr,
+            } => {
+                self.handle_request(connection, op_id, op, addr).await?;
             }
             Message::Log { op_id, op } => {
-                self.handle_log(op_id, op).await;
+                self.handle_log(connection, op_id, op).await;
             }
             Message::Ack { op_id } => {
-                self.handle_ack(op_id).await;
+                self.handle_ack(connection, op_id).await;
             }
             Message::Election {
                 candidate_id,
                 candidate_addr,
             } => {
-                self.handle_election(candidate_id, candidate_addr).await;
+                self.handle_election(connection, candidate_id, candidate_addr)
+                    .await;
             }
             Message::ElectionOk { responder_id } => {
-                self.handle_election_ok(responder_id).await;
+                self.handle_election_ok(connection, responder_id).await;
             }
             Message::Coordinator {
                 leader_id,
                 leader_addr,
             } => {
-                self.handle_coordinator(leader_id, leader_addr).await;
+                self.handle_coordinator(connection, leader_id, leader_addr)
+                    .await;
             }
+            Message::Join { addr } => {
+                self.handle_join(connection, addr).await;
+            }
+            Message::ClusterView { members } => {
+                self.handle_cluster_view(members).await;
+            }
+            _ => todo!(),
         }
+
+        Ok(())
     }
 
-    async fn run(&mut self) -> AppResult<()> {
+    /// Main async event loop for any node role (Leader / Replica / Station-backed node).
+    async fn run(
+        &mut self,
+        mut connection: Connection,
+        mut actor_rx: Receiver<ActorEvent>,
+        mut station: Station,
+    ) -> AppResult<()> {
         use tokio::time::{interval, Instant};
         let mut check = interval(Duration::from_millis(100));
         let liveness_threshold = Duration::from_millis(300);
-        // timer of last received message
         let mut last_seen = Instant::now();
-        todo!();
 
         loop {
             select! {
@@ -206,40 +319,49 @@ pub trait Node {
                 _ = check.tick() => {
                     let elapsed = last_seen.elapsed();
                     if elapsed >= liveness_threshold {
-                        // If it's been a while since we saw messages, start election
-                        // (start_election should be non-blocking or spawn its own task)
-                        self.start_election().await;
-                        // update last_seen to avoid continuous restarts
+                        self.start_election(&mut connection).await;
                         last_seen = Instant::now();
                     }
                 }
-                node_msg = self.recv_node_msg() =>{
+
+                // === Node-to-node messages (Raft / Bully / Cluster membership) ===
+                node_msg = connection.recv() => {
                     match node_msg {
                         Ok(msg) => {
-                            self.handle_node_msg(msg).await;
+                            last_seen = Instant::now();
+                            self.handle_node_msg(&mut connection, msg).await;
                         }
-                        _ => { todo!(); }
+                        Err(_e) => {
+                            // TODO: manejar errores de red si querés algo más fino
+                        }
                     }
                 }
-                pump_msg = self.recv_station_message() =>{
+
+                // === Station (pump simulator) messages ===
+                pump_msg = station.recv() => {
                     match pump_msg {
                         Some(msg) => {
-                            self.handle_station_msg(msg).await;
+                            self.handle_station_msg(&mut connection, &mut station, msg).await;
                         }
-                        None => { todo!(); }
+                        None => {
+                            // Station side closed its channel.
+                            todo!();
+                        }
                     }
                 }
-                actor_evt = self.recv_actor_event() => {
+
+                // === Actor events (OperationResult, etc.) ===
+                actor_evt = actor_rx.recv() => {
                     match actor_evt {
                         Some(evt) => {
-                            self.handle_actor_event(evt).await;
+                            self.handle_actor_event(&mut connection, &mut station, evt).await;
                         }
-                        None => { todo!(); }
+                        None => {
+                            // Actor system stopped; for now, we treat it as a fatal condition.
+                            todo!();
+                        }
                     }
                 }
-                // station_msg = self.recv_actor_event() =>{
-                //     // TODO
-                // }
             }
         }
     }

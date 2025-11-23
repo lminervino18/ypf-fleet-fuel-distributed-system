@@ -1,31 +1,6 @@
-//! Station (pump) simulation module.
-//!
-//! This module simulates a YPF Ruta station with a set of pumps:
-//! - Reads commands from stdin,
-//! - For each command, selects a pump, account, card, and amount,
-//! - Sends a single logical "charge request" to the Node,
-//! - Receives a single result "allowed or not" from the Node,
-//! - Enforces that each pump can only have **one in-flight operation** at a time.
-//!
-//! Command format (one per line):
-//!   <pump_id> <account_id> <card_id> <amount>
-//!
-//! Examples:
-//!   0 1 10 50.0
-//!   1 2 20 150.25
-//!
-//! Special commands (typed on stdin):
-//!   help        -> Print usage instructions
-//!   quit        -> Stop the simulator
-//!   exit        -> Stop the simulator
-//!   disconnect  -> Ask the node to switch into "offline" mode
-//!   connect     -> Ask the node to switch back into "online" mode
-//!
-//! If a pump already has a pending operation, new commands for that pump
-//! are rejected until the previous one finishes.
-
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use std::collections::HashMap;
 
@@ -33,64 +8,39 @@ use crate::errors::{AppError, AppResult, VerifyError};
 
 /// Message sent from the Station (pumps) to the Node.
 ///
-/// The Station only knows about a **single logical operation**: "charge".
-/// Internally, the Node may perform multi-step work (check limit, apply charge, etc.),
-/// but that is abstracted away from the Station.
-///
-/// In addition, the Station can send connectivity-related commands
-/// (`ConnectNode` / `DisconnectNode`) to instruct the node to change
-/// its connectivity mode.
+/// Same abstraction as before:
+/// - it only knows about the logical "charge" operation,
+/// - plus connect / disconnect commands.
 #[derive(Debug)]
 pub enum StationToNodeMsg {
-    /// Request to perform a charge coming from a specific pump.
-    ///
-    /// The Node must:
-    /// - Check limits (card + account),
-    /// - If allowed, apply the charge,
-    /// - Reply back with a `ChargeResult`.
+    /// Charge request from a pump.
     ChargeRequest {
         pump_id: usize,
         account_id: u64,
         card_id: u64,
         amount: f32,
-        request_id: u64,
+        request_id: u32,
     },
 
-    /// Request from the station console to put the node into "offline" mode.
-    ///
-    /// In offline mode, the node:
-    /// - stops actually participating in the distributed protocol / network
-    ///   (implementation detail),
-    /// - may enqueue pump operations and immediately acknowledge them as OK.
+    /// Ask the node to switch to OFFLINE mode.
     DisconnectNode,
 
-    /// Request from the station console to put the node back into "online" mode.
-    ///
-    /// In online mode, the node:
-    /// - resumes normal participation in the distributed protocol,
-    /// - sends pump-originated operations to the actor layer again.
+    /// Ask the node to switch back to ONLINE mode.
     ConnectNode,
 }
 
-/// Message sent from the Node to the Station (pumps).
-///
-/// This abstracts the whole flow as:
-/// - a single result for a charge operation, or
-/// - a debug/diagnostic message.
+/// Message sent from the Node back to the Station.
 #[derive(Debug)]
 pub enum NodeToStationMsg {
     /// Final result of a charge request.
     ChargeResult {
-        request_id: u64,
+        request_id: u32,
         allowed: bool,
-        /// Optional reason if `allowed == false`.
+        /// Optional error when `allowed == false`.
         error: Option<VerifyError>,
     },
 
-    /// Generic debug / informational message from the node.
-    ///
-    /// For example, it can be used to inform the user that the node
-    /// switched to offline/online mode.
+    /// Informational / debug messages from the node.
     Debug(String),
 }
 
@@ -101,22 +51,95 @@ struct PumpRequest {
     account_id: u64,
     card_id: u64,
     amount: f32,
-    request_id: u64,
+    request_id: u32,
 }
 
-/// Run the station simulator.
+/// Parsed user command (from stdin) before assigning `request_id`.
+#[derive(Debug)]
+struct ParsedCommand {
+    pump_id: usize,
+    account_id: u64,
+    card_id: u64,
+    amount: f32,
+}
+
+/// High-level wrapper that encapsulates the station simulator.
 ///
-/// - `num_pumps`: How many pumps are available (pump IDs go from `0` to `num_pumps - 1`).
-/// - `to_node_tx`: Channel Station → Node.
-/// - `from_node_rx`: Channel Node → Station.
+/// - Internally runs an async task that calls `run_station_simulator`.
+/// - Exposes only `start()`, `recv()` and `send()` to the outside.
+pub struct Station {
+    /// Messages coming from the station simulator to the node (the node calls `recv()`).
+    from_station_rx: mpsc::Receiver<StationToNodeMsg>,
+    /// Messages that the node sends back to the station (the node calls `send()`).
+    to_station_tx: mpsc::Sender<NodeToStationMsg>,
+    /// Handle of the background task. It is kept alive while `Station` is in scope.
+    _task: JoinHandle<()>,
+}
+
+impl Station {
+    /// Start the simulated station with `num_pumps` pumps.
+    ///
+    /// Spawns a task that:
+    /// - reads stdin,
+    /// - emits `StationToNodeMsg` for the node,
+    /// - consumes `NodeToStationMsg` coming from the node.
+    pub async fn start(num_pumps: usize) -> AppResult<Self> {
+        // Channel Station -> Node (from simulator task to the caller).
+        let (station_to_node_tx, station_to_node_rx) = mpsc::channel::<StationToNodeMsg>(128);
+
+        // Channel Node -> Station (from caller to the simulator task).
+        let (node_to_station_tx, node_to_station_rx) = mpsc::channel::<NodeToStationMsg>(128);
+
+        // Spawn the task that runs the real simulator.
+        let task = tokio::spawn(async move {
+            let _ = run_station_simulator(num_pumps, station_to_node_tx, node_to_station_rx).await;
+        });
+
+        Ok(Self {
+            from_station_rx: station_to_node_rx,
+            to_station_tx: node_to_station_tx,
+            _task: task,
+        })
+    }
+
+    /// Receive a logical message from the station simulator.
+    ///
+    /// The node typically uses it inside a `select!`:
+    ///
+    pub async fn recv(&mut self) -> Option<StationToNodeMsg> {
+        self.from_station_rx.recv().await
+    }
+
+    /// Send a result or debug message to the station simulator.
+    ///
+    /// If the channel is closed, returns `AppError::Channel`.
+    pub async fn send(&self, msg: NodeToStationMsg) -> AppResult<()> {
+        self.to_station_tx
+            .send(msg)
+            .await
+            .map_err(|e| AppError::Channel {
+                details: format!("failed to send NodeToStationMsg: {e}"),
+            })
+    }
+}
+
+impl Drop for Station {
+    /// When `Station` goes out of scope, abort the background task.
+    fn drop(&mut self) {
+        self._task.abort();
+    }
+}
+
+/// Main function of the station simulator.
 ///
-/// The function returns when:
-/// - Stdin reaches EOF, or
-/// - The user types `quit` / `exit`, or
-/// - The `from_node_rx` channel is closed.
-pub async fn run_station_simulator(
+/// - Reads commands from stdin.
+/// - Sends `StationToNodeMsg` to the node.
+/// - Receives `NodeToStationMsg` from the node.
+///
+/// It is private to the module: only used by the task created in `Station::start`.
+async fn run_station_simulator(
     num_pumps: usize,
-    mut to_node_tx: mpsc::Sender<StationToNodeMsg>,
+    to_node_tx: mpsc::Sender<StationToNodeMsg>,
     mut from_node_rx: mpsc::Receiver<NodeToStationMsg>,
 ) -> AppResult<()> {
     if num_pumps == 0 {
@@ -134,14 +157,14 @@ pub async fn run_station_simulator(
     let stdin = BufReader::new(io::stdin());
     let mut lines = stdin.lines();
 
-    // For each pump: None = idle, Some(request_id) = busy with that request
-    let mut in_flight_by_pump: Vec<Option<u64>> = vec![None; num_pumps];
+    // For each pump: None = idle, Some(request_id) = busy.
+    let mut in_flight_by_pump: Vec<Option<u32>> = vec![None; num_pumps];
 
-    // Map request_id -> PumpRequest, so we can match NodeToStation responses
-    let mut requests: HashMap<u64, PumpRequest> = HashMap::new();
+    // request_id -> PumpRequest
+    let mut requests: HashMap<u32, PumpRequest> = HashMap::new();
 
-    // Simple monotonic counter for request IDs
-    let mut next_request_id: u64 = 1;
+    // Monotonic counter for request IDs
+    let mut next_request_id: u32 = 1;
 
     loop {
         let line_fut = lines.next_line();
@@ -170,24 +193,20 @@ pub async fn run_station_simulator(
                         }
 
                         if line.eq_ignore_ascii_case("disconnect") {
-                            // Ask the node to switch into offline mode.
                             let msg = StationToNodeMsg::DisconnectNode;
                             if let Err(e) = to_node_tx.send(msg).await {
                                 eprintln!(
-                                    "[Station][to-node][ERROR] Failed to send DisconnectNode: {}",
-                                    e
+                                    "[Station][to-node][ERROR] Failed to send DisconnectNode: {e}"
                                 );
                             }
                             continue;
                         }
 
                         if line.eq_ignore_ascii_case("connect") {
-                            // Ask the node to switch back to online mode.
                             let msg = StationToNodeMsg::ConnectNode;
                             if let Err(e) = to_node_tx.send(msg).await {
                                 eprintln!(
-                                    "[Station][to-node][ERROR] Failed to send ConnectNode: {}",
-                                    e
+                                    "[Station][to-node][ERROR] Failed to send ConnectNode: {e}"
                                 );
                             }
                             continue;
@@ -201,8 +220,7 @@ pub async fn run_station_simulator(
                             &mut next_request_id,
                         ) {
                             Ok(Some(req_id)) => {
-                                // Copy necessary data to local variables
-                                // to avoid holding a borrow of `requests` during the await.
+                                // Copy local data so we don't hold a borrow on `requests` during `await`.
                                 let (pump_id, account_id, card_id, amount, request_id) =
                                     match requests.get(&req_id) {
                                         Some(req) => (
@@ -214,10 +232,9 @@ pub async fn run_station_simulator(
                                         ),
                                         None => {
                                             println!(
-                                                "[Station][INTERNAL] request_id={} not found right after creation",
-                                                req_id
+                                                "[Station][INTERNAL] request_id={req_id} not found right after creation"
                                             );
-                                            // For safety, free the pump if it was marked
+                                            // For safety, free the pump if it was marked.
                                             for slot in &mut in_flight_by_pump {
                                                 if *slot == Some(req_id) {
                                                     *slot = None;
@@ -229,8 +246,7 @@ pub async fn run_station_simulator(
                                     };
 
                                 println!(
-                                    "[Station] pump={} -> ChargeRequest(account={}, card={}, amount={}, request_id={})",
-                                    pump_id, account_id, card_id, amount, request_id
+                                    "[Station] pump={pump_id} -> ChargeRequest(account={account_id}, card={card_id}, amount={amount}, request_id={request_id})"
                                 );
 
                                 let msg = StationToNodeMsg::ChargeRequest {
@@ -243,19 +259,18 @@ pub async fn run_station_simulator(
 
                                 if let Err(e) = to_node_tx.send(msg).await {
                                     eprintln!(
-                                        "[Station][to-node][ERROR] Failed to send ChargeRequest: {}",
-                                        e
+                                        "[Station][to-node][ERROR] Failed to send ChargeRequest: {e}"
                                     );
-                                    // Rollback: free pump and remove request
+                                    // Rollback: free pump and remove request.
                                     in_flight_by_pump[pump_id] = None;
                                     requests.remove(&request_id);
                                 }
                             }
                             Ok(None) => {
-                                // No request created
+                                // No new request created (e.g. parse error already logged).
                             }
                             Err(e) => {
-                                eprintln!("[Station][input][ERROR] {}", e);
+                                eprintln!("[Station][input][ERROR] {e}");
                             }
                         }
                     }
@@ -264,14 +279,14 @@ pub async fn run_station_simulator(
                         break;
                     }
                     Err(e) => {
-                        eprintln!("[Station][input][ERROR] Failed to read line: {}", e);
-                        // keep looping
+                        eprintln!("[Station][input][ERROR] Failed to read line: {e}");
+                        // Continue loop.
                     }
                 }
             }
 
             // ========================
-            // Node → Station events (responses)
+            // Node → Station (responses)
             // ========================
             maybe_evt = event_fut => {
                 match maybe_evt {
@@ -291,7 +306,7 @@ pub async fn run_station_simulator(
     Ok(())
 }
 
-/// Print usage instructions for the simulator.
+/// Print usage instructions for the station simulator.
 fn print_help() {
     println!();
     println!("=== Station / pump simulator commands ===");
@@ -308,15 +323,6 @@ fn print_help() {
     println!("  disconnect     # ask the node to switch into OFFLINE mode");
     println!("  connect        # ask the node to switch back into ONLINE mode");
     println!();
-}
-
-/// Parsed user command, before assigning request_id.
-#[derive(Debug)]
-struct ParsedCommand {
-    pump_id: usize,
-    account_id: u64,
-    card_id: u64,
-    amount: f32,
 }
 
 /// Parse a user command line into a `ParsedCommand`.
@@ -361,31 +367,26 @@ fn parse_command(line: &str, num_pumps: usize) -> Result<ParsedCommand, String> 
     })
 }
 
-/// Handle a single user command line.
-///
-/// This function:
-/// - Parses `<pump_id> <account_id> <card_id> <amount>`,
-/// - Checks if the pump is idle,
-/// - Allocates a new `request_id`,
-/// - Registers the `PumpRequest` and marks the pump as busy.
-///
-/// It **does not** send anything to the Node; that is done by the caller
-/// (so we can `await` on the channel send).
+/// Handle a single user command:
+/// - parse,
+/// - check that the pump is idle,
+/// - allocate a `request_id`,
+/// - register the `PumpRequest` and mark the pump as busy.
 ///
 /// Returns:
 /// - `Ok(Some(request_id))` if a new request was created,
 /// - `Ok(None)` if nothing was created,
-/// - `Err(String)` on validation/parsing error.
+/// - `Err(String)` if there was a parse/validation error.
 fn handle_user_command(
     line: &str,
     num_pumps: usize,
-    in_flight_by_pump: &mut [Option<u64>],
-    requests: &mut HashMap<u64, PumpRequest>,
-    next_request_id: &mut u64,
-) -> Result<Option<u64>, String> {
+    in_flight_by_pump: &mut [Option<u32>],
+    requests: &mut HashMap<u32, PumpRequest>,
+    next_request_id: &mut u32,
+) -> Result<Option<u32>, String> {
     let parsed = parse_command(line, num_pumps)?;
 
-    // Check if the pump is already busy
+    // Check if the pump is already busy.
     if let Some(existing_req) = in_flight_by_pump[parsed.pump_id] {
         return Err(format!(
             "Pump {} is busy with request_id {}. Wait for the result before sending another command.",
@@ -393,11 +394,11 @@ fn handle_user_command(
         ));
     }
 
-    // Allocate a new request_id
+    // Allocate a new request_id.
     let request_id = *next_request_id;
     *next_request_id += 1;
 
-    // Register the request
+    // Register the request.
     requests.insert(
         request_id,
         PumpRequest {
@@ -409,21 +410,17 @@ fn handle_user_command(
         },
     );
 
-    // Mark pump as busy
+    // Mark pump as busy.
     in_flight_by_pump[parsed.pump_id] = Some(request_id);
 
     Ok(Some(request_id))
 }
 
-/// Handle a `NodeToStationMsg` coming back from the Node.
-///
-/// This is a **single-step** result for charges:
-/// - The Node already did the authorization and (if allowed) the charge.
-/// For debug messages, we simply print them.
+/// Handle a `NodeToStationMsg` coming from the node.
 fn handle_node_event(
     msg: NodeToStationMsg,
-    in_flight_by_pump: &mut [Option<u64>],
-    requests: &mut HashMap<u64, PumpRequest>,
+    in_flight_by_pump: &mut [Option<u32>],
+    requests: &mut HashMap<u32, PumpRequest>,
 ) {
     match msg {
         NodeToStationMsg::ChargeResult {
@@ -431,11 +428,10 @@ fn handle_node_event(
             allowed,
             error,
         } => {
-            // Find original request
+            // Find original request.
             let Some(req) = requests.remove(&request_id) else {
                 println!(
-                    "[Station][WARN] Received ChargeResult for unknown request_id={}",
-                    request_id
+                    "[Station][WARN] Received ChargeResult for unknown request_id={request_id}"
                 );
                 return;
             };
@@ -454,12 +450,12 @@ fn handle_node_event(
                 );
             }
 
-            // Free pump
+            // Free pump.
             in_flight_by_pump[pump_id] = None;
         }
 
         NodeToStationMsg::Debug(text) => {
-            println!("[Station][DEBUG] {}", text);
+            println!("[Station][DEBUG] {text}");
         }
     }
 }

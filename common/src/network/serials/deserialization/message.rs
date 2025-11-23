@@ -1,7 +1,8 @@
+use crate::Message;
+use crate::Message::*;
+use crate::errors::AppError;
 use crate::errors::AppResult;
-use crate::node::message::Message::*;
-use crate::node::network::serials::protocol::*;
-use crate::{errors::AppError, node::message::Message};
+use crate::network::serials::protocol::*;
 use std::net::SocketAddr;
 
 impl TryFrom<Vec<u8>> for Message {
@@ -66,7 +67,11 @@ fn deserialize_request_message(payload: &[u8]) -> AppResult<Message> {
     let addr = deserialize_socket_address_srl(&payload[ptr..])?;
     ptr += SOCKET_ADDR_LEN;
     let op = payload[ptr..].try_into()?;
-    Ok(Request { op_id, addr, op })
+    Ok(Request {
+        req_id: op_id,
+        addr,
+        op,
+    })
 }
 
 fn deserialize_log_message(payload: &[u8]) -> AppResult<Message> {
@@ -85,7 +90,7 @@ fn deserialize_ack_message(payload: &[u8]) -> AppResult<Message> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::node::operation::Operation;
+    use crate::operation::Operation;
 
     #[test]
     fn test_deserialize_valid_op_id_srl() {
@@ -109,7 +114,7 @@ mod test {
     #[test]
     fn test_deserialize_request_message() {
         let msg = Message::Request {
-            op_id: 15936,
+            req_id: 15936,
             op: Operation::Charge {
                 account_id: 15000,
                 card_id: 8934,

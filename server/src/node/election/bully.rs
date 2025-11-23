@@ -1,4 +1,4 @@
-use crate::node::message::Message;
+use common::Message;
 use std::net::SocketAddr;
 
 /// Bully algorithm helper
@@ -11,10 +11,10 @@ pub struct Bully {
     pub received_ok: bool,
 }
 
-use std::sync::Arc;
+use common::Connection;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::Mutex;
-use crate::node::network::Connection;
 
 /// Conduct a Bully election: sends Election to higher-ID peers,
 /// waits for replies, and promotes to coordinator if no ElectionOk received.
@@ -53,7 +53,10 @@ pub async fn conduct_election(
     const WINDOW_MS: u64 = 200;
     tokio::time::sleep(std::time::Duration::from_millis(WINDOW_MS)).await;
 
-    let got_ok = { let b = bully.lock().await; b.received_ok };
+    let got_ok = {
+        let b = bully.lock().await;
+        b.received_ok
+    };
     if !got_ok {
         // become coordinator/leader (no higher process responded)
         // println!("[Bully ID={}] No ElectionOk received, becoming coordinator", id);
@@ -62,7 +65,10 @@ pub async fn conduct_election(
 
         // Announce to ALL peers
         let all_peers: Vec<SocketAddr> = peer_ids.values().copied().collect();
-        let coordinator_msg = Message::Coordinator { leader_id: id, leader_addr: address };
+        let coordinator_msg = Message::Coordinator {
+            leader_id: id,
+            leader_addr: address,
+        };
         for p in &all_peers {
             let _ = connection.send(coordinator_msg.clone(), p).await;
         }
@@ -101,7 +107,7 @@ impl Bully {
     }
 
     /// Handle an OK reply to our election request.
-    pub fn on_election_ok(&mut self, responder_id: u64) {
+    pub fn on_election_ok(&mut self, _responder_id: u64) {
         // Record that at least one higher process is alive.
         self.received_ok = true;
     }
@@ -127,7 +133,7 @@ impl Bully {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::network::Connection;
+    use common::Connection;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     #[test]

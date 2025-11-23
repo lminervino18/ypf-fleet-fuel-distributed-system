@@ -55,7 +55,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::node::message::Message;
+    use crate::Message;
     use tokio::{
         io::AsyncWriteExt,
         net::{TcpListener, TcpStream},

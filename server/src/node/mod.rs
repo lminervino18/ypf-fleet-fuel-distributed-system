@@ -1,12 +1,9 @@
 mod actors;
-mod leader;
-mod message;
-mod network;
 mod election;
+mod leader;
 mod node;
-mod operation;
+mod pending_operatoin;
 mod replica;
-mod station;
 mod test;
 mod utils;
 

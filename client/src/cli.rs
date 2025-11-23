@@ -1,10 +1,12 @@
-use clap::Parser;
 use crate::commands::Commands;
 
 // center of Argentina
 const DEFAULT_COORD_LAT: f64 = -34.6989;
 const DEFAULT_COORD_LON: f64 = -64.7597;
 const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:9000";
+use clap::Parser;
+use common::operation::Operation;
+use std::io::{Read, Write};
 
 /// YPF client
 #[derive(Parser, Debug)]
@@ -55,9 +57,20 @@ impl Cli {
         Ok(tcp_stream)
     }
 
-    pub fn send_command(&self, _tcp_stream: &mut std::net::TcpStream) -> anyhow::Result<()> {
+    pub fn send_command(&self, tcp_stream: &mut std::net::TcpStream) -> anyhow::Result<()> {
         println!("[CLIENT] sending command: {:?}", self.command);
-        // Here you would serialize the command and send it over the tcp_stream
+        let op = Operation::from(self.command.clone());
+        let op_srl: Vec<u8> = op.into();
+        println!("[CLIENT] serialized operation: {op_srl:?}");
+        tcp_stream
+            .write_all(&op_srl)
+            .map_err(|e| anyhow::anyhow!("failed to send operation to server: {e}"))?;
+
+        let mut buf = [0u8; 1024];
+        tcp_stream
+            .read(&mut buf)
+            .map_err(|e| anyhow::anyhow!("failed to read response from server: {e}"))?;
+
         Ok(())
     }
 }
@@ -160,18 +173,8 @@ mod tests {
         let args = vec!["ypf_client", "query-account"];
         let cli = Cli::parse_from(args);
         match cli.command {
-            Commands::QueryAccount => {}
+            Commands::AccountQuery => {}
             _ => panic!("Expected QueryAccount command"),
-        }
-    }
-
-    #[test]
-    fn test_cli_parsing_query_cards() {
-        let args = vec!["ypf_client", "query-cards"];
-        let cli = Cli::parse_from(args);
-        match cli.command {
-            Commands::QueryCards => {}
-            _ => panic!("Expected QueryCards command"),
         }
     }
 
