@@ -1,6 +1,6 @@
-use crate::node::network::serials::protocol::*;
-use crate::node::operation::Operation;
-use crate::node::operation::Operation::*;
+use crate::network::serials::protocol::*;
+use crate::operation::Operation;
+use crate::operation::Operation::*;
 
 impl From<Operation> for Vec<u8> {
     fn from(op: Operation) -> Self {

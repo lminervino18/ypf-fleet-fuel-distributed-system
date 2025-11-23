@@ -8,7 +8,7 @@ use crate::node::actors::messages::{
 
 use super::account::AccountActor;
 use super::card::CardActor;
-use crate::node::operation::Operation;
+use common::operation::Operation;
 
 /// Router actor that owns and routes to AccountActor and CardActor instances.
 ///

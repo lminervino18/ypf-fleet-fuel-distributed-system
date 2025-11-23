@@ -1,4 +1,4 @@
-use super::operation::Operation;
+use crate::operation::Operation;
 use std::net::SocketAddr;
 
 /// Messages sent between nodes.
@@ -14,16 +14,11 @@ pub enum Message {
     },
 
     /// Log message sent by coordinator to the replicas.
-    Log {
-        op_id: u32,
-        op: Operation,
-    },
+    Log { op_id: u32, op: Operation },
 
     /// Acknowledgement reply sent by a replica after receiving a valid `Log` message
     /// from the coordinator.
-    Ack {
-        op_id: u32,
-    },
+    Ack { op_id: u32 },
 
     /* Leader election (bully) */
     /// Election message sent by a candidate to notify peers.
@@ -50,17 +45,12 @@ pub enum Message {
     /// Typically sent by a replica to the (assumed) leader when it starts up,
     /// so the leader can register it in the membership view and reply with
     /// the current cluster state.
-    Join {
-        node_id: u64,
-        addr: SocketAddr,
-    },
+    Join { node_id: u64, addr: SocketAddr },
 
     /// Snapshot of the current cluster membership.
     ///
     /// Used by the leader to inform nodes about all known members (IDs + addresses),
     /// so each node can build a consistent view of the cluster and use it for
     /// leader election, replication, etc.
-    ClusterView {
-        members: Vec<(u64, SocketAddr)>,
-    },
+    ClusterView { members: Vec<(u64, SocketAddr)> },
 }

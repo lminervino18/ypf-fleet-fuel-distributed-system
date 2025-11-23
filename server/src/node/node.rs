@@ -1,7 +1,7 @@
-use super::network::Connection;
-use super::{actors::ActorEvent, message::Message, operation::Operation};
+use super::actors::ActorEvent;
 use crate::errors::{AppResult, VerifyError};
-use common::{Station, StationToNodeMsg};
+use common::operation::Operation;
+use common::{Connection, Message, Station, StationToNodeMsg};
 use std::net::SocketAddr;
 use tokio::select;
 use tokio::sync::mpsc::Receiver;
