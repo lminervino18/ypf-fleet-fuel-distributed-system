@@ -3,17 +3,6 @@
 /// Used between:
 /// - Station ↔ Leader/Replica ↔ ActorRouter
 /// - ActorRouter ↔ AccountActor / CardActor
-///
-/// These operations are purely business-level, but they also carry
-/// a small piece of metadata:
-///
-/// - `from_offline_station`: whether the operation *originated* while
-///   the station/node was in "offline" mode.
-///
-/// This flag allows the actor layer (and logging) to distinguish:
-/// - "live" online traffic from the pumps,
-/// - replay or reconciliation of operations that were accepted while
-///   the node was offline.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
     /// Charge an amount to a card (affects card + account).
@@ -36,9 +25,7 @@ pub enum Operation {
     ///
     /// Fields:
     /// - `account_id`: target account,
-    /// - `new_limit`: new account-wide limit (`None` means "no limit"),
-    /// - `from_offline_station`: true if this limit change was originated
-    ///   while the station/node was offline (for example, a replay).
+    /// - `new_limit`: new account-wide limit (`None` means "no limit").
     LimitAccount {
         account_id: u64,
         new_limit: Option<f32>,
@@ -49,13 +36,20 @@ pub enum Operation {
     /// Fields:
     /// - `account_id`: account that owns the card,
     /// - `card_id`: card identifier inside that account,
-    /// - `new_limit`: new per-card limit (`None` means "no limit"),
-    /// - `from_offline_station`: true if this limit change comes from
-    ///   an operation originally accepted in offline mode.
+    /// - `new_limit`: new per-card limit (`None` means "no limit").
     LimitCard {
         account_id: u64,
         card_id: u64,
         new_limit: Option<f32>,
+    },
+
+    /// Query current consumption for an account.
+    ///
+    /// The response will contain:
+    /// - total consumption of the account,
+    /// - a per-card breakdown (card_id -> consumption).
+    AccountQuery {
+        account_id: u64,
     },
 }
 

@@ -10,18 +10,22 @@ pub enum Message {
      ***/
     /// Operation request sent by the clients (station/admins).
     Request {
-        req_id: u32, // TODO: la op_id la debería crear el líder, no tiene sentido q vaya en la
-        // request
+        // La request ya lleva la Operation adentro
+        req_id: u32,
         op: Operation,
         addr: SocketAddr,
     },
 
     /// Operation response sent by the leader to the client.
+    ///
+    /// El resultado ahora es un `OperationResult`, que matchea con la
+    /// `Operation` original. Ejemplos:
+    /// - si la op era `Charge`, será `OperationResult::Charge(ChargeResult)`
+    /// - si la op era `AccountQuery`, será `OperationResult::AccountQuery(...)`
     Response {
         req_id: u32,
-        // result: OperationResult,
-        result: Option<VerifyError>,
-    }, // TODO
+        result: OperationResult,
+    },
 
     /* Raft
      ***/
@@ -58,23 +62,16 @@ pub enum Message {
 
     /* Cluster membership / discovery */
     /// A node asks to join the cluster.
-    ///
-    /// Typically sent by a replica to the (assumed) leader when it starts up,
-    /// so the leader can register it in the membership view and reply with
-    /// the current cluster state.
     Join {
         addr: SocketAddr,
     },
 
     /// Snapshot of the current cluster membership.
-    ///
-    /// Used by the leader to inform nodes about all known members (IDs + addresses),
-    /// so each node can build a consistent view of the cluster and use it for
-    /// leader election, replication, etc.
     ClusterView {
         members: Vec<(u64, SocketAddr)>,
     },
 
+    /// Notificación incremental de un nuevo miembro.
     ClusterUpdate {
         new_member: (u64, SocketAddr),
     },

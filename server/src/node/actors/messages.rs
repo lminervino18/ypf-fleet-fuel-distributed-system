@@ -1,28 +1,24 @@
 use actix::prelude::*;
+use std::collections::HashMap;
 
 use crate::errors::VerifyError;
 use common::operation::Operation;
+use common::operation_result::OperationResult;
 
 /// Events sent by the ActorRouter to the Node.
 ///
-/// The router exposes a single high-level result:
-/// the outcome of executing a complete business operation
-/// (verification + state changes).
+/// Ahora incluye un `OperationResult` de alto nivel que matchea con
+/// la `Operation` original (Charge / LimitAccount / LimitCard / AccountQuery).
 #[derive(Debug, Clone)]
 pub enum ActorEvent {
     /// Final outcome for a given operation.
-    ///
-    /// - `success == true`  → all checks passed and state was updated,
-    ///   or the operation came from an offline station and was applied
-    ///   unconditionally by design.
-    /// - `success == false` → some business rule failed for an ONLINE
-    ///   operation; from the Node perspective the operation is rejected.
     OperationResult {
         op_id: u32,
         operation: Operation,
+        result: OperationResult,
+        /// Para compat con el código actual del nodo; se puede ir
+        /// eliminando cuando uses solo `OperationResult`.
         success: bool,
-        /// Domain/business error, if any (limits, invalid updates, etc.).
-        /// For offline-replayed charges this will always be `None`.
         error: Option<VerifyError>,
     },
 
@@ -31,22 +27,10 @@ pub enum ActorEvent {
 }
 
 /// Requests sent by the Node to the ActorRouter.
-///
-/// The Node no longer performs a separate Verify/Apply protocol.
-/// Instead, it asks the router to *execute* a full operation:
-/// the router will validate invariants and apply the state changes
-/// if allowed, and then return a single `OperationResult`.
 #[derive(Debug, Clone, Message)]
 #[rtype(result = "()")]
 pub enum RouterCmd {
     /// Execute a complete business operation.
-    ///
-    /// For `Operation::Charge` this includes:
-    /// - card-level limit checks in CardActor (unless
-    ///   `from_offline_station == true`),
-    /// - account-level limit checks in AccountActor (unless
-    ///   `from_offline_station == true`),
-    /// - applying card + account consumption.
     Execute { op_id: u32, operation: Operation },
 
     /// Debug / introspection of the router.
@@ -55,61 +39,53 @@ pub enum RouterCmd {
 
 /// Messages handled by AccountActor.
 ///
-/// These are "low-level" operations relative to the Node, but from the
-/// router's point of view they are internal implementation details.
-///
-/// For charges:
-/// - CardActor sends `ApplyChargeFromCard` to AccountActor.
-/// - AccountActor:
-///     * if `from_offline_station == false`:
-///         - verifies account-wide limits,
-///         - applies the change if allowed,
-///     * if `from_offline_station == true`:
-///         - **skips all limit checks** and unconditionally applies,
-/// - then replies back to the card via `AccountChargeReply`.
-///
-/// For account limit changes:
-/// - Router sends `ApplyAccountLimit` directly to AccountActor.
-/// - AccountActor verifies + applies, then notifies the router via
-///   `RouterInternalMsg::OperationCompleted`.
+/// Flujos:
+/// - Charges:
+///     CardActor → AccountActor → AccountChargeReply → CardActor.
+/// - Account limit changes:
+///     Router → AccountActor → RouterInternalMsg::OperationCompleted.
+/// - Account queries:
+///     Router → AccountActor::StartAccountQuery
+///          → Router envía CardMsg::QueryCardState a todas las cards
+///          → CardActor → AccountActor::CardQueryReply (una por tarjeta)
+///          → AccountActor → RouterInternalMsg::AccountQueryCompleted
 #[derive(Debug, Clone, Message)]
 #[rtype(result = "()")]
 pub enum AccountMsg {
     /// Charge requested by a specific card.
-    ///
-    /// The account must:
-    /// 1) if `from_offline_station == false`:
-    ///       - verify account-wide limits for the charge,
-    ///       - apply the charge to its own state if allowed,
-    ///    if `from_offline_station == true`:
-    ///       - skip all limit checks and apply unconditionally,
-    /// 2) reply to the card via `reply_to`.
     ApplyChargeFromCard {
         op_id: u32,
         amount: f32,
         card_id: u64,
-        /// Whether this charge comes from an offline-station replay.
-        /// If true, the AccountActor will skip all limit checks and
-        /// always apply the charge.
         from_offline_station: bool,
-        /// Where the account will send the result of this charge.
         reply_to: Recipient<AccountChargeReply>,
     },
 
     /// Request to change the account-wide limit.
-    ///
-    /// The account must:
-    /// 1) verify that `new_limit` is not below already consumed usage,
-    /// 2) apply the new limit if allowed,
-    /// 3) notify the router via `RouterInternalMsg::OperationCompleted`.
     ApplyAccountLimit { op_id: u32, new_limit: Option<f32> },
+
+    /// Inicio de un query de cuenta.
+    ///
+    /// `num_cards` indica cuántas tarjetas se van a consultar; la Account
+    /// espera exactamente esa cantidad de `CardQueryReply` antes de
+    /// responderle al Router.
+    StartAccountQuery {
+        op_id: u32,
+        num_cards: usize,
+    },
+
+    /// Respuesta de una tarjeta a un query de cuenta.
+    ///
+    /// Cada CardActor responde con su consumo actual, y la Account
+    /// va acumulando hasta tener las `num_cards` esperadas.
+    CardQueryReply {
+        op_id: u32,
+        card_id: u64,
+        consumed: f32,
+    },
 }
 
 /// Reply from AccountActor back to CardActor for a specific charge.
-///
-/// This is used so that the card can finish the operation (by updating
-/// its own local state) and then notify the router that the whole
-/// charge (card + account) has completed.
 #[derive(Debug, Clone, Message)]
 #[rtype(result = "()")]
 pub struct AccountChargeReply {
@@ -119,22 +95,6 @@ pub struct AccountChargeReply {
 }
 
 /// Messages handled by CardActor.
-///
-/// From the Node’s perspective there is only a single high-level
-/// `Operation::Charge` or `Operation::LimitCard`, but internally we
-/// map them to:
-///
-/// - `ExecuteCharge`: card-level execution of a charge, including:
-///   * local limit checks (card),
-///   * sending a request to the account,
-///   * applying card state after account confirms.
-///   When `from_offline_station == true`, **all limit checks are
-///   skipped**; the charge is treated as already confirmed and must
-///   be applied.
-/// - `ExecuteLimitChange`: change the limit of this card only.
-///
-/// The card will report final outcomes back to the router via
-/// `RouterInternalMsg::OperationCompleted`.
 #[derive(Debug, Clone, Message)]
 #[rtype(result = "()")]
 pub enum CardMsg {
@@ -144,38 +104,39 @@ pub enum CardMsg {
         account_id: u64,
         card_id: u64,
         amount: f32,
-        /// Whether this charge originates from a previously OFFLINE
-        /// station. If true, CardActor will skip card-level limit
-        /// checks and forward it to AccountActor as an offline replay.
         from_offline_station: bool,
     },
 
     /// Execute a card-limit change.
     ExecuteLimitChange { op_id: u32, new_limit: Option<f32> },
 
+    /// Query this card's current consumption (used by account queries).
+    QueryCardState {
+        op_id: u32,
+        account_id: u64,
+    },
+
     /// Generic debug / diagnostic for the card.
     Debug(String),
 }
 
 /// Internal messages from AccountActor/CardActor to ActorRouter.
-///
-/// The router receives *completed* operations (from the card or the
-/// account) and turns them into `ActorEvent::OperationResult` for the
-/// Node.
-///
-/// Semantics:
-/// - `success == true` and `error == None` → operation applied correctly
-///   (either via normal checks or as an offline replay).
-/// - `success == false` → business failure for an ONLINE operation.
 #[derive(Debug, Message)]
 #[rtype(result = "()")]
 pub enum RouterInternalMsg {
-    /// A business operation has finished from the perspective of the
-    /// actor layer (card and/or account).
+    /// Una operación de negocio terminó (charge / limit).
     OperationCompleted {
         op_id: u32,
         success: bool,
         error: Option<VerifyError>,
+    },
+
+    /// Un query de cuenta terminó (todas las tarjetas respondieron).
+    AccountQueryCompleted {
+        op_id: u32,
+        account_id: u64,
+        total_spent: f32,
+        per_card_spent: HashMap<u64, f32>,
     },
 
     /// Internal debug / diagnostics.

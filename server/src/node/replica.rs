@@ -6,7 +6,15 @@ use super::{
 };
 use crate::errors::{AppError, AppResult};
 use actix::{Actor, Addr};
-use common::{operation::Operation, Connection, Message, Station, StationToNodeMsg};
+use common::{
+    operation::Operation,
+    operation_result::OperationResult,
+    Connection,
+    Message,
+    NodeToStationMsg,
+    Station,
+    StationToNodeMsg,
+};
 use std::{
     collections::{HashMap, VecDeque},
     future::pending,
@@ -17,19 +25,21 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// Replica node.
 ///
-/// Same wiring as the Leader, but intended to be a follower in the
-/// distributed system. For station-originated charges it uses the
-/// exact same Execute (verify + apply inside actors) flow as the Leader
-/// when ONLINE, and the same offline queueing behavior when OFFLINE.
+/// Misma idea que el Leader:
+/// - recibe logs del líder (`Message::Log`),
+/// - guarda las operaciones,
+/// - las va “commit-eando” contra el `ActorRouter`,
+/// - cuando el router termina una op, la réplica le manda un `Ack` al líder.
 ///
-/// Internal state for a charge coming from a station pump while the node is
-/// ONLINE (kept locally in replica implementation).
+/// Para las requests que vienen de la estación:
+/// - si está ONLINE, las proxy-a al líder con `Message::Request`,
+/// - si está OFFLINE, las mete en `offline_queue` y contesta OK a la estación.
 #[derive(Debug, Clone)]
 struct StationPendingCharge {
     pump_id: u32,
     account_id: u64,
     card_id: u64,
-    amount: f64,
+    amount: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -37,7 +47,7 @@ struct OfflineQueuedCharge {
     request_id: u64,
     account_id: u64,
     card_id: u64,
-    amount: f64,
+    amount: f32,
 }
 
 pub struct Replica {
@@ -50,13 +60,10 @@ pub struct Replica {
     /// Current cluster membership: node_id -> address (including self & leader).
     members: HashMap<u64, SocketAddr>,
     bully: Arc<Mutex<Bully>>,
+    /// Log local: op_id -> Operation.
     operations: HashMap<u32, Operation>,
-    // connection: Connection,
-    // actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
     offline_queue: VecDeque<OfflineQueuedCharge>,
-    /// High-level station abstraction (internally runs the simulator task).
-    // station: Station,
     /// Pending station-originated charges while ONLINE.
     station_requests: HashMap<u64, StationPendingCharge>,
     router: Addr<ActorRouter>,
@@ -67,57 +74,69 @@ impl Node for Replica {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
-        pump_id: usize,
+        pump_id: u32,
         account_id: u64,
         card_id: u64,
         amount: f32,
         request_id: u64,
     ) {
         if self.is_offline {
+            // Igual que el Leader: modo OFFLINE → encolamos y respondemos OK a la estación.
             self.offline_queue.push_back(OfflineQueuedCharge {
                 request_id,
                 account_id,
                 card_id,
                 amount,
             });
+
             let msg = NodeToStationMsg::ChargeResult {
                 request_id,
                 allowed: true,
                 error: None,
             };
-            if let Err(_e) = station.send(msg).await {}
+            let _ = station.send(msg).await;
             return;
         }
 
+        // ONLINE: guardamos info de la request de la estación.
         let pending = StationPendingCharge {
             pump_id,
             account_id,
             card_id,
             amount,
         };
-        self.station_requests.insert(pump_id, pending);
-        connection.send(
-            Message::Request {
-                req_id: pump_id, // magic trickkk :)
-                op: Operation::Charge {
-                    account_id,
-                    card_id,
-                    amount,
-                    from_offline_station: false,
+        self.station_requests.insert(request_id, pending);
+
+        // Reenviamos la operación al líder como cliente “normal”.
+        let op = Operation::Charge {
+            account_id,
+            card_id,
+            amount,
+            from_offline_station: false,
+        };
+
+        let _ = connection
+            .send(
+                Message::Request {
+                    req_id: pump_id, // mismo “truco” que tenías: usar pump_id como req_id
+                    op,
+                    addr: self.address,
                 },
-                addr: (),
-            },
-            address,
-        );
+                &self.leader_addr,
+            )
+            .await;
     }
 
     async fn handle_operation_result(
         &mut self,
-        _op_id: u32,
+        connection: &mut Connection,
+        _station: &mut Station,
+        op_id: u32,
         _operation: Operation,
-        _success: bool,
-        _error: Option<crate::errors::VerifyError>,
+        _result: OperationResult,
     ) {
+        // Mantengo exactamente la intención que tenías:
+        // ignorar el resultado de negocio y mandarle un ACK al líder.
         connection
             .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
             .await
@@ -131,7 +150,7 @@ impl Node for Replica {
         op: Operation,
         addr: SocketAddr,
     ) -> AppResult<()> {
-        // Redirect to leader node.
+        // Las requests que nos llegan como “nodo” las redirigimos al líder.
         connection
             .send(
                 Message::Request {
@@ -142,60 +161,19 @@ impl Node for Replica {
                 &self.leader_addr,
             )
             .await?;
+
+        Ok(())
     }
 
-    async fn handle_log(&mut self, connection: &mut Connection, op_id: u32, new_op: Operation) {
-        // Store the replicated operation locally and acknowledge back to the leader.
+    async fn handle_log(&mut self, _connection: &mut Connection, op_id: u32, new_op: Operation) {
+        // Guardamos el log y commiteamos la operación anterior.
         self.operations.insert(op_id, new_op);
-        self.commit_operation(op_id - 1).await; // TODO: this logic should be in actors module.
-                                                // commit is async so it's handled below
+        self.commit_operation(op_id - 1).await; // misma lógica que ya tenías.
     }
 
     async fn handle_ack(&mut self, _connection: &mut Connection, _id: u32) {
-        // Replicas should not receive any ACK messages.
+        // Replicas no deberían recibir ACKs.
         todo!();
-    }
-
-    async fn handle_actor_event(&mut self, event: ActorEvent) {
-        // Same behavior as the default Node implementation:
-        match event {
-            ActorEvent::OperationResult {
-                op_id,
-                operation,
-                success,
-                error,
-            } => {
-                self.handle_operation_result(op_id, operation, success, error)
-                    .await;
-            }
-            _ => {
-                todo!();
-            }
-        }
-    }
-
-    async fn handle_station_msg(&mut self, station: &mut Station, msg: StationToNodeMsg) {
-        // Same behavior as the default Node implementation:
-        match msg {
-            StationToNodeMsg::ChargeRequest {
-                pump_id,
-                account_id,
-                card_id,
-                amount,
-                request_id,
-            } => {
-                self.handle_charge_request(
-                    station, pump_id, account_id, card_id, amount, request_id,
-                )
-                .await;
-            }
-            StationToNodeMsg::DisconnectNode => {
-                self.handle_disconnect_node().await;
-            }
-            StationToNodeMsg::ConnectNode => {
-                self.handle_connect_node().await;
-            }
-        }
     }
 
     async fn handle_election(
@@ -236,10 +214,7 @@ impl Node for Replica {
         // Update our local "current leader" pointer as well.
         self.leader_addr = leader_addr;
 
-        // TODO:
-        // The replica now becomes leader, presumably by changing its role
-        // with the NodeRole enum, but this would require further unification
-        // between replica.rs and leader.rs.
+        // TODO: promoción a líder si corresponde.
     }
 
     async fn start_election(&mut self, connection: &mut Connection) {
@@ -263,7 +238,7 @@ impl Node for Replica {
         .await;
     }
 
-    /// Replicas ignore Join themselves — new nodes should always Join via the current leader.
+    /// Replicas ignoran Join directamente — los nodos nuevos deben hacer Join contra el líder.
     async fn handle_join(
         &mut self,
         _connection: &mut Connection,
@@ -275,15 +250,14 @@ impl Node for Replica {
 
     async fn handle_cluster_update(
         &mut self,
-        connection: &mut Connection,
+        _connection: &mut Connection,
         new_member: (u64, SocketAddr),
     ) {
         self.members.insert(new_member.0, new_member.1);
     }
 
     async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>) {
-        // si llega el clúster update es porque nosotros quienes mandamos el join así que está ok
-        // limpiar el member que tenemos
+        // Si llega el cluster_view es porque nosotros mandamos el join, así que está ok.
         self.members.clear();
         for (id, addr) in members {
             self.members.insert(id, addr);
@@ -300,12 +274,9 @@ impl Replica {
             todo!();
         };
 
+        // Igual que en Leader: fire-and-forget al router.
         self.router
-            .send(RouterCmd::Execute {
-                op_id,
-                operation: op,
-            })
-            .await
+            .do_send(RouterCmd::Execute { op_id, operation: op });
     }
 
     /// - boots the ConnectionManager (TCP),
@@ -368,8 +339,7 @@ impl Replica {
             })?,
         };
 
-        // Immediately announce ourselves to the leader so it can
-        // rebroadcast a fresh ClusterView (membership snapshot).
+        // Join inicial contra el líder para que rebroadcastée el ClusterView.
         let _ = connection
             .send(
                 Message::Join {

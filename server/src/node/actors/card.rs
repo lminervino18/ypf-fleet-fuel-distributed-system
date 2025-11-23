@@ -1,72 +1,4 @@
 // CardActor: manages per-card limit and per-card consumption.
-//
-// This actor is responsible for enforcing *card-level* limits and
-// tracking consumption per card. It also provides a small per-card
-// queue so that concurrent operations on the same card are serialized
-// in a robust way.
-//
-// Important design choices:
-// - If the card is *busy* (there is an in-flight task waiting
-//   for an AccountActor reply), **new requests are only enqueued**.
-//   They are not evaluated immediately, because the final consumption
-//   of the card depends on how the previous operations complete.
-//
-// - For charges coming from an *offline station* (i.e.
-//   `from_offline_station == true` in the high-level `Operation`):
-//   * we **skip all local card-limit checks**,
-//   * we forward them to AccountActor with `from_offline_station = true`,
-//   * AccountActor, in turn, skips account-level limit checks and
-//     always applies them,
-//   * from the card's perspective they are guaranteed to succeed
-//     and be applied when the account replies.
-//
-// Flows for `Charge`:
-// - Router → CardActor: `CardMsg::ExecuteCharge`
-// - CardActor:
-//     * if idle:
-//         - if `from_offline_station == false`:
-//             - checks local card-limit against the **current**
-//               consumed amount,
-//             - if the check fails → immediately notifies the router,
-//             - if the check passes → starts the charge as the current
-//               task and sends `AccountMsg::ApplyChargeFromCard`
-//               with `from_offline_station = false`.
-//         - if `from_offline_station == true`:
-//             - **no limit checks**,
-//             - immediately sends `AccountMsg::ApplyChargeFromCard`
-//               with `from_offline_station = true`.
-//     * if busy (both cases):
-//         - simply enqueues the charge (no limit check yet).
-// - AccountActor verifies + applies at account level and
-//   replies with `AccountChargeReply`.
-//   * For offline replays it will always apply and succeed.
-// - CardActor, upon `AccountChargeReply`:
-//     * on success:
-//         - applies the charge locally (card consumption),
-//     * on failure:
-//         - does **not** change its own consumption,
-//     * in both cases:
-//         - notifies the router with `RouterInternalMsg::OperationCompleted`,
-//         - pops and starts the next queued task, if any.
-//
-// Flows for `LimitCard` (unchanged by offline semantics):
-// - Router → CardActor: `CardMsg::ExecuteLimitChange`
-// - CardActor:
-//     * if idle:
-//         - checks that the new limit is not below the **current**
-//           consumed amount,
-//         - if allowed, updates the limit and reports success,
-//         - otherwise reports a limit-update error;
-//     * if busy:
-//         - enqueues the limit-change operation and will process it
-//           only after all prior operations have completed.
-//
-// With this design, intra-node concurrency is robust and easy to reason about:
-// - per card: at most one operation (charge or limit change) is in-flight;
-//   the rest are queued and processed in order,
-// - per account: all operations are serialized by the AccountActor
-//   mailbox, so account-wide limits cannot be overspent by ONLINE
-//   operations, while OFFLINE replays bypass limits by design.
 
 use actix::prelude::*;
 use std::collections::VecDeque;
@@ -83,14 +15,10 @@ struct CardChargeOp {
     account_id: u64,
     amount: f32,
     /// Whether this charge originates from a previously OFFLINE station.
-    /// If `true`, all local limit checks (card + account) are skipped.
     from_offline_station: bool,
 }
 
 /// Internal tasks that a card can execute.
-///
-/// We treat charges and limit changes as items in a single per-card
-/// queue, so they are processed strictly one at a time, in order.
 #[derive(Debug, Clone, Copy)]
 enum CardTask {
     Charge(CardChargeOp),
@@ -145,12 +73,7 @@ impl CardActor {
         self.router.do_send(msg);
     }
 
-    /// Check the card-level limit for a *single* charge, using the
-    /// current applied consumption only.
-    ///
-    /// We do not try to predict the effect of queued operations or
-    /// assume they will succeed; each task is validated when it
-    /// actually becomes the current task.
+    /// Check the card-level limit for a *single* charge.
     fn check_charge_limit(&self, amount: f32) -> Result<(), LimitCheckError> {
         if let Some(limit) = self.limit {
             if self.consumed + amount > limit {
@@ -160,32 +83,16 @@ impl CardActor {
         Ok(())
     }
 
-    /// Check whether we can set a new card limit, given the current
-    /// applied consumption.
+    /// Check whether we can set a new card limit.
     fn can_set_new_limit(&self, new_limit: Option<f32>) -> Result<(), LimitUpdateError> {
         match new_limit {
-            None => Ok(()), // "no limit" is always allowed
+            None => Ok(()),
             Some(lim) if lim >= self.consumed => Ok(()),
             Some(_) => Err(LimitUpdateError::BelowCurrentUsage),
         }
     }
 
     /// Start processing the current task, if any.
-    ///
-    /// - For charges:
-    ///     * if `from_offline_station == false`:
-    ///         - validate the card limit with current `consumed`,
-    ///         - if OK, send `AccountMsg::ApplyChargeFromCard` with
-    ///           `from_offline_station = false`,
-    ///         - if not OK, finish immediately with error.
-    ///     * if `from_offline_station == true`:
-    ///         - **no limit checks**,
-    ///         - directly send `AccountMsg::ApplyChargeFromCard` with
-    ///           `from_offline_station = true`.
-    ///
-    /// - For limit changes:
-    ///     * validate the new limit with current `consumed`,
-    ///     * apply or reject and finish immediately.
     fn start_current_task(&mut self, ctx: &mut Context<Self>) {
         let task = match self.current_task {
             Some(t) => t,
@@ -195,20 +102,15 @@ impl CardActor {
         match task {
             CardTask::Charge(op) => {
                 if !op.from_offline_station {
-                    // ONLINE CHARGE: check card-level limit before hitting the account.
                     let res = self
                         .check_charge_limit(op.amount)
                         .map_err(VerifyError::ChargeLimit);
 
                     if let Err(err) = res {
-                        // Card-level limit rejected the charge; do not touch
-                        // the account or any state, just report failure and
-                        // move on to the next task.
                         self.finish_current_task(op.op_id, false, Some(err), ctx);
                         return;
                     }
                 }
-                // For OFFLINE replay we intentionally skip the card-level limit check.
 
                 let reply_to = ctx.address().recipient::<AccountChargeReply>();
 
@@ -228,9 +130,7 @@ impl CardActor {
 
                 match res {
                     Ok(()) => {
-                        // Safe to apply the new limit immediately.
                         self.limit = new_limit;
-
                         self.finish_current_task(op_id, true, None, ctx);
                     }
                     Err(err) => {
@@ -241,8 +141,7 @@ impl CardActor {
         }
     }
 
-    /// When a task (charge or limit-change) has finished (either success
-    /// or failure), notify the router and move to the next queued task.
+    /// When a task has finished, notify the router and move to the next.
     fn finish_current_task(
         &mut self,
         op_id: u32,
@@ -288,8 +187,6 @@ impl Handler<CardMsg> for CardActor {
                 amount,
                 from_offline_station,
             } => {
-                // Basic sanity: the router should not send charges for
-                // a different account/card than this actor owns.
                 if account_id != self.account_id || card_id != self.card_id {
                     self.send_internal(RouterInternalMsg::Debug(format!(
                         "[Card {}/{}] Received ExecuteCharge for mismatched account/card: account_id={}, card_id={}",
@@ -301,7 +198,9 @@ impl Handler<CardMsg> for CardActor {
                     self.send_internal(RouterInternalMsg::OperationCompleted {
                         op_id,
                         success: false,
-                        error: Some(VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded)),
+                        error: Some(VerifyError::ChargeLimit(
+                            LimitCheckError::CardLimitExceeded,
+                        )),
                     });
                     return;
                 }
@@ -314,12 +213,9 @@ impl Handler<CardMsg> for CardActor {
                 });
 
                 if self.current_task.is_none() {
-                    // Card is idle → start immediately.
                     self.current_task = Some(task);
                     self.start_current_task(ctx);
                 } else {
-                    // Card is busy → enqueue and wait until all previous
-                    // operations are completed.
                     self.queue.push_back(task);
                 }
             }
@@ -328,13 +224,29 @@ impl Handler<CardMsg> for CardActor {
                 let task = CardTask::LimitChange { op_id, new_limit };
 
                 if self.current_task.is_none() {
-                    // Card is idle → evaluate the limit change now.
                     self.current_task = Some(task);
                     self.start_current_task(ctx);
                 } else {
-                    // Card is busy with charges or another limit change.
                     self.queue.push_back(task);
                 }
+            }
+
+            CardMsg::QueryCardState { op_id, account_id } => {
+                // solo respondemos si la cuenta matchea
+                if account_id != self.account_id {
+                    self.send_internal(RouterInternalMsg::Debug(format!(
+                        "[Card {}/{}] QueryCardState con account_id distinto: {}",
+                        self.card_id, self.account_id, account_id
+                    )));
+                    return;
+                }
+
+                // Respondemos a la Account con nuestro consumo actual
+                self.account.do_send(AccountMsg::CardQueryReply {
+                    op_id,
+                    card_id: self.card_id,
+                    consumed: self.consumed,
+                });
             }
 
             CardMsg::Debug(text) => {
@@ -363,9 +275,6 @@ impl Handler<AccountChargeReply> for CardActor {
         match self.current_task {
             Some(CardTask::Charge(op)) if op.op_id == op_id => {
                 if success {
-                    // Account accepted and applied the charge (for offline
-                    // replays this is guaranteed); we can now safely apply
-                    // it at card level.
                     self.consumed += op.amount;
                 }
 
@@ -373,7 +282,6 @@ impl Handler<AccountChargeReply> for CardActor {
             }
 
             _ => {
-                // Unknown or out-of-sync op_id; do not mutate state.
                 self.send_internal(RouterInternalMsg::Debug(format!(
                     "[Card {}/{}] Received AccountChargeReply for unknown op_id={}",
                     self.card_id, self.account_id, op_id

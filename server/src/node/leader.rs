@@ -1,13 +1,13 @@
 use super::actors::{actor_router::ActorRouter, ActorEvent, RouterCmd};
 use super::node::Node;
 use super::pending_operatoin::PendingOperation;
-use crate::errors::VerifyError;
 use crate::{
     errors::{AppError, AppResult},
     node::utils::get_id_given_addr,
 };
 use actix::{Actor, Addr};
 use common::operation::Operation;
+use common::operation_result::{ChargeResult, OperationResult};
 use common::{Connection, Message, NodeToStationMsg, Station};
 use std::{
     collections::{HashMap, VecDeque},
@@ -57,13 +57,14 @@ struct OfflineQueuedCharge {
 /// For a `Charge` coming from a pump the flow is:
 ///
 /// 1. Station → Leader: `StationToNodeMsg::ChargeRequest`.
-/// 2. Leader builds `ActorOperation::Charge { .., from_offline_station: false }`
+/// 2. Leader builds `Operation::Charge { .., from_offline_station: false }`
 ///    and sends `RouterCmd::Execute { op_id, operation }` to ActorRouter.
 /// 3. ActorRouter/actors run verification + apply internally.
 /// 4. Once finished, ActorRouter emits a single
-///    `ActorEvent::OperationResult { op_id, operation, success, error }`.
-/// 5. Leader translates that into a `NodeToStationMsg::ChargeResult`
-///    and sends it back to the station, removing the pending request.
+///    `ActorEvent::OperationResult { op_id, operation, result, .. }`.
+/// 5. Leader traduce ese `OperationResult` en:
+///    - `NodeToStationMsg::ChargeResult` si viene de la estación,
+///    - `Message::Response { result: OperationResult }` si viene de un cliente TCP.
 ///
 /// OFFLINE behavior:
 /// -----------------
@@ -88,12 +89,8 @@ pub struct Leader {
     members: HashMap<u64, SocketAddr>,
     /// Stored operations indexed by op_id.
     operations: HashMap<u32, PendingOperation>,
-    // connection: Connection,
-    // actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
     offline_queue: VecDeque<OfflineQueuedCharge>,
-    /// High-level Station wrapper (owns the simulator task and channels).
-    // station: Station,
     /// Pending ONLINE station-originated charges.
     station_requests: HashMap<u32, (usize, StationPendingCharge)>,
     router: Addr<ActorRouter>,
@@ -134,7 +131,7 @@ impl Node for Leader {
         todo!(); // TODO: leader should not receive any Log messages.
     }
 
-    async fn handle_ack(&mut self, _connection: &mut Connection, op_id: u32) {
+    async fn handle_ack(&mut self, connection: &mut Connection, op_id: u32) {
         let Some(pending) = self.operations.get_mut(&op_id) else {
             todo!(); // TODO: handle this case (unknown op_id).
         };
@@ -144,11 +141,12 @@ impl Node for Leader {
             return;
         }
 
-        self.router.send(RouterCmd::Execute {
+        // Mayoría alcanzada → ejecutar la operación en el mundo de actores.
+        self.router.do_send(RouterCmd::Execute {
             op_id,
             operation: pending.op.clone(),
         });
-        // router response is async so it's handled separately below
+        // La respuesta async vuelve por ActorEvent::OperationResult.
     }
 
     async fn handle_operation_result(
@@ -157,29 +155,53 @@ impl Node for Leader {
         station: &mut Station,
         op_id: u32,
         operation: Operation,
-        success: bool,
-        error: Option<VerifyError>,
+        result: OperationResult,
     ) {
         let Some(pending) = self.operations.remove(&op_id) else {
-            todo!()
+            // TODO: loggear o manejar el caso de op_id desconocido
+            return;
         };
 
+        // Caso estación: el client_addr es la propia dirección del líder.
         if pending.client_addr == self.address {
-            station.send(NodeToStationMsg::ChargeResult {
-                request_id: pending.request_id,
-                allowed: success,
-                error,
-            });
+            // Por ahora la estación sólo dispara `Charge`, así que
+            // mapeamos OperationResult::Charge → ChargeResult para NodeToStationMsg.
+            if let Operation::Charge { .. } = operation {
+                if let OperationResult::Charge(charge_res) = result {
+                    let (allowed, error) = match charge_res {
+                        ChargeResult::Ok => (true, None),
+                        ChargeResult::VerifyError(e) => (false, Some(e)),
+                    };
+
+                    let msg = NodeToStationMsg::ChargeResult {
+                        request_id: pending.request_id,
+                        allowed,
+                        error,
+                    };
+
+                    let _ = station.send(msg).await;
+                } else {
+                    // Mismatch raro entre Operation y OperationResult.
+                    // Podrías loggear algo acá si querés.
+                }
+            } else {
+                // Si en el futuro la estación dispara otras operaciones
+                // (por ejemplo algún Query), habría que manejarlas acá.
+            }
+
             return;
         }
 
-        connection.send(
-            Message::Response {
-                req_id: pending.request_id,
-                result: error,
-            },
-            &pending.client_addr,
-        );
+        // Caso cliente externo: devolvemos el OperationResult completo.
+        let _ = connection
+            .send(
+                Message::Response {
+                    req_id: pending.request_id,
+                    result,
+                },
+                &pending.client_addr,
+            )
+            .await;
     }
 
     async fn handle_charge_request(
@@ -194,33 +216,25 @@ impl Node for Leader {
     ) {
         if self.is_offline {
             // OFFLINE MODE:
-            // -------------
-            // Queue the logical operation so that, when we reconnect,
-            // a reconciliation step can replay it into the actor layer.
             self.offline_queue.push_back(OfflineQueuedCharge {
                 request_id,
                 account_id,
                 card_id,
                 amount,
             });
-            // Immediately respond to the station as if the
-            // operation had succeeded.
+
+            // Respuesta inmediata como si hubiera salido bien.
             let msg = NodeToStationMsg::ChargeResult {
                 request_id,
                 allowed: true,
                 error: None,
             };
-            if let Err(_e) = station.send(msg).await {
-                // println!(
-                //     "[Leader][station][OFFLINE][ERROR] failed to send fake-OK result: {e}",
-                // );
-            }
+            let _ = station.send(msg).await;
 
             return;
         }
 
         // ONLINE MODE:
-        // Build the domain operation for the actor layer.
         let op = Operation::Charge {
             account_id,
             card_id,
@@ -229,8 +243,8 @@ impl Node for Leader {
         };
 
         self.log_operation(op.clone(), self.address, Some(_pump_id));
-        self.handle_request(connection, 0, op, self.address);
-        // Trigger the full execute flow in the actor system.
+        // op_id 0 es “dummy”, la lógica real de op_id la llevás en `log_operation`.
+        let _ = self.handle_request(connection, 0, op, self.address).await;
     }
 
     async fn handle_election(
@@ -274,7 +288,7 @@ impl Node for Leader {
             members: self.members.iter().map(|(id, addr)| (*id, *addr)).collect(),
         };
         // le mandamos el clúster view al que entró
-        connection.send(view_msg, &addr);
+        let _ = connection.send(view_msg, &addr).await;
         // y le mandamos sólo el nuevo al resto de las réplicas
         for (_, replica) in &self.members {
             let _ = connection
@@ -282,7 +296,7 @@ impl Node for Leader {
                     Message::ClusterUpdate {
                         new_member: (node_id, addr),
                     },
-                    peer_addr,
+                    replica,
                 )
                 .await;
         }
@@ -291,8 +305,8 @@ impl Node for Leader {
 
     async fn handle_cluster_update(
         &mut self,
-        connection: &mut Connection,
-        new_member: (u64, SocketAddr),
+        _connection: &mut Connection,
+        _new_member: (u64, SocketAddr),
     ) {
         // only leaders send cluster updates
         todo!();
@@ -300,7 +314,7 @@ impl Node for Leader {
 
     /// Called when we receive a `Message::ClusterView` through the
     /// generic Node dispatcher.
-    async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>) {
+    async fn handle_cluster_view(&mut self, _members: Vec<(u64, SocketAddr)>) {
         // leader shouldn't receive cluster_view messages
         todo!();
     }
@@ -319,6 +333,7 @@ impl Leader {
             PendingOperation::new(op.clone(), client_addr, station_request_id),
         );
     }
+
     /// Start a Leader node:
     ///
     /// - boots the ConnectionManager (TCP),
@@ -334,6 +349,7 @@ impl Leader {
     ) -> AppResult<()> {
         let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
         let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
+
         // Spawn a thread for Actix that runs inside a Tokio runtime.
         std::thread::spawn(move || {
             let sys = actix::System::new();
@@ -346,13 +362,16 @@ impl Leader {
                 pending::<()>().await; // Keep the Actix system running indefinitely.
             });
         });
+
         // Start the shared Station abstraction (stdin-based simulator).
         let station = Station::start(pumps).await?;
+
         // Seed membership: leader only. Other members will be
         // registered via Join / ClusterView messages.
         let self_id = get_id_given_addr(address);
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
         members.insert(self_id, address);
+
         let connection = Connection::start(address, max_conns).await?;
         let mut leader = Self {
             id: self_id,
@@ -384,19 +403,24 @@ mod test {
         let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12362);
         let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12363);
         let replica_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12364);
+
         Leader::start(leader_addr, (0.0, 0.0), 1, 1).await.unwrap();
+
         let mut client = Connection::start(client_addr, 1).await.unwrap();
         let mut replica = Connection::start(replica_addr, 1).await.unwrap();
+
         replica
             .send(Message::Join { addr: replica_addr }, &leader_addr)
             .await
             .unwrap();
+
         let op = Operation::Charge {
             account_id: 13,
             card_id: 14,
             amount: 1500.5,
             from_offline_station: false,
         };
+
         client
             .send(
                 Message::Request {
@@ -408,6 +432,7 @@ mod test {
             )
             .await
             .unwrap();
+
         let expected = Message::Log { op_id: 0, op };
         let received = replica.recv().await.unwrap();
         assert_eq!(received, expected);
