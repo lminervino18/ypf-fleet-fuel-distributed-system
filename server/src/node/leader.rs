@@ -83,7 +83,7 @@ impl Node for Leader {
         self.is_offline
     }
 
-    fn log_offline_opeartion(&mut self, op: Operation) {
+    fn log_offline_operation(&mut self, op: Operation) {
         self.offline_queue.push_back(op);
     }
 
@@ -106,17 +106,21 @@ impl Node for Leader {
         );
 
         // Build the log message to replicate.
-        let msg = Message::Log {
-            op_id: self.current_op_id,
-            op,
-        };
         // Broadcast the log to all known members except self.
         for (node_id, addr) in &self.members {
             if *node_id == self.id {
                 continue;
             }
 
-            connection.send(msg.clone(), addr).await?;
+            connection
+                .send(
+                    Message::Log {
+                        op_id: self.current_op_id,
+                        op: op.clone(),
+                    },
+                    addr,
+                )
+                .await?;
         }
 
         Ok(())
@@ -153,15 +157,12 @@ impl Node for Leader {
         operation: Operation,
         result: OperationResult,
     ) {
-        let Some(pending) = self.operations.remove(&op_id) else {
-            // TODO: loggear o manejar el caso de op_id desconocido
-            return;
-        };
+        let pending = self
+            .operations
+            .remove(&op_id)
+            .expect("leader received the result of an unexisting operation");
 
-        // Caso estación: el client_addr es la propia dirección del líder.
         if pending.client_addr == self.address {
-            // Por ahora la estación sólo dispara `Charge`, así que
-            // mapeamos OperationResult::Charge → ChargeResult para NodeToStationMsg.
             if let Operation::Charge { .. } = operation {
                 if let OperationResult::Charge(charge_res) = result {
                     let (allowed, error) = match charge_res {

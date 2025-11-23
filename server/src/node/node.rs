@@ -72,7 +72,7 @@ pub trait Node {
     }
 
     fn is_offline(&self) -> bool;
-    fn log_offline_opeartion(&mut self, op: Operation);
+    fn log_offline_operation(&mut self, op: Operation);
     fn get_address(&self) -> SocketAddr;
 
     async fn handle_charge_request(
@@ -85,7 +85,7 @@ pub trait Node {
         request_id: u32,
     ) {
         if self.is_offline() {
-            self.log_offline_opeartion(Operation::Charge {
+            self.log_offline_operation(Operation::Charge {
                 account_id,
                 card_id,
                 amount,
@@ -107,7 +107,9 @@ pub trait Node {
             from_offline_station: false,
         };
 
-        self.handle_request(connection, request_id, op, self.get_address());
+        self.handle_request(connection, request_id, op, self.get_address())
+            .await
+            .unwrap();
     }
 
     /// Default OFFLINE transition handler.
@@ -201,7 +203,6 @@ pub trait Node {
     ) {
         match msg {
             StationToNodeMsg::ChargeRequest {
-                pump_id,
                 account_id,
                 card_id,
                 amount,

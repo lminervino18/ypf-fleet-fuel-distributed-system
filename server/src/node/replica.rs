@@ -48,7 +48,6 @@ struct OfflineQueuedCharge {
 pub struct Replica {
     id: u64,
     coords: (f64, f64),
-    max_conns: usize,
     address: SocketAddr,
     leader_addr: SocketAddr,
     members: HashMap<u64, SocketAddr>,
@@ -65,7 +64,7 @@ impl Node for Replica {
         self.is_offline
     }
 
-    fn log_offline_opeartion(&mut self, op: Operation) {
+    fn log_offline_operation(&mut self, op: Operation) {
         self.offline_queue.push_back(op);
     }
 
@@ -94,7 +93,7 @@ impl Node for Replica {
         op: Operation,
         addr: SocketAddr,
     ) -> AppResult<()> {
-        // Las requests que nos llegan como “nodo” las redirigimos al líder.
+        // redirijo al líder
         connection
             .send(
                 Message::Request {
@@ -112,7 +111,11 @@ impl Node for Replica {
     async fn handle_log(&mut self, _connection: &mut Connection, op_id: u32, new_op: Operation) {
         // Guardamos el log y commiteamos la operación anterior.
         self.operations.insert(op_id, new_op);
-        self.commit_operation(op_id - 1).await; // misma lógica que ya tenías.
+        if op_id == 0 {
+            return; // si es la primera no hay op previamente loggeada
+        }
+
+        self.commit_operation(op_id - 1).await;
     }
 
     async fn handle_ack(&mut self, _connection: &mut Connection, _id: u32) {
@@ -211,7 +214,6 @@ impl Replica {
         let Some(op) = self.operations.remove(&op_id) else {
             todo!();
         };
-
         // Igual que en Leader: fire-and-forget al router.
         self.router.do_send(RouterCmd::Execute {
             op_id,
@@ -267,7 +269,6 @@ impl Replica {
         let mut replica = Self {
             id,
             coords,
-            max_conns,
             address,
             leader_addr,
             members,
