@@ -6,11 +6,18 @@ Las empresas tienen una cuenta principal y tarjetas asociadas para cada uno de l
 \newpage
 # Aplicaciones
 ## Server
-El servidor consiste de un sistema distribuido en el que la información con respecto a las cuentas y tarjetas se encuentra centralizada en un clúster compuesto de un *nodo líder* y *nodos réplica*. La entidad por default para un nodo del sistema es *estación*; esto es, todos los nodos cumplen con el rol de ser una estación y además pueden ser líder o réplica.  
-A nivel estación, los *surtidores* que residen en ella se intercomunican para mantener la funcionalidad de la estación, y lograr así una abstracción de los surtidores a nivel sistema global.
+El servidor consiste de un *clúster de consenso*. Hay un nodo **líder**, que recibe todas las requests de los clientes y nodos **replica**, que mantienen una copia de la información de la *base de datos* (implementada en memoria con modelo de actores) que reside en el líder.  
+Para asegurar la sincronización del estado de los nodos del clúster de consenso se utiliza el algoritmo de transacciones distribuidas **Raft**:
+
+- Los clientes (administradores y estaciones que no cumplen un rol en el clúster de consenso) envían requests al líder.
+- El líder guarda las operaciones de los requests entrantes y envía el mensaje *Log* con la operación a las réplicas.
+- Cuando las réplicas reciben el mensaje *Log*, guardan la operación, ejecutan la operación con id anterior a la que llegó, y envían el mensaje *ACK*.
+- Cuando el líder recibe el *ACK* de la mayoría de las réplicas, *commitea* la operación y contesta al cliente con el nuevo estado de la base de datos.
+
+En caso de que el líder deje de funcionar, cuando una de las réplicas lo detecta llama a una *elección de líder*. Para ésta elección se utiliza el algoritmo **Bully**.
 
 ## Cliente
-El único cliente (fuera del servidor de YPF) es el **administrador**. El administrador puede
+Los clientes del servidor son tanto las *estaciones que no cumplen un rol en el clúster de consenso* así como los *administradores de las cuentas que residen en el sistema*. Estos últimos pueden:
 
 - Limitar los montos disponibles en su cuenta.
 - Limitar los montos disponibles en las tarjetas de la cuenta.
@@ -18,34 +25,33 @@ El único cliente (fuera del servidor de YPF) es el **administrador**. El admini
 - Consultar los saldos de las tarjetas de la cuenta.
 - Realizar la facturación de la cuenta.
 
+### Surtidores
+Los surtidores de las estaciones se conectan por I/O a la terminal de la estación. De esta manera cada estación puede escuchar de manera asincrónica a cada uno de sus surtidores, para así enviar los requests correspondientes y luego informar a los surtidores de las respuestas entrantes.
+
 \newpage
 # Arquitectura del servidor
 Como ya se mencionó, el servidor está implementado de manera distribuida. El foco principal del diseño de la arquitectura está en reducir la cantidad de mensajes entre nodos que tienen viajar en la red.  
 
 Dado que la información se encuentra centralizada en el *clúster de consenso*, se vuelve necesario que las estaciones consulten el estado de la información de la cuenta a la cuál pertenece la tarjeta que quiere realizar el pago en ellas.  
-Para ésto, las estaciones conocen incialmente *quién* es el nodo líder. Cualquier consulta que precisen hacer se la envían al mismo. Si el líder dejara de funcionar, se ejecutaría entonces un algoritmo de elección de líder como *bully-algorithm* para elegir un nuevo de entre las réplicas, para luego actualizar a todas las estaciones con el resultado de la elección.  
+Para ésto, las estaciones conocen incialmente *quién* es el nodo líder. Cualquier consulta que precisen hacer se la envían al mismo. Si el líder dejara de funcionar, se ejecutaría entonces el *bully leader-election algorithm* para elegir un nuevo líder de entre las réplicas. Los clientes del servidor se enteran del resultado de la elección a partir de la dirección del nodo que les conteste su próxima request: esto es, cuando un nodo réplica recibe una request, la reenvía al líder, que luego contesta al cliente que nota la diferencia entre la dirección del líder que tiene guardada y la del emisor de la contestación que recibió.
 
-De esta manera todos los nodos necesitan un único socket para comunicarse con el nodo líder, salvo éste último que necesita tantos sockets como estaciones existan además de él. Esto ocurre a nivel lógico, ya que estaciones poco concurridas no necesitan estar constantemente conectadas con el nodo líder, por lo que el mismo tiene la posibilidad de mantener sólo un top $N$ conexiones con el resto de las estaciones. Cuando pasa un tiempo sin que se envíen mensajes del sistema, la conexión se cierra para ahorrar recursos.
+De esta manera todos los nodos necesitan un único socket para comunicarse con el nodo líder, salvo éste último que necesita tantos sockets como estaciones existan además de él. Esto ocurre a nivel lógico, ya que estaciones poco concurridas no necesitan estar constantemente conectadas con el nodo líder, por lo que el mismo sólo mantiene un top $N$ de conexiones con el resto de las estaciones. Cuando se alcanza el límite de conexiones y se instancia una conexión entrante, se elimina la *last recently used*.
 
-## Tipos de clúster
-A continuación se explican más en profundidad cada uno de los tipos de clúster que se mencionaron.
+## Modelo de actores
+El server se basa entonces en el modelo de actores. Cada nodo es una entidad que recibe mensajes y que los procesa según su rol en el clúster de consenso.  
+Los mensajes que circulan son los que respectan al algoritmo *Raft*:
 
-### Clúster de surtidores.
-Los surtidores en una estaicón se conectan directamente al servidor que ejecuta la funcionalidad de nodo en el sistema global-los surtidores no son computadoras, son hardware que envía I/O al servidor de la estación-, por lo que la concurrencia en éste clúster es a nivel memoria. Para prevenir las race conditions que surgen del acceso concurrente de lecto escritura a memoria, se utiliza el modelo de programación asincrónica.  
-Dado que este programa no se va a ejecutar en una estación YPF real, para simular éste funcionamiento, las entradas van a ser simuladas por I/O del teclado.
+- `Request { operation }`
+- `Log { id, operation, client_address }`,
+- `ACK { id }`
 
-### Clúster de consenso
-El clúster de consenso está conformado por un único nodo líder y $N$ réplicas de la información que éste contiene. Si el líder deja de funcionar, las réplicas lo detectan y inician la re-elección mediante un *bully-algorithm*.  
-Para evitar desincronización en casos falla de alguno de los nodos del clúster de consenso, se utiliza algoritmo de sincronización de transacciones *two-phase commit*.
+, a la elección de líder *Bully* y a las requests de los clientes.
 
 <!-- \begin{figure}[H]
 \centering
 \includesvg[width=0.8\textwidth]{diagrams/account-clusters-overview.svg}
 \caption{Clúster de cuenta.}
 \end{figure} -->
-
-### Clúster de estaciones (*sistema global*)
-El **clúster de estaciones** se refiere a todos los nodos que se ejecutan en las estaciones de YPF. Todos las estaciones deben cumplir con éste mínimo rol: poder realizar el cobro de cargarle nafta a un conductor de YPF Ruta.
 
 <!-- \begin{figure}[H]
 \centering
@@ -54,24 +60,6 @@ El **clúster de estaciones** se refiere a todos los nodos que se ejecutan en la
 \end{figure} -->
 
 \newpage
-## Paseo por varios casos de uso
-
-### 1. *Un conductor usa su tarjeta por primera vez en el surtidor de una estación.*
-A nivel estación, quien recibe la responsabilidad de realizar el cobro a una tarjeta es un surtidor.  
-Como la tarjeta no se encuentra aún cargada en el sistema, cuando el nodo estación envía la consulta sobre la disponibilidad de saldo de la misma (o de su cuenta), el nodo líder genera el registro de la tarjeta, así como también de la cuenta a la que esta pertenece si no existiera aún; y envía el nuevo registro a los nodos réplica.  
-Si la estación es el nodo líder entonces el checkeo se realiza en memoria en vez de mediante un paquete de red. Los nodos réplica no tienen ningún comportamiento especial fuera del flujo que se sigue al registro de la tarjeta-envían la consulta por red al líder.
-
-### 3. *Un conductor usa su tarjeta en una nueva estación nueva, habiéndola usado en otras.*
-Si un conductor usa su tarjeta en una nueva estación, es decir, en una estación en la que todavía no la había usado, entonces la estación no va a contar con el registro de la tarjeta y por tanto propagará la consulta como en el caso 1. Ésta vez si va a recibir una respuesta de una de los nodos que estén suscriptos a la tarjeta, por lo que
-
-1. gestiona el cobro como en 2,
-2. envía el mensaje de *suscripción*,
-3. invita a sus nodos cercanos,
-4. y actualiza a la lista de nodos suscriptos por el cobro realizado.
-
-## *Node failure recovery*
-Hasta ahora sólo consideramos los casos felices del funcionamiento del sistema, pero en la realidad los nodos pueden fallar. A continuación detallamos lo que pasaría en caso de que cada uno de los distintos tipos de nodos falle, a partir de la siguiente configuración arbitraria del sistema:
-
 <!-- \begin{figure}[H]
 \centering
 \includesvg[width=0.8\textwidth]{diagrams/recovery-initial-state}
@@ -86,19 +74,6 @@ Sin importar el nodo o la política que se le aplique, en caso de que el cobro f
 
 Si fuera el nodo líder el que perdió la conexión, entonces cuando la recuperase, ya se habría elegido a otro y por tanto sería a ese nuevo líder al que se enviarían las actualizaciones encoladas si así las hubiera.
 
-\newpage
-# Flujo de las consultas de los clientes
-<!-- TODO -->
-
-\newpage
-# Modelo de Actores
-<!-- TODO -->
-
-<!-- \begin{figure}[H]
-\centering
-\includesvg[width=0.8\textwidth]{diagrams/actor-model-diagram}
-\caption{Diagrama del modelo de actores. Las entidades de la lógica de negocio del sistema están abstraídas del funcionamiento del sistema distribuido.}
-\end{figure} -->
 
 ## Actores
 <!-- TODO -->
