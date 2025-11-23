@@ -19,7 +19,7 @@ pub enum StationToNodeMsg {
         account_id: u64,
         card_id: u64,
         amount: f32,
-        request_id: u64,
+        request_id: u32,
     },
 
     /// Ask the node to switch to OFFLINE mode.
@@ -34,7 +34,7 @@ pub enum StationToNodeMsg {
 pub enum NodeToStationMsg {
     /// Final result of a charge request.
     ChargeResult {
-        request_id: u64,
+        request_id: u32,
         allowed: bool,
         /// Optional error when `allowed == false`.
         error: Option<VerifyError>,
@@ -51,7 +51,7 @@ struct PumpRequest {
     account_id: u64,
     card_id: u64,
     amount: f32,
-    request_id: u64,
+    request_id: u32,
 }
 
 /// Parsed user command (from stdin) before assigning `request_id`.
@@ -158,13 +158,13 @@ async fn run_station_simulator(
     let mut lines = stdin.lines();
 
     // For each pump: None = idle, Some(request_id) = busy.
-    let mut in_flight_by_pump: Vec<Option<u64>> = vec![None; num_pumps];
+    let mut in_flight_by_pump: Vec<Option<u32>> = vec![None; num_pumps];
 
     // request_id -> PumpRequest
-    let mut requests: HashMap<u64, PumpRequest> = HashMap::new();
+    let mut requests: HashMap<u32, PumpRequest> = HashMap::new();
 
     // Monotonic counter for request IDs
-    let mut next_request_id: u64 = 1;
+    let mut next_request_id: u32 = 1;
 
     loop {
         let line_fut = lines.next_line();
@@ -385,10 +385,10 @@ fn parse_command(line: &str, num_pumps: usize) -> Result<ParsedCommand, String> 
 fn handle_user_command(
     line: &str,
     num_pumps: usize,
-    in_flight_by_pump: &mut [Option<u64>],
-    requests: &mut HashMap<u64, PumpRequest>,
-    next_request_id: &mut u64,
-) -> Result<Option<u64>, String> {
+    in_flight_by_pump: &mut [Option<u32>],
+    requests: &mut HashMap<u32, PumpRequest>,
+    next_request_id: &mut u32,
+) -> Result<Option<u32>, String> {
     let parsed = parse_command(line, num_pumps)?;
 
     // Check if the pump is already busy.
@@ -424,8 +424,8 @@ fn handle_user_command(
 /// Handle a `NodeToStationMsg` coming from the node.
 fn handle_node_event(
     msg: NodeToStationMsg,
-    in_flight_by_pump: &mut [Option<u64>],
-    requests: &mut HashMap<u64, PumpRequest>,
+    in_flight_by_pump: &mut [Option<u32>],
+    requests: &mut HashMap<u32, PumpRequest>,
 ) {
     match msg {
         NodeToStationMsg::ChargeResult {
