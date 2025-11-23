@@ -2,6 +2,7 @@ mod actors;
 mod election;
 mod leader;
 mod node;
+mod pending_operatoin;
 mod replica;
 mod test;
 mod utils;
