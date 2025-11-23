@@ -13,8 +13,6 @@ impl TryFrom<&[u8]> for Operation {
             OP_TYPE_LIMIT_ACCOUNT => deserialize_limit_account_operation(&payload[1..]),
             OP_TYPE_LIMIT_CARD => deserialize_limit_card_operation(&payload[1..]),
             OP_TYPE_QUERY_ACCOUNT => deserialize_query_account_operation(&payload[1..]),
-            OP_TYPE_QUERY_CARDS => deserialize_query_cards_operation(&payload[1..]),
-            OP_TYPE_QUERY_CARD => deserialize_query_card_operation(&payload[1..]),
             OP_TYPE_BILL => deserialize_bill_operation(&payload[1..]),
             _ => Err(AppError::InvalidProtocol {
                 details: format!("unknown operation type {:?}", payload[0]),
@@ -144,32 +142,7 @@ fn deserialize_query_account_operation(payload: &[u8]) -> AppResult<Operation> {
     }
 
     let account_id = deserialize_account_id(&payload[0..])?;
-    Ok(Operation::QueryAccount { account_id })
-}
-
-fn deserialize_query_cards_operation(payload: &[u8]) -> AppResult<Operation> {
-    if payload.len() != ACC_ID_SRL_LEN {
-        return Err(AppError::InvalidProtocol {
-            details: "not enough bytes to deserialize query cards operation".to_string(),
-        });
-    }
-
-    let account_id = deserialize_account_id(&payload[0..])?;
-    Ok(Operation::QueryCards { account_id })
-}
-
-fn deserialize_query_card_operation(payload: &[u8]) -> AppResult<Operation> {
-    if payload.len() != ACC_ID_SRL_LEN + CARD_ID_SRL_LEN {
-        return Err(AppError::InvalidProtocol {
-            details: "not enough bytes to deserialize query card operation".to_string(),
-        });
-    }
-
-    let mut ptr = 0;
-    let account_id = deserialize_account_id(&payload[ptr..])?;
-    ptr += ACC_ID_SRL_LEN;
-    let card_id = deserialize_card_id(&payload[ptr..])?;
-    Ok(Operation::QueryCard { account_id, card_id })
+    Ok(Operation::AccountQuery { account_id })
 }
 
 fn deserialize_bill_operation(payload: &[u8]) -> AppResult<Operation> {
@@ -187,17 +160,13 @@ fn deserialize_bill_operation(payload: &[u8]) -> AppResult<Operation> {
         let period_bytes = &payload[ptr..];
         let byte_of_len_size = 1;
         match std::str::from_utf8(period_bytes) {
-            Ok(period_str) => {
-                match period_str.to_string() {
-                    ref s if s == "\0" => None,
-                    s => Some(s[byte_of_len_size..].to_string()),
-                }
+            Ok(period_str) => match period_str.to_string() {
+                ref s if s == "\0" => None,
+                s => Some(s[byte_of_len_size..].to_string()),
             },
             Err(e) => {
                 return Err(AppError::InvalidProtocol {
-                    details: format!(
-                        "failed to deserialize period string in bill operation: {e}"
-                    ),
+                    details: format!("failed to deserialize period string in bill operation: {e}"),
                 });
             }
         }
@@ -293,25 +262,7 @@ mod test {
 
     #[test]
     fn test_deserialize_valid_query_account_operation() {
-        let op = Operation::QueryAccount { account_id: 5000 };
-        let op_srl: Vec<u8> = op.clone().into();
-        let expected = Ok(op);
-        let op = op_srl[..].try_into();
-        assert_eq!(op, expected);
-    }
-
-    #[test]
-    fn test_deserialize_valid_query_cards_operation() {
-        let op = Operation::QueryCards { account_id: 5000 };
-        let op_srl: Vec<u8> = op.clone().into();
-        let expected = Ok(op);
-        let op = op_srl[..].try_into();
-        assert_eq!(op, expected);
-    }
-
-    #[test]
-    fn test_deserialize_valid_query_card_operation() {
-        let op = Operation::QueryCard { account_id: 5000, card_id: 3 };
+        let op = Operation::AccountQuery { account_id: 5000 };
         let op_srl: Vec<u8> = op.clone().into();
         let expected = Ok(op);
         let op = op_srl[..].try_into();
@@ -320,7 +271,10 @@ mod test {
 
     #[test]
     fn test_deserialize_valid_bill_operation_with_period() {
-        let op = Operation::Bill { account_id: 7000, period: Some("2025-10".to_string()) };
+        let op = Operation::Bill {
+            account_id: 7000,
+            period: Some("2025-10".to_string()),
+        };
         let op_srl: Vec<u8> = op.clone().into();
         let expected = Ok(op);
         let op = op_srl[..].try_into();
@@ -329,7 +283,10 @@ mod test {
 
     #[test]
     fn test_deserialize_valid_bill_operation_without_period() {
-        let op = Operation::Bill { account_id: 7000, period: None };
+        let op = Operation::Bill {
+            account_id: 7000,
+            period: None,
+        };
         let op_srl: Vec<u8> = op.clone().into();
         let expected = Ok(op);
         let op = op_srl[..].try_into();

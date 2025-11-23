@@ -6,7 +6,10 @@ use super::{
 };
 use crate::errors::{AppError, AppResult};
 use actix::{Actor, Addr};
-use common::{operation::Operation, Connection, Message, Station, StationToNodeMsg, VerifyError};
+use common::{
+    operation::Operation, operation_result::OperationResult, Connection, Message, NodeToStationMsg,
+    Station, StationToNodeMsg,
+};
 use std::{
     collections::{HashMap, VecDeque},
     future::pending,
@@ -17,19 +20,21 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// Replica node.
 ///
-/// Same wiring as the Leader, but intended to be a follower in the
-/// distributed system. For station-originated charges it uses the
-/// exact same Execute (verify + apply inside actors) flow as the Leader
-/// when ONLINE, and the same offline queueing behavior when OFFLINE.
+/// Misma idea que el Leader:
+/// - recibe logs del líder (`Message::Log`),
+/// - guarda las operaciones,
+/// - las va “commit-eando” contra el `ActorRouter`,
+/// - cuando el router termina una op, la réplica le manda un `Ack` al líder.
 ///
-/// Internal state for a charge coming from a station pump while the node is
-/// ONLINE (kept locally in replica implementation).
+/// Para las requests que vienen de la estación:
+/// - si está ONLINE, las proxy-a al líder con `Message::Request`,
+/// - si está OFFLINE, las mete en `offline_queue` y contesta OK a la estación.
 #[derive(Debug, Clone)]
 struct StationPendingCharge {
     pump_id: u32,
     account_id: u64,
     card_id: u64,
-    amount: f64,
+    amount: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -45,19 +50,12 @@ pub struct Replica {
     coords: (f64, f64),
     max_conns: usize,
     address: SocketAddr,
-    /// Current leader address (updated on Coordinator messages).
     leader_addr: SocketAddr,
-    /// Current cluster membership: node_id -> address (including self & leader).
     members: HashMap<u64, SocketAddr>,
     bully: Arc<Mutex<Bully>>,
     operations: HashMap<u32, Operation>,
-    // connection: Connection,
-    // actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
-    /// High-level station abstraction (internally runs the simulator task).
-    // station: Station,
-    /// Pending station-originated charges while ONLINE.
     station_requests: HashMap<u64, StationPendingCharge>,
     router: Addr<ActorRouter>,
 }
@@ -78,11 +76,10 @@ impl Node for Replica {
     async fn handle_operation_result(
         &mut self,
         connection: &mut Connection,
-        station: &mut Station,
+        _station: &mut Station,
         op_id: u32,
-        operation: Operation,
-        success: bool,
-        error: Option<VerifyError>,
+        _operation: Operation,
+        _result: OperationResult,
     ) {
         connection
             .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
@@ -97,7 +94,7 @@ impl Node for Replica {
         op: Operation,
         addr: SocketAddr,
     ) -> AppResult<()> {
-        // Redirect to leader node.
+        // Las requests que nos llegan como “nodo” las redirigimos al líder.
         connection
             .send(
                 Message::Request {
@@ -112,15 +109,14 @@ impl Node for Replica {
         Ok(())
     }
 
-    async fn handle_log(&mut self, connection: &mut Connection, op_id: u32, new_op: Operation) {
-        // Store the replicated operation locally and acknowledge back to the leader.
+    async fn handle_log(&mut self, _connection: &mut Connection, op_id: u32, new_op: Operation) {
+        // Guardamos el log y commiteamos la operación anterior.
         self.operations.insert(op_id, new_op);
-        self.commit_operation(op_id - 1).await; // TODO: this logic should be in actors module.
-                                                // commit is async so it's handled below
+        self.commit_operation(op_id - 1).await; // misma lógica que ya tenías.
     }
 
     async fn handle_ack(&mut self, _connection: &mut Connection, _id: u32) {
-        // Replicas should not receive any ACK messages.
+        // Replicas no deberían recibir ACKs.
         todo!();
     }
 
@@ -162,10 +158,7 @@ impl Node for Replica {
         // Update our local "current leader" pointer as well.
         self.leader_addr = leader_addr;
 
-        // TODO:
-        // The replica now becomes leader, presumably by changing its role
-        // with the NodeRole enum, but this would require further unification
-        // between replica.rs and leader.rs.
+        // TODO: promoción a líder si corresponde.
     }
 
     async fn start_election(&mut self, connection: &mut Connection) {
@@ -189,22 +182,20 @@ impl Node for Replica {
         .await;
     }
 
-    /// Replicas ignore Join themselves — new nodes should always Join via the current leader.
     async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr) {
         // No-op for replicas.
     }
 
     async fn handle_cluster_update(
         &mut self,
-        connection: &mut Connection,
+        _connection: &mut Connection,
         new_member: (u64, SocketAddr),
     ) {
         self.members.insert(new_member.0, new_member.1);
     }
 
     async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>) {
-        // si llega el clúster update es porque nosotros quienes mandamos el join así que está ok
-        // limpiar el member que tenemos
+        // Si llega el cluster_view es porque nosotros mandamos el join, así que está ok.
         self.members.clear();
         for (id, addr) in members {
             self.members.insert(id, addr);
@@ -221,15 +212,11 @@ impl Replica {
             todo!();
         };
 
-        self.router
-            .send(RouterCmd::Execute {
-                op_id,
-                operation: op,
-            })
-            .await
-            .map_err(|e| AppError::ActorSystem {
-                details: e.to_string(),
-            })?;
+        // Igual que en Leader: fire-and-forget al router.
+        self.router.do_send(RouterCmd::Execute {
+            op_id,
+            operation: op,
+        });
 
         Ok(())
     }
@@ -294,8 +281,7 @@ impl Replica {
             })?,
         };
 
-        // Immediately announce ourselves to the leader so it can
-        // rebroadcast a fresh ClusterView (membership snapshot).
+        // Join inicial contra el líder para que rebroadcastée el ClusterView.
         let _ = connection
             .send(
                 Message::Join {

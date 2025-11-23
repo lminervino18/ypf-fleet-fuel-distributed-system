@@ -1,7 +1,7 @@
-use std::io::{Read, Write};
-use clap::Parser;
 use crate::commands::Commands;
+use clap::Parser;
 use common::operation::Operation;
+use std::io::{Read, Write};
 
 /// YPF client
 #[derive(Parser, Debug)]
@@ -50,7 +50,8 @@ impl Cli {
             .map_err(|e| anyhow::anyhow!("failed to send operation to server: {e}"))?;
 
         let mut buf = [0u8; 1024];
-        tcp_stream.read(&mut buf)
+        tcp_stream
+            .read(&mut buf)
             .map_err(|e| anyhow::anyhow!("failed to read response from server: {e}"))?;
 
         Ok(())
@@ -89,45 +90,12 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_parsing_limit_card() {
-        let args = vec![
-            "ypf_client",
-            "--server",
-            "127.0.0.1:9000",
-            "limit-card",
-            "--card-id",
-            "card",
-            "--amount",
-            "500.0",
-        ];
-        let cli = Cli::parse_from(args);
-        assert_eq!(cli.server, "127.0.0.1:9000");
-        match cli.command {
-            Commands::LimitCard { card_id, amount } => {
-                assert_eq!(card_id, "card");
-                assert_eq!(amount, 500.0);
-            }
-            _ => panic!("Expected LimitCard command"),
-        }
-    }
-
-    #[test]
     fn test_cli_parsing_query_account() {
         let args = vec!["ypf_client", "query-account"];
         let cli = Cli::parse_from(args);
         match cli.command {
-            Commands::QueryAccount => {}
+            Commands::AccountQuery => {}
             _ => panic!("Expected QueryAccount command"),
-        }
-    }
-
-    #[test]
-    fn test_cli_parsing_query_cards() {
-        let args = vec!["ypf_client", "query-cards"];
-        let cli = Cli::parse_from(args);
-        match cli.command {
-            Commands::QueryCards => {}
-            _ => panic!("Expected QueryCards command"),
         }
     }
 

@@ -22,7 +22,7 @@ pub enum Commands {
     },
 
     /// Query the account balance
-    QueryAccount,
+    AccountQuery,
 
     /// Query balances of all cards for the account.
     QueryCards,
@@ -47,12 +47,10 @@ impl From<Commands> for Operation {
                 card_id: card_id.parse().unwrap_or(0),
                 new_limit: Some(amount as f32),
             },
-            Commands::QueryAccount => Operation::QueryAccount {
+            Commands::AccountQuery => Operation::AccountQuery {
                 account_id: 0, // to be filled by the client
             },
-            Commands::QueryCards => Operation::QueryCards {
-                account_id: 0, // to be filled by the client
-            },
+            Commands::QueryCards => todo!(), // esto se va
             Commands::Bill { period } => Operation::Bill {
                 account_id: 0, // to be filled by the client
                 period,
@@ -69,7 +67,7 @@ impl Clone for Commands {
                 card_id: card_id.clone(),
                 amount: *amount,
             },
-            Commands::QueryAccount => Commands::QueryAccount,
+            Commands::AccountQuery => Commands::AccountQuery,
             Commands::QueryCards => Commands::QueryCards,
             Commands::Bill { period } => Commands::Bill {
                 period: period.clone(),

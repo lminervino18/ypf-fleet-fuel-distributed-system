@@ -1,36 +1,18 @@
 //! AccountActor: manages one account and account-wide state.
-//!
-//! State:
-//! - `account_limit`: optional (None = no limit).
-//! - `account_consumed`: total charged across all cards of this account.
-//!
-//! Flows:
-//! - Charges (from cards):
-//!   CardActor → AccountActor:
-//!   `AccountMsg::ApplyChargeFromCard`
-//!   The account:
-//!     * if `from_offline_station == false`:
-//!         - checks account-wide limit,
-//!         - applies the charge if allowed,
-//!     * if `from_offline_station == true`:
-//!         - **skips all limit checks** and unconditionally applies
-//!           the charge (these correspond to previously-confirmed
-//!           offline operations that must be reconciled),
-//!     * replies to the card via `AccountChargeReply`.
-//!
-//! - Account limit changes (from router):
-//!   Router → AccountActor:
-//!   `AccountMsg::ApplyAccountLimit`
-//!   The account:
-//!     * checks that the new limit is not below already consumed,
-//!     * applies the new limit if allowed,
-//!     * notifies the router via `RouterInternalMsg::OperationCompleted`.
-
 use actix::prelude::*;
+use std::collections::HashMap;
 
 use super::actor_router::ActorRouter;
 use super::messages::{AccountChargeReply, AccountMsg, RouterInternalMsg};
 use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
+
+/// Estado interno de un query de cuenta en curso.
+#[derive(Debug)]
+struct AccountPendingQuery {
+    op_id: u32,
+    remaining: usize,
+    per_card_spent: HashMap<u64, f32>,
+}
 
 /// Actor that manages a single account and its state.
 pub struct AccountActor {
@@ -44,6 +26,9 @@ pub struct AccountActor {
 
     /// Back-reference to the router, to send `RouterInternalMsg` events.
     router: Addr<ActorRouter>,
+
+    /// Query de cuenta en curso (si lo hay).
+    pending_query: Option<AccountPendingQuery>,
 }
 
 impl AccountActor {
@@ -53,6 +38,7 @@ impl AccountActor {
             account_limit: Some(100.0),
             account_consumed: 0.0,
             router,
+            pending_query: None,
         }
     }
 
@@ -105,13 +91,7 @@ impl Handler<AccountMsg> for AccountActor {
                 reply_to,
             } => {
                 if from_offline_station {
-                    // OFFLINE REPLAY:
-                    // ---------------
-                    // This charge was already confirmed to the station while
-                    // the node was OFFLINE. We must:
-                    // - skip *all* limit checks,
-                    // - unconditionally apply it at account level,
-                    // - always report success.
+                    // OFFLINE REPLAY: saltar chequeos y aplicar siempre
                     self.account_consumed += amount;
 
                     reply_to.do_send(AccountChargeReply {
@@ -123,16 +103,13 @@ impl Handler<AccountMsg> for AccountActor {
                     return;
                 }
 
-                // ONLINE CHARGE:
-                // -------------
-                // Verify account-wide limit for this charge.
+                // ONLINE CHARGE: verificar límite de cuenta
                 let res = self
                     .check_account_limit(amount)
                     .map_err(VerifyError::ChargeLimit);
 
                 match res {
                     Ok(()) => {
-                        // Apply charge at account level.
                         self.account_consumed += amount;
 
                         reply_to.do_send(AccountChargeReply {
@@ -142,8 +119,7 @@ impl Handler<AccountMsg> for AccountActor {
                         });
                     }
                     Err(err) => {
-                        // Do not update account_consumed; just notify the card.
-                        reply_to.do_send(AccountChargeReply {
+                        let _ = reply_to.do_send(AccountChargeReply {
                             op_id,
                             success: false,
                             error: Some(err),
@@ -158,7 +134,6 @@ impl Handler<AccountMsg> for AccountActor {
 
                 match res {
                     Ok(()) => {
-                        // Apply the new account limit.
                         self.account_limit = new_limit;
 
                         self.send_internal(RouterInternalMsg::OperationCompleted {
@@ -177,52 +152,67 @@ impl Handler<AccountMsg> for AccountActor {
                 }
             }
 
-            AccountMsg::ExecuteQueryAccount { op_id } => {
-                let msg = format!(
-                    "[Account {}] Query: limit={:?}, consumed={}",
-                    self.account_id, self.account_limit, self.account_consumed
-                );
-                println!("{msg}");
+            AccountMsg::StartAccountQuery { op_id, num_cards } => {
+                // Si no hay tarjetas, respondemos directamente con lo que sabemos.
+                if num_cards == 0 {
+                    self.send_internal(RouterInternalMsg::AccountQueryCompleted {
+                        op_id,
+                        account_id: self.account_id,
+                        total_spent: self.account_consumed,
+                        per_card_spent: HashMap::new(),
+                    });
+                    return;
+                }
 
-                self.send_internal(RouterInternalMsg::OperationCompleted {
+                // Iniciar estado interno del query
+                self.pending_query = Some(AccountPendingQuery {
                     op_id,
-                    success: true,
-                    error: None,
+                    remaining: num_cards,
+                    per_card_spent: HashMap::new(),
                 });
             }
 
-            AccountMsg::ExecuteQueryCards { op_id } => {
-                let msg = format!(
-                    "[Account {}] QueryCards",
-                    self.account_id
-                );
-                println!("{msg}");
-
-                self.send_internal(RouterInternalMsg::OperationCompleted {
-                    op_id,
-                    success: true,
-                    error: None,
-                });
-            }
-
-            AccountMsg::ExecuteBilling { op_id, period } => {
-                let msg = match period {
-                    Some(p) => format!(
-                        "[Account {}] Billing for period {}",
-                        self.account_id, p
-                    ),
-                    None => format!(
-                        "[Account {}] Billing for all periods",
-                        self.account_id
-                    ),
+            AccountMsg::CardQueryReply {
+                op_id,
+                card_id,
+                consumed,
+            } => {
+                // Solo nos importa si hay un query en curso con ese op_id
+                let pending = match self.pending_query.as_mut() {
+                    Some(p) if p.op_id == op_id => p,
+                    _ => {
+                        // Query inesperado; ignorar o loggear
+                        self.send_internal(RouterInternalMsg::Debug(format!(
+                            "[Account {}] CardQueryReply inesperado: op_id={}",
+                            self.account_id, op_id
+                        )));
+                        return;
+                    }
                 };
-                println!("{msg}");
 
-                self.send_internal(RouterInternalMsg::OperationCompleted {
-                    op_id,
-                    success: true,
-                    error: None,
-                });
+                pending.per_card_spent.insert(card_id, consumed);
+                if pending.remaining > 0 {
+                    pending.remaining -= 1;
+                }
+
+                // ¿ya respondieron todas las tarjetas?
+                if pending.remaining == 0 {
+                    let per_card_spent = std::mem::take(&mut pending.per_card_spent);
+                    let total_spent = per_card_spent.values().copied().sum::<f32>();
+
+                    let op_id = pending.op_id;
+                    let account_id = self.account_id;
+
+                    // limpiar estado
+                    self.pending_query = None;
+
+                    self.send_internal(RouterInternalMsg::AccountQueryCompleted {
+                        op_id,
+                        account_id,
+                        total_spent,
+                        per_card_spent,
+                    });
+                }
             }
         }
     }
