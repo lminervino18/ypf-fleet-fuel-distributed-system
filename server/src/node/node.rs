@@ -1,16 +1,15 @@
-use super::{
-    actors::ActorEvent,
-    message::Message,
-    operation::Operation,
-};
-use common::{Station, StationToNodeMsg, NodeToStationMsg};
+use super::network::Connection;
+use super::{actors::ActorEvent, message::Message, operation::Operation};
 use crate::errors::{AppResult, VerifyError};
+use common::{Station, StationToNodeMsg};
 use std::net::SocketAddr;
 use tokio::select;
-use tokio::time::{sleep, Duration};
+use tokio::sync::mpsc::Receiver;
+use tokio::time::Duration;
 
 /// Role of a node in the YPF Ruta distributed system.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum NodeRole {
     Leader,
     Replica,
@@ -18,16 +17,18 @@ pub enum NodeRole {
 }
 
 pub trait Node {
+    // messages from connection
     async fn handle_request(
         &mut self,
+        connection: &mut Connection,
         op_id: u32,
         op: Operation,
         client_addr: SocketAddr,
     ) -> AppResult<()>;
 
-    async fn handle_log(&mut self, op_id: u32, op: Operation);
+    async fn handle_log(&mut self, connection: &mut Connection, op_id: u32, op: Operation);
 
-    async fn handle_ack(&mut self, id: u32);
+    async fn handle_ack(&mut self, connection: &mut Connection, id: u32);
 
     async fn handle_operation_result(
         &mut self,
@@ -48,7 +49,8 @@ pub trait Node {
                 success,
                 error,
             } => {
-                self.handle_operation_result(op_id, operation, success, error).await;
+                self.handle_operation_result(op_id, operation, success, error)
+                    .await;
             }
             _ => {
                 // Other actor events not wired yet.
@@ -57,18 +59,10 @@ pub trait Node {
         }
     }
 
-    /* OperationResult {
-        op_id: u64,
-        operation: Operation,
-        success: bool,
-        /// Domain/business error, if any (limits, invalid updates, etc.).
-        /// For offline-replayed charges this will always be `None`.
-        error: Option<VerifyError>,
-    },*/
-
     async fn handle_charge_request(
         &mut self,
-        pump_id: usize,
+        station: &mut Station,
+        _pump_id: usize,
         account_id: u64,
         card_id: u64,
         amount: f32,
@@ -158,7 +152,7 @@ pub trait Node {
     /// - `ChargeRequest` into `handle_charge_request`,
     /// - `DisconnectNode` into `handle_disconnect_node`,
     /// - `ConnectNode` into `handle_connect_node`.
-    async fn handle_station_msg(&mut self, msg: StationToNodeMsg) {
+    async fn handle_station_msg(&mut self, station: &mut Station, msg: StationToNodeMsg) {
         match msg {
             StationToNodeMsg::ChargeRequest {
                 pump_id,
@@ -167,8 +161,10 @@ pub trait Node {
                 amount,
                 request_id,
             } => {
-                self.handle_charge_request(pump_id, account_id, card_id, amount, request_id)
-                    .await;
+                self.handle_charge_request(
+                    station, pump_id, account_id, card_id, amount, request_id,
+                )
+                .await;
             }
 
             StationToNodeMsg::DisconnectNode => {
@@ -182,15 +178,28 @@ pub trait Node {
     }
 
     // === I/O hooks each concrete node must provide ===
-    async fn recv_node_msg(&mut self) -> AppResult<Message>;
+    /* async fn recv_node_msg(&mut self) -> AppResult<Message>;
     async fn recv_actor_event(&mut self) -> Option<ActorEvent>;
-    async fn recv_station_message(&mut self) -> Option<StationToNodeMsg>;
+    async fn recv_station_message(&mut self) -> Option<StationToNodeMsg>; */
 
     // === Bully / leader election hooks ===
-    async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr);
-    async fn handle_election_ok(&mut self, responder_id: u64);
-    async fn handle_coordinator(&mut self, leader_id: u64, leader_addr: SocketAddr);
-    async fn start_election(&mut self);
+    async fn handle_election(
+        &mut self,
+        connection: &mut Connection,
+        candidate_id: u64,
+        candidate_addr: SocketAddr,
+    );
+
+    async fn handle_election_ok(&mut self, connection: &mut Connection, responder_id: u64);
+
+    async fn handle_coordinator(
+        &mut self,
+        connection: &mut Connection,
+        leader_id: u64,
+        leader_addr: SocketAddr,
+    );
+
+    async fn start_election(&mut self, connection: &mut Connection);
 
     // === Cluster membership hooks (Join / ClusterView) ===
 
@@ -202,7 +211,7 @@ pub trait Node {
     ///
     /// Typical Replica behavior:
     /// - usually does not receive Join (only Leader does), so this may be a no-op or `todo!()`.
-    async fn handle_join(&mut self, node_id: u64, addr: SocketAddr);
+    async fn handle_join(&mut self, connection: &mut Connection, node_id: u64, addr: SocketAddr);
 
     /// Handle an incoming ClusterView snapshot.
     ///
@@ -212,34 +221,36 @@ pub trait Node {
     async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>);
 
     /// Default handler for any node-to-node Message.
-    async fn handle_node_msg(&mut self, msg: Message) {
+    async fn handle_node_msg(&mut self, connection: &mut Connection, msg: Message) {
         match msg {
             Message::Request { op_id, op, addr } => {
-                self.handle_request(op_id, op, addr).await;
+                self.handle_request(connection, op_id, op, addr).await;
             }
             Message::Log { op_id, op } => {
-                self.handle_log(op_id, op).await;
+                self.handle_log(connection, op_id, op).await;
             }
             Message::Ack { op_id } => {
-                self.handle_ack(op_id).await;
+                self.handle_ack(connection, op_id).await;
             }
             Message::Election {
                 candidate_id,
                 candidate_addr,
             } => {
-                self.handle_election(candidate_id, candidate_addr).await;
+                self.handle_election(connection, candidate_id, candidate_addr)
+                    .await;
             }
             Message::ElectionOk { responder_id } => {
-                self.handle_election_ok(responder_id).await;
+                self.handle_election_ok(connection, responder_id).await;
             }
             Message::Coordinator {
                 leader_id,
                 leader_addr,
             } => {
-                self.handle_coordinator(leader_id, leader_addr).await;
+                self.handle_coordinator(connection, leader_id, leader_addr)
+                    .await;
             }
             Message::Join { node_id, addr } => {
-                self.handle_join(node_id, addr).await;
+                self.handle_join(connection, node_id, addr).await;
             }
             Message::ClusterView { members } => {
                 self.handle_cluster_view(members).await;
@@ -254,15 +265,17 @@ pub trait Node {
     /// - Station messages (pump simulator),
     /// - Actor events (operation results),
     /// and periodically checks for liveness to decide when to trigger a Bully election.
-    async fn run(&mut self) -> AppResult<()> {
+    async fn run(
+        &mut self,
+        mut connection: Connection,
+        mut actor_rx: Receiver<ActorEvent>,
+        mut station: Station,
+    ) -> AppResult<()> {
         use tokio::time::{interval, Instant};
-
         let mut check = interval(Duration::from_millis(100));
         let liveness_threshold = Duration::from_millis(300);
-
         // Timer of last received node-to-node message.
         let mut last_seen = Instant::now();
-        todo!();
         loop {
             select! {
                 // periodic tick to check liveness
@@ -274,20 +287,19 @@ pub trait Node {
                         //
                         // For actual leaders, `start_election` can be a no-op;
                         // for replicas, it should orchestrate `conduct_election`.
-                        self.start_election().await;
+                        self.start_election(&mut connection).await;
 
                         // Update last_seen to avoid continuous restarts.
                         last_seen = Instant::now();
                     }
                 }
-
                 // === Node-to-node messages (Raft / Bully / Cluster membership) ===
-                node_msg = self.recv_node_msg() => {
+                node_msg = connection.recv() => {
                     match node_msg {
                         Ok(msg) => {
                             // Any valid node message counts as liveness.
                             last_seen = Instant::now();
-                            self.handle_node_msg(msg).await;
+                            self.handle_node_msg(&mut connection, msg).await;
                         }
                         Err(_e) => {
                             // Network error receiving a node message.
@@ -298,12 +310,11 @@ pub trait Node {
                         }
                     }
                 }
-
                 // === Station (pump simulator) messages ===
-                pump_msg = self.recv_station_message() => {
+                pump_msg = station.recv() => {
                     match pump_msg {
                         Some(msg) => {
-                            self.handle_station_msg(msg).await;
+                            self.handle_station_msg(&mut station, msg).await;
                         }
                         None => {
                             // Station side closed its channel.
@@ -313,9 +324,8 @@ pub trait Node {
                         }
                     }
                 }
-
                 // === Actor events (OperationResult, etc.) ===
-                actor_evt = self.recv_actor_event() => {
+                actor_evt = actor_rx.recv() => {
                     match actor_evt {
                         Some(evt) => {
                             self.handle_actor_event(evt).await;

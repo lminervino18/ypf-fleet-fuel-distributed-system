@@ -6,7 +6,7 @@ use crate::{
     node::utils::get_id_given_addr,
 };
 use actix::{Actor, Addr};
-use common::{Station, StationToNodeMsg, NodeToStationMsg};
+use common::{NodeToStationMsg, Station};
 use std::{
     collections::{HashMap, VecDeque},
     future::pending,
@@ -85,12 +85,12 @@ pub struct Leader {
     members: HashMap<u64, SocketAddr>,
     /// Stored operations indexed by op_id.
     operations: HashMap<u32, (usize, SocketAddr, Operation)>,
-    connection: Connection,
-    actor_rx: mpsc::Receiver<ActorEvent>,
+    // connection: Connection,
+    // actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
     offline_queue: VecDeque<OfflineQueuedCharge>,
     /// High-level Station wrapper (owns the simulator task and channels).
-    station: Station,
+    // station: Station,
     /// Pending ONLINE station-originated charges.
     station_requests: HashMap<u64, StationPendingCharge>,
     router: Addr<ActorRouter>,
@@ -102,42 +102,40 @@ pub struct Leader {
 impl Node for Leader {
     async fn handle_request(
         &mut self,
+        connection: &mut Connection,
         op_id: u32,
         op: Operation,
         client_addr: SocketAddr,
     ) -> AppResult<()> {
         // Store the operation locally.
         self.operations.insert(op_id, (0, client_addr, op.clone()));
-
         // Build the log message to replicate.
         let msg = Message::Log {
             op_id,
             op: op.clone(),
         };
-
         // Broadcast the log to all known members except self.
         for (node_id, addr) in &self.members {
             if *node_id == self.id {
                 continue;
             }
-            self.connection.send(msg.clone(), addr).await?;
+            connection.send(msg.clone(), addr).await?;
         }
 
         Ok(())
     }
 
-    async fn handle_log(&mut self, _op_id: u32, _op: Operation) {
+    async fn handle_log(&mut self, _connection: &mut Connection, _op_id: u32, _op: Operation) {
         // Leader should not receive Log messages.
         todo!(); // TODO: leader should not receive any Log messages.
     }
 
-    async fn handle_ack(&mut self, op_id: u32) {
+    async fn handle_ack(&mut self, _connection: &mut Connection, op_id: u32) {
         let Some((ack_count, _, _)) = self.operations.get_mut(&op_id) else {
             todo!(); // TODO: handle this case (unknown op_id).
         };
 
         *ack_count += 1;
-
         // Majority is computed over "replica" count = members - 1 (we are the leader).
         let replica_count = self.members.len().saturating_sub(1);
         if *ack_count <= replica_count / 2 {
@@ -161,24 +159,9 @@ impl Node for Leader {
         todo!();
     }
 
-    async fn recv_node_msg(&mut self) -> AppResult<Message> {
-        self.connection.recv().await
-    }
-
-    async fn recv_actor_event(&mut self) -> Option<ActorEvent> {
-        self.actor_rx.recv().await
-    }
-
-    async fn recv_station_message(&mut self) -> Option<StationToNodeMsg> {
-        self.station.recv().await
-    }
-
-    async fn handle_actor_event(&mut self, _event: ActorEvent) {
-        // Currently unused; keep as no-op until we wire actor feedback here.
-    }
-
     async fn handle_charge_request(
         &mut self,
+        station: &mut Station,
         _pump_id: usize,
         account_id: u64,
         card_id: u64,
@@ -196,7 +179,6 @@ impl Node for Leader {
                 card_id,
                 amount,
             });
-
             // Immediately respond to the station as if the
             // operation had succeeded.
             let msg = NodeToStationMsg::ChargeResult {
@@ -204,8 +186,7 @@ impl Node for Leader {
                 allowed: true,
                 error: None,
             };
-
-            if let Err(_e) = self.station.send(msg).await {
+            if let Err(_e) = station.send(msg).await {
                 // println!(
                 //     "[Leader][station][OFFLINE][ERROR] failed to send fake-OK result: {e}",
                 // );
@@ -225,7 +206,6 @@ impl Node for Leader {
                 amount,
             },
         );
-
         // Build the domain operation for the actor layer.
         let op = Operation::Charge {
             account_id,
@@ -233,7 +213,6 @@ impl Node for Leader {
             amount,
             from_offline_station: false,
         };
-
         // Trigger the full execute flow in the actor system.
         self.router.do_send(RouterCmd::Execute {
             op_id: 0,
@@ -241,33 +220,43 @@ impl Node for Leader {
         });
     }
 
-    async fn handle_election(&mut self, candidate_id: u64, candidate_addr: SocketAddr) {
+    async fn handle_election(
+        &mut self,
+        connection: &mut Connection,
+        candidate_id: u64,
+        candidate_addr: SocketAddr,
+    ) {
         // If our id is higher than the candidate, reply with ElectionOk.
         if self.id > candidate_id {
             let reply = Message::ElectionOk {
                 responder_id: self.id,
             };
 
-            let _ = self.connection.send(reply, &candidate_addr).await;
+            let _ = connection.send(reply, &candidate_addr).await;
         }
     }
 
-    async fn handle_election_ok(&mut self, _responder_id: u64) {
+    async fn handle_election_ok(&mut self, _connection: &mut Connection, _responder_id: u64) {
         // Leader ignores election OKs.
     }
 
-    async fn handle_coordinator(&mut self, _leader_id: u64, _leader_addr: SocketAddr) {
+    async fn handle_coordinator(
+        &mut self,
+        _connection: &mut Connection,
+        _leader_id: u64,
+        _leader_addr: SocketAddr,
+    ) {
         // Leader ignores coordinator announcements.
     }
 
-    async fn start_election(&mut self) {
+    async fn start_election(&mut self, _connection: &mut Connection) {
         // Leader doesn't start elections.
     }
 
     /// Called when we receive a `Message::Join` through the generic
     /// Node dispatcher.
-    async fn handle_join(&mut self, node_id: u64, addr: SocketAddr) {
-        self.handle_join_message(node_id, addr).await;
+    async fn handle_join(&mut self, connection: &mut Connection, node_id: u64, addr: SocketAddr) {
+        self.handle_join_message(connection, node_id, addr).await;
     }
 
     /// Called when we receive a `Message::ClusterView` through the
@@ -293,7 +282,6 @@ impl Leader {
     ) -> AppResult<()> {
         let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
         let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
-
         // Spawn a thread for Actix that runs inside a Tokio runtime.
         std::thread::spawn(move || {
             let sys = actix::System::new();
@@ -306,16 +294,14 @@ impl Leader {
                 pending::<()>().await; // Keep the Actix system running indefinitely.
             });
         });
-
         // Start the shared Station abstraction (stdin-based simulator).
         let station = Station::start(pumps).await?;
-
         // Seed membership: leader only. Other members will be
         // registered via Join / ClusterView messages.
         let self_id = get_id_given_addr(address);
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
         members.insert(self_id, address);
-
+        let connection = Connection::start(address, max_conns).await?;
         let mut leader = Self {
             id: self_id,
             coords,
@@ -323,37 +309,36 @@ impl Leader {
             max_conns,
             members,
             operations: HashMap::new(),
-            connection: Connection::start(address, max_conns).await?,
-            actor_rx,
             is_offline: false,
             offline_queue: VecDeque::new(),
-            station,
             station_requests: HashMap::new(),
             router: router_rx.await.map_err(|e| AppError::ActorSystem {
                 details: format!("failed to receive ActorRouter address: {e}"),
             })?,
         };
 
-        leader.run().await
+        leader.run(connection, actor_rx, station).await
     }
 
     /// Handle an incoming Join message:
     /// - register the new member in the membership map,
     /// - broadcast a ClusterView snapshot to all members (including the newcomer),
     ///   so everyone can converge to the same view.
-    pub async fn handle_join_message(&mut self, node_id: u64, addr: SocketAddr) {
+    pub async fn handle_join_message(
+        &mut self,
+        connection: &mut Connection,
+        node_id: u64,
+        addr: SocketAddr,
+    ) {
         self.members.insert(node_id, addr);
-
         let members_vec: Vec<(u64, SocketAddr)> =
             self.members.iter().map(|(id, addr)| (*id, *addr)).collect();
-
         let view_msg = Message::ClusterView {
             members: members_vec,
         };
-
         // Broadcast the updated view to all members.
         for (_id, peer_addr) in &self.members {
-            let _ = self.connection.send(view_msg.clone(), peer_addr).await;
+            let _ = connection.send(view_msg.clone(), peer_addr).await;
         }
     }
 
@@ -362,7 +347,6 @@ impl Leader {
     /// - but ensure we always include ourselves with our known address.
     pub fn handle_cluster_view_message(&mut self, members: Vec<(u64, SocketAddr)>) {
         self.members.clear();
-
         // Rebuild membership from snapshot.
         for (id, addr) in members {
             self.members.insert(id, addr);
