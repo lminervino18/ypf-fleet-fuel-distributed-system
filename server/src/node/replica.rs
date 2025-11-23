@@ -6,7 +6,7 @@ use super::{
 };
 use crate::errors::{AppError, AppResult};
 use actix::{Actor, Addr};
-use common::{operation::Operation, Connection, Message, Station, StationToNodeMsg};
+use common::{operation::Operation, Connection, Message, Station, StationToNodeMsg, VerifyError};
 use std::{
     collections::{HashMap, VecDeque},
     future::pending,
@@ -37,7 +37,7 @@ struct OfflineQueuedCharge {
     request_id: u64,
     account_id: u64,
     card_id: u64,
-    amount: f64,
+    amount: f32,
 }
 
 pub struct Replica {
@@ -54,7 +54,7 @@ pub struct Replica {
     // connection: Connection,
     // actor_rx: mpsc::Receiver<ActorEvent>,
     is_offline: bool,
-    offline_queue: VecDeque<OfflineQueuedCharge>,
+    offline_queue: VecDeque<Operation>,
     /// High-level station abstraction (internally runs the simulator task).
     // station: Station,
     /// Pending station-originated charges while ONLINE.
@@ -63,60 +63,26 @@ pub struct Replica {
 }
 
 impl Node for Replica {
-    async fn handle_charge_request(
-        &mut self,
-        connection: &mut Connection,
-        station: &mut Station,
-        pump_id: usize,
-        account_id: u64,
-        card_id: u64,
-        amount: f32,
-        request_id: u64,
-    ) {
-        if self.is_offline {
-            self.offline_queue.push_back(OfflineQueuedCharge {
-                request_id,
-                account_id,
-                card_id,
-                amount,
-            });
-            let msg = NodeToStationMsg::ChargeResult {
-                request_id,
-                allowed: true,
-                error: None,
-            };
-            if let Err(_e) = station.send(msg).await {}
-            return;
-        }
+    fn is_offline(&self) -> bool {
+        self.is_offline
+    }
 
-        let pending = StationPendingCharge {
-            pump_id,
-            account_id,
-            card_id,
-            amount,
-        };
-        self.station_requests.insert(pump_id, pending);
-        connection.send(
-            Message::Request {
-                req_id: pump_id, // magic trickkk :)
-                op: Operation::Charge {
-                    account_id,
-                    card_id,
-                    amount,
-                    from_offline_station: false,
-                },
-                addr: (),
-            },
-            address,
-        );
+    fn log_offline_opeartion(&mut self, op: Operation) {
+        self.offline_queue.push_back(op);
+    }
+
+    fn get_address(&self) -> SocketAddr {
+        self.address
     }
 
     async fn handle_operation_result(
         &mut self,
-        _op_id: u32,
-        _operation: Operation,
-        _success: bool,
-        _error: Option<crate::errors::VerifyError>,
+        connection: &mut Connection,
+        station: &mut Station,
+        op_id: u32,
+        operation: Operation,
+        success: bool,
+        error: Option<VerifyError>,
     ) {
         connection
             .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
@@ -142,6 +108,8 @@ impl Node for Replica {
                 &self.leader_addr,
             )
             .await?;
+
+        Ok(())
     }
 
     async fn handle_log(&mut self, connection: &mut Connection, op_id: u32, new_op: Operation) {
@@ -154,48 +122,6 @@ impl Node for Replica {
     async fn handle_ack(&mut self, _connection: &mut Connection, _id: u32) {
         // Replicas should not receive any ACK messages.
         todo!();
-    }
-
-    async fn handle_actor_event(&mut self, event: ActorEvent) {
-        // Same behavior as the default Node implementation:
-        match event {
-            ActorEvent::OperationResult {
-                op_id,
-                operation,
-                success,
-                error,
-            } => {
-                self.handle_operation_result(op_id, operation, success, error)
-                    .await;
-            }
-            _ => {
-                todo!();
-            }
-        }
-    }
-
-    async fn handle_station_msg(&mut self, station: &mut Station, msg: StationToNodeMsg) {
-        // Same behavior as the default Node implementation:
-        match msg {
-            StationToNodeMsg::ChargeRequest {
-                pump_id,
-                account_id,
-                card_id,
-                amount,
-                request_id,
-            } => {
-                self.handle_charge_request(
-                    station, pump_id, account_id, card_id, amount, request_id,
-                )
-                .await;
-            }
-            StationToNodeMsg::DisconnectNode => {
-                self.handle_disconnect_node().await;
-            }
-            StationToNodeMsg::ConnectNode => {
-                self.handle_connect_node().await;
-            }
-        }
     }
 
     async fn handle_election(
@@ -264,12 +190,7 @@ impl Node for Replica {
     }
 
     /// Replicas ignore Join themselves — new nodes should always Join via the current leader.
-    async fn handle_join(
-        &mut self,
-        _connection: &mut Connection,
-        _node_id: u64,
-        _addr: SocketAddr,
-    ) {
+    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr) {
         // No-op for replicas.
     }
 
@@ -295,7 +216,7 @@ impl Node for Replica {
 }
 
 impl Replica {
-    async fn commit_operation(&mut self, op_id: u32) {
+    async fn commit_operation(&mut self, op_id: u32) -> AppResult<()> {
         let Some(op) = self.operations.remove(&op_id) else {
             todo!();
         };
@@ -306,6 +227,11 @@ impl Replica {
                 operation: op,
             })
             .await
+            .map_err(|e| AppError::ActorSystem {
+                details: e.to_string(),
+            })?;
+
+        Ok(())
     }
 
     /// - boots the ConnectionManager (TCP),
