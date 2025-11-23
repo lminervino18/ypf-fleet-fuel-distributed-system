@@ -309,21 +309,22 @@ resuelven dentro del modelo de actores.
 # Modelo de actores de la base de datos
 
 La base de datos lógica de **YPF Ruta** se modela con el patrón de **actores**: cada entidad
-de negocio (cuenta, tarjeta) se representa como un actor con estado propio, que solo se
-modifica a través de mensajes. El nodo no toca ese estado directamente: envía operaciones
-de alto nivel y espera un resultado tipado.
+de negocio (cuenta, tarjeta) es un actor con estado propio, que solo se modifica a través
+de mensajes. El nodo nunca accede a ese estado directamente: envía operaciones de alto
+nivel y recibe un resultado tipado.
 
 ## ActorRouter
 
-`ActorRouter` es el “front” del mundo de actores. Desde el punto de vista del nodo:
+`ActorRouter` es la puerta de entrada al mundo de actores. Desde el punto de vista del nodo:
 
-- recibe una operación de negocio, por ejemplo `Execute(op_id, Operation)`,
-- se asegura de tener los actores necesarios (cuenta y tarjetas),
-- distribuye el trabajo y, cuando todo termina, emite un único resultado
+- recibe una operación de negocio (por ejemplo, `Execute(op_id, Operation)`),
+- se asegura de tener creados los actores necesarios (cuentas y tarjetas),
+- coordina el intercambio de mensajes entre ellos,
+- y, cuando todo termina, emite un único resultado
   `OperationResult(op_id, Operation, Resultado)`.
 
-Es decir, convierte un pedido de alto nivel en mensajes internos y vuelve a condensar todas
-esas interacciones en una respuesta única para el nodo.
+En síntesis, toma un pedido de alto nivel, lo descompone en mensajes internos y vuelve a
+concentrar todas esas interacciones en una respuesta única para el nodo.
 
 ## AccountActor
 
@@ -331,9 +332,9 @@ Cada `AccountActor` encapsula el estado de una cuenta:
 
 - límite global de la cuenta,
 - consumo acumulado,
-- estado temporal para consultas (cuando se pide un resumen con detalle por tarjeta).
+- y, cuando hace falta, estado temporal para consultas con detalle por tarjeta.
 
-A nivel conceptual maneja tres tipos de mensajes:
+Conceptualmente maneja tres tipos de mensajes:
 
 - `ApplyCharge(amount, from_offline_station)`
 - `ApplyAccountLimit(new_limit)`
@@ -341,10 +342,10 @@ A nivel conceptual maneja tres tipos de mensajes:
 
 Con ellos:
 
-- valida y aplica cargos a nivel cuenta,
+- valida y aplica cargos a nivel cuenta (respetando el límite global),
 - valida y actualiza el límite global,
-- agrega la información que le van reportando las tarjetas para construir la respuesta de una
-  consulta de cuenta.
+- y agrega la información que le van reportando las tarjetas para construir la respuesta
+  de una consulta de cuenta.
 
 ## CardActor
 
@@ -352,9 +353,9 @@ Cada `CardActor` representa una tarjeta individual:
 
 - límite por tarjeta,
 - consumo acumulado,
-- cola de tareas para procesar sus operaciones en orden.
+- y una cola de tareas para procesar sus operaciones en orden.
 
-Recibe, de forma conceptualmente simple, mensajes del estilo:
+Recibe, de forma conceptual, mensajes del estilo:
 
 - `ExecuteCharge(amount, from_offline_station)`
 - `ExecuteLimitChange(new_limit)`
@@ -364,21 +365,21 @@ Con estos mensajes:
 
 - verifica el límite de tarjeta antes de un cargo,
 - delega en la cuenta la verificación del límite global,
-- responde con su consumo actual cuando se arma una consulta de cuenta.
+- y responde con su consumo actual cuando se arma una consulta de cuenta.
 
 ## Mensajes, operaciones y resultados (Operation, OperationResult)
 
-Para desacoplar nodo y actores se define un conjunto pequeño de operaciones y resultados
-de alto nivel:
+Para desacoplar el nodo del modelo de actores se define un conjunto acotado de operaciones
+y resultados de alto nivel:
 
-Operation =
+`Operation` =
 - `Charge(account_id, card_id, amount, from_offline_station)`
 - `LimitAccount(account_id, new_limit)`
 - `LimitCard(account_id, card_id, new_limit)`
 - `AccountQuery(account_id)`
 - `Bill(account_id, period)`
 
-OperationResult =
+`OperationResult` =
 - `ChargeResult(Ok | Failed(VerifyError))`
 - `LimitAccountResult(Ok | Failed(VerifyError))`
 - `LimitCardResult(Ok | Failed(VerifyError))`
@@ -386,10 +387,10 @@ OperationResult =
 
 El flujo completo es:
 
-1. El nodo recibe una `Operation` y decide cuándo se *commitea* (según el consenso).
+1. El nodo recibe una `Operation` y decide cuándo se *commitea* según el consenso.
 2. Una vez decidido, envía `Execute(op_id, Operation)` al modelo de actores.
-3. Los actores de cuenta y tarjeta procesan la operación solo mediante mensajes.
-4. `ActorRouter` devuelve un único `OperationResult`, que el nodo traduce en la respuesta
+3. Los actores de cuenta y tarjeta procesan la operación únicamente mediante mensajes.
+4. `ActorRouter` devuelve un `OperationResult`, que el nodo traduce en la respuesta
    a la estación o al cliente administrativo.
 
 
