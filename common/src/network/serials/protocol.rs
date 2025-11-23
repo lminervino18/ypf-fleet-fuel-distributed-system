@@ -2,6 +2,9 @@
 pub const MSG_TYPE_REQUEST: u8 = 0x00;
 pub const MSG_TYPE_LOG: u8 = 0x01;
 pub const MSG_TYPE_ACK: u8 = 0x02;
+pub const MSG_TYPE_JOIN: u8 = 0x03;
+pub const MSG_TYPE_CLUSTER_VIEW: u8 = 0x04;
+pub const MSG_TYPE_CLUSTER_UPDATE: u8 = 0x05;
 
 // operation types
 pub const OP_TYPE_CHARGE: u8 = 0x00;
