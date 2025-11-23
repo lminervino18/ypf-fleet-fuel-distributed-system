@@ -1,8 +1,8 @@
-use crate::Message;
-use crate::Message::*;
 use crate::errors::AppError;
 use crate::errors::AppResult;
 use crate::network::serials::protocol::*;
+use crate::Message;
+use crate::Message::*;
 use std::net::SocketAddr;
 
 impl TryFrom<Vec<u8>> for Message {
@@ -13,6 +13,9 @@ impl TryFrom<Vec<u8>> for Message {
             MSG_TYPE_REQUEST => deserialize_request_message(&payload[1..]),
             MSG_TYPE_LOG => deserialize_log_message(&payload[1..]),
             MSG_TYPE_ACK => deserialize_ack_message(&payload[1..]),
+            MSG_TYPE_JOIN => deserialize_join_message(&payload[1..]),
+            MSG_TYPE_CLUSTER_VIEW => deserialize_cluster_view_message(&payload[1..]),
+            MSG_TYPE_CLUSTER_UPDATE => deserialize_cluster_update_message(&payload[1..]),
             _ => Err(AppError::InvalidData {
                 details: format!(
                     "unknown node message type {}, with contents {:?}",
@@ -21,6 +24,87 @@ impl TryFrom<Vec<u8>> for Message {
             }),
         }
     }
+}
+
+fn deserialize_request_message(payload: &[u8]) -> AppResult<Message> {
+    let mut ptr = 0;
+    let op_id = deserialize_op_id(&payload[ptr..])?;
+    ptr += OP_ID_SRL_LEN;
+    let addr = deserialize_socket_address_srl(&payload[ptr..])?;
+    ptr += SOCKET_ADDR_LEN;
+    let op = payload[ptr..].try_into()?;
+    Ok(Request {
+        req_id: op_id,
+        addr,
+        op,
+    })
+}
+
+fn deserialize_log_message(payload: &[u8]) -> AppResult<Message> {
+    let mut ptr = 0;
+    let op_id = deserialize_op_id(&payload[ptr..])?;
+    ptr += OP_ID_SRL_LEN;
+    let op = payload[ptr..].try_into()?;
+    Ok(Log { op_id, op })
+}
+
+fn deserialize_ack_message(payload: &[u8]) -> AppResult<Message> {
+    let op_id = deserialize_op_id(&payload[0..])?;
+    Ok(Ack { op_id })
+}
+
+fn deserialize_member(payload: &[u8]) -> AppResult<(u64, SocketAddr)> {
+    let mut ptr = 0;
+    let id = u64::from_be_bytes(payload[ptr..NODE_ID_SRL_LEN].try_into().map_err(|e| {
+        AppError::InvalidProtocol {
+            details: format!("failed to deserialize member's node_id: {e}"),
+        }
+    })?);
+    ptr += NODE_ID_SRL_LEN;
+    let addr = deserialize_socket_address_srl(&payload[ptr..])?;
+    Ok((id, addr))
+}
+
+fn deserialize_cluster_update_message(payload: &[u8]) -> AppResult<Message> {
+    if payload.len() < MEMBER_SRL_LEN {
+        return Err(AppError::InvalidProtocol {
+            details: "not enough bytes to deserialize op_id".to_string(),
+        });
+    }
+
+    let new_member = deserialize_member(payload)?;
+    Ok(ClusterUpdate { new_member })
+}
+
+fn deserialize_join_message(payload: &[u8]) -> AppResult<Message> {
+    let addr = deserialize_socket_address_srl(payload)?;
+    Ok(Join { addr })
+}
+
+fn deserialize_cluster_view_message(payload: &[u8]) -> AppResult<Message> {
+    let mut ptr = 0;
+    let members_len =
+        usize::from_be_bytes(payload[ptr..MEMBERS_LEN_SRL_LEN].try_into().map_err(|e| {
+            AppError::InvalidProtocol {
+                details: format!("failed to deserialize members_len in cluster_view message: {e}"),
+            }
+        })?);
+
+    if payload.len() < MEMBER_SRL_LEN * members_len {
+        return Err(AppError::InvalidProtocol {
+            details: "not enough bytes to deserialize all members in cluster_view message"
+                .to_string(),
+        });
+    }
+
+    ptr += MEMBERS_LEN_SRL_LEN;
+    let mut members = vec![];
+    for _ in 0..members_len {
+        members.push(deserialize_member(&payload[ptr..])?);
+        ptr += MEMBER_SRL_LEN;
+    }
+
+    Ok(ClusterView { members })
 }
 
 fn deserialize_op_id(payload: &[u8]) -> AppResult<u32> {
@@ -58,33 +142,6 @@ fn deserialize_socket_address_srl(payload: &[u8]) -> AppResult<SocketAddr> {
                 })?,
         );
     Ok(SocketAddr::from((ip, port)))
-}
-
-fn deserialize_request_message(payload: &[u8]) -> AppResult<Message> {
-    let mut ptr = 0;
-    let op_id = deserialize_op_id(&payload[ptr..])?;
-    ptr += OP_ID_SRL_LEN;
-    let addr = deserialize_socket_address_srl(&payload[ptr..])?;
-    ptr += SOCKET_ADDR_LEN;
-    let op = payload[ptr..].try_into()?;
-    Ok(Request {
-        req_id: op_id,
-        addr,
-        op,
-    })
-}
-
-fn deserialize_log_message(payload: &[u8]) -> AppResult<Message> {
-    let mut ptr = 0;
-    let op_id = deserialize_op_id(&payload[ptr..])?;
-    ptr += OP_ID_SRL_LEN;
-    let op = payload[ptr..].try_into()?;
-    Ok(Log { op_id, op })
-}
-
-fn deserialize_ack_message(payload: &[u8]) -> AppResult<Message> {
-    let op_id = deserialize_op_id(&payload[0..])?;
-    Ok(Ack { op_id })
 }
 
 #[cfg(test)]
@@ -149,6 +206,43 @@ mod test {
     #[test]
     fn test_deserialize_ack_message() {
         let msg = Message::Ack { op_id: 15936 };
+        let msg_srl: Vec<u8> = msg.clone().into();
+        let expected = Ok(msg);
+        let msg = msg_srl.try_into();
+        assert_eq!(msg, expected);
+    }
+
+    #[test]
+    fn test_deserialize_join_message() {
+        let msg = Message::Join {
+            addr: SocketAddr::from(([127, 0, 0, 1], 12345)),
+        };
+        let msg_srl: Vec<u8> = msg.clone().into();
+        let expected = Ok(msg);
+        let msg = msg_srl.try_into();
+        assert_eq!(msg, expected);
+    }
+
+    #[test]
+    fn test_deserialize_cluster_view_message() {
+        let msg = Message::ClusterView {
+            members: vec![
+                (132, SocketAddr::from(([127, 0, 0, 1], 12345))),
+                (8534, SocketAddr::from(([127, 0, 0, 1], 12346))),
+                (12, SocketAddr::from(([127, 0, 0, 1], 12347))),
+            ],
+        };
+        let msg_srl: Vec<u8> = msg.clone().into();
+        let expected = Ok(msg);
+        let msg = msg_srl.try_into();
+        assert_eq!(msg, expected);
+    }
+
+    #[test]
+    fn test_deserialize_cluster_update_message() {
+        let msg = Message::ClusterUpdate {
+            new_member: (13248, SocketAddr::from(([127, 0, 0, 1], 12346))),
+        };
         let msg_srl: Vec<u8> = msg.clone().into();
         let expected = Ok(msg);
         let msg = msg_srl.try_into();

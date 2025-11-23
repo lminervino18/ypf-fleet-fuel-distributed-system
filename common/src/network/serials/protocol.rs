@@ -29,6 +29,10 @@ pub const CARD_ID_SRL_LEN: usize = size_of::<u64>();
 pub const AMOUNT_SRL_LEN: usize = size_of::<f32>();
 pub const OFFLINE_SRL_LEN: usize = size_of::<u8>();
 
+pub const NODE_ID_SRL_LEN: usize = size_of::<u64>(); // está así en todos lados, pero 64 bytes???
+pub const MEMBER_SRL_LEN: usize = NODE_ID_SRL_LEN + SOCKET_ADDR_LEN;
+pub const MEMBERS_LEN_SRL_LEN: usize = size_of::<usize>();
+
 // lenghts of operation variants
 pub const CHARGE_SRL_LEN: usize =
     ACC_ID_SRL_LEN + CARD_ID_SRL_LEN + AMOUNT_SRL_LEN + OFFLINE_SRL_LEN;
