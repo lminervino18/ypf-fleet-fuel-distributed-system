@@ -26,7 +26,7 @@ Para el administrador de tarjetas (cliente) se pueden ejecutar los siguientes co
 
 # Especificar coordenadas del cliente (latitud y longitud), por defecto usa -34.6989 -64.7597 (centro de Argentina)
 # Es un parametro global, su orden no importa
-./scripts/admin.sh --coords <lat> <lon> query-account
+./scripts/admin.sh --coords <lat> <lon> account-query
 
 # Limitar los montos disponibles en la cuenta
 ./scripts/admin.sh limit-account --amount <monto>
@@ -35,7 +35,7 @@ Para el administrador de tarjetas (cliente) se pueden ejecutar los siguientes co
 ./scripts/admin.sh limit-card --card-id <id_tarjeta> --amount <monto>
 
 # Consultar el saldo de la cuenta
-./scripts/admin.sh query-account
+./scripts/admin.sh account-query
 
 # Consultar los saldos de las tarjetas de la cuenta
 ./scripts/admin.sh query-cards
@@ -53,7 +53,7 @@ Ejemplos de uso:
 ./scripts/admin.sh --server 127.0.0.1:7070 limit-account --amount 100.50 --coords -31.4 -64.2
 
 # especificar coordenadas del cliente (Córdoba, Argentina)
-./scripts/admin.sh --coords -31.4 -64.2 query-account
+./scripts/admin.sh --coords -31.4 -64.2 account-query
 
 # Limitar los montos disponibles en la cuenta
 ./scripts/admin.sh limit-account --amount 100.50
@@ -62,7 +62,7 @@ Ejemplos de uso:
 ./scripts/admin.sh limit-card --card-id card123 --amount 50.0
 
 # Consultar el saldo de la cuenta
-./scripts/admin.sh query-account
+./scripts/admin.sh account-query
 
 # Consultar los saldos de las tarjetas de la cuenta
 ./scripts/admin.sh query-cards

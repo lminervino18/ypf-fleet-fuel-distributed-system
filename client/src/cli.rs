@@ -1,12 +1,12 @@
 use crate::commands::Commands;
+use clap::Parser;
+use common::operation::Operation;
+use std::io::{Read, Write};
 
 // center of Argentina
 const DEFAULT_COORD_LAT: f64 = -34.6989;
 const DEFAULT_COORD_LON: f64 = -64.7597;
 const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:9000";
-use clap::Parser;
-use common::operation::Operation;
-use std::io::{Read, Write};
 
 /// YPF client
 #[derive(Parser, Debug)]
@@ -93,7 +93,7 @@ mod tests {
         let cli = Cli {
             server: addr.to_string(),
             coords: vec![DEFAULT_COORD_LAT, DEFAULT_COORD_LON],
-            command: Commands::QueryAccount,
+            command: Commands::AccountQuery,
         };
         let result = cli.connect();
         assert!(result.is_ok());
@@ -104,7 +104,7 @@ mod tests {
         let cli = Cli {
             server: "invalid_address".to_string(),
             coords: vec![DEFAULT_COORD_LAT, DEFAULT_COORD_LON],
-            command: Commands::QueryAccount,
+            command: Commands::AccountQuery,
         };
         let result = cli.connect();
         assert!(result.is_err());
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn test_cli_parsing_default_server() {
-        let args = vec!["ypf_client", "query-account"];
+        let args = vec!["ypf_client", "account-query"];
         let cli = Cli::parse_from(args);
         assert_eq!(cli.server, DEFAULT_SERVER_ADDR);
         assert_eq!(cli.coords, vec![DEFAULT_COORD_LAT, DEFAULT_COORD_LON]);
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn test_cli_parsing_custom_coords() {
-        let args = vec!["ypf_client", "--coords", "-31.4", "-64.2", "query-account"];
+        let args = vec!["ypf_client", "--coords", "-31.4", "-64.2", "account-query"];
         let cli = Cli::parse_from(args);
         assert_eq!(cli.coords, vec![-31.4, -64.2]);
     }
@@ -170,11 +170,11 @@ mod tests {
 
     #[test]
     fn test_cli_parsing_query_account() {
-        let args = vec!["ypf_client", "query-account"];
+        let args = vec!["ypf_client", "account-query"];
         let cli = Cli::parse_from(args);
         match cli.command {
             Commands::AccountQuery => {}
-            _ => panic!("Expected QueryAccount command"),
+            _ => panic!("Expected AccountQuery command"),
         }
     }
 
