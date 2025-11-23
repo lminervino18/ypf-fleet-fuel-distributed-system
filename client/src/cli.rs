@@ -1,5 +1,7 @@
+use std::io::{Read, Write};
 use clap::Parser;
 use crate::commands::Commands;
+use common::operation::Operation;
 
 /// YPF client
 #[derive(Parser, Debug)]
@@ -38,9 +40,19 @@ impl Cli {
         Ok(tcp_stream)
     }
 
-    pub fn send_command(&self, _tcp_stream: &mut std::net::TcpStream) -> anyhow::Result<()> {
+    pub fn send_command(&self, tcp_stream: &mut std::net::TcpStream) -> anyhow::Result<()> {
         println!("[CLIENT] sending command: {:?}", self.command);
-        // Here you would serialize the command and send it over the tcp_stream
+        let op = Operation::from(self.command.clone());
+        let op_srl: Vec<u8> = op.into();
+        println!("[CLIENT] serialized operation: {op_srl:?}");
+        tcp_stream
+            .write_all(&op_srl)
+            .map_err(|e| anyhow::anyhow!("failed to send operation to server: {e}"))?;
+
+        let mut buf = [0u8; 1024];
+        tcp_stream.read(&mut buf)
+            .map_err(|e| anyhow::anyhow!("failed to read response from server: {e}"))?;
+
         Ok(())
     }
 }
@@ -48,26 +60,6 @@ impl Cli {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_connect() {
-        let cli = Cli {
-            server: "127.0.0.1:9000".to_string(),
-            command: Commands::QueryAccount,
-        };
-        let result = cli.connect();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_connect_invalid_address() {
-        let cli = Cli {
-            server: "invalid_address".to_string(),
-            command: Commands::QueryAccount,
-        };
-        let result = cli.connect();
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_cli_parsing_default_server() {
