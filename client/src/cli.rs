@@ -84,7 +84,7 @@ mod tests {
         // Create a temporary TCP listener to simulate a server
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        
+
         // Spawn a thread to accept one connection
         std::thread::spawn(move || {
             let _ = listener.accept();

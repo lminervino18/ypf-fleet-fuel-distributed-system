@@ -30,16 +30,11 @@ pub enum Message {
     /* Raft
      ***/
     /// Log message sent by coordinator to the replicas.
-    Log {
-        op_id: u32,
-        op: Operation,
-    },
+    Log { op_id: u32, op: Operation },
 
     /// Acknowledgement reply sent by a replica after receiving a valid `Log` message
     /// from the coordinator.
-    Ack {
-        op_id: u32,
-    },
+    Ack { op_id: u32 },
 
     /* Leader election (bully) */
     /// Election message sent by a candidate to notify peers.
@@ -62,17 +57,11 @@ pub enum Message {
 
     /* Cluster membership / discovery */
     /// A node asks to join the cluster.
-    Join {
-        addr: SocketAddr,
-    },
+    Join { addr: SocketAddr },
 
     /// Snapshot of the current cluster membership.
-    ClusterView {
-        members: Vec<(u64, SocketAddr)>,
-    },
+    ClusterView { members: Vec<(u64, SocketAddr)> },
 
     /// Notificación incremental de un nuevo miembro.
-    ClusterUpdate {
-        new_member: (u64, SocketAddr),
-    },
+    ClusterUpdate { new_member: (u64, SocketAddr) },
 }

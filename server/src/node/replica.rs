@@ -1,29 +1,27 @@
 use super::{
-    actors::{actor_router::ActorRouter, ActorEvent, RouterCmd},
+    database::{Database, DatabaseCmd},
     election::bully::Bully,
     node::Node,
     utils::get_id_given_addr,
 };
-use crate::errors::{AppError, AppResult};
-use actix::{Actor, Addr};
+use crate::errors::AppResult;
 use common::{
     operation::Operation, operation_result::OperationResult, Connection, Message, NodeToStationMsg,
     Station, StationToNodeMsg,
 };
 use std::{
     collections::{HashMap, VecDeque},
-    future::pending,
     net::SocketAddr,
     sync::Arc,
 };
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::Mutex;
 
 /// Replica node.
 ///
 /// Misma idea que el Leader:
 /// - recibe logs del líder (`Message::Log`),
 /// - guarda las operaciones,
-/// - las va “commit-eando” contra el `ActorRouter`,
+/// - las va “commit-eando” contra el sistema de actores (vía `Database`),
 /// - cuando el router termina una op, la réplica le manda un `Ack` al líder.
 ///
 /// Para las requests que vienen de la estación:
@@ -56,7 +54,7 @@ pub struct Replica {
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
     station_requests: HashMap<u64, StationPendingCharge>,
-    router: Addr<ActorRouter>,
+    // NOTE: no `router` field anymore; we talk to the actor system via `Database`.
 }
 
 impl Node for Replica {
@@ -80,6 +78,8 @@ impl Node for Replica {
         _operation: Operation,
         _result: OperationResult,
     ) {
+        // Igual que antes: cuando termina la operación en la réplica,
+        // mandamos un Ack al líder.
         connection
             .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
             .await
@@ -108,17 +108,25 @@ impl Node for Replica {
         Ok(())
     }
 
-    async fn handle_log(&mut self, _connection: &mut Connection, op_id: u32, new_op: Operation) {
+    async fn handle_log(
+        &mut self,
+        _connection: &mut Connection,
+        db: &mut Database,
+        op_id: u32,
+        new_op: Operation,
+    ) {
         // Guardamos el log y commiteamos la operación anterior.
         self.operations.insert(op_id, new_op);
         if op_id == 0 {
             return; // si es la primera no hay op previamente loggeada
         }
 
-        self.commit_operation(op_id - 1).await;
+        // Igual que antes, pero ahora via `Database` en vez de `router`.
+        // Ignoramos el Result como ya hacíamos antes.
+        self.commit_operation(db, op_id - 1).await;
     }
 
-    async fn handle_ack(&mut self, _connection: &mut Connection, _id: u32) {
+    async fn handle_ack(&mut self, _connection: &mut Connection, _db: &mut Database, _id: u32) {
         // Replicas no deberían recibir ACKs.
         todo!();
     }
@@ -185,7 +193,7 @@ impl Node for Replica {
         .await;
     }
 
-    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr) {
+    async fn handle_join(&mut self, _connection: &mut Connection, _addr: SocketAddr) {
         // No-op for replicas.
     }
 
@@ -210,12 +218,13 @@ impl Node for Replica {
 }
 
 impl Replica {
-    async fn commit_operation(&mut self, op_id: u32) -> AppResult<()> {
+    async fn commit_operation(&mut self, db: &mut Database, op_id: u32) -> AppResult<()> {
         let Some(op) = self.operations.remove(&op_id) else {
             todo!();
         };
-        // Igual que en Leader: fire-and-forget al router.
-        self.router.do_send(RouterCmd::Execute {
+
+        // Igual que en Leader: fire-and-forget al actor world, ahora vía `Database`.
+        db.send(DatabaseCmd::Execute {
             op_id,
             operation: op,
         });
@@ -224,7 +233,7 @@ impl Replica {
     }
 
     /// - boots the ConnectionManager (TCP),
-    /// - boots the ActorRouter in a dedicated Actix system thread,
+    /// - boots the actor system wrapped in `Database` (Actix in a dedicated thread),
     /// - starts the Station abstraction (which internally spawns the simulator with `pumps` pumps on stdin),
     /// - seeds the cluster membership (self + leader),
     /// - sends an initial Join message to the leader,
@@ -236,21 +245,8 @@ impl Replica {
         max_conns: usize,
         pumps: usize,
     ) -> AppResult<()> {
-        let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
-        let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
-
-        // Spawns a thread for Actix that runs inside a Tokio runtime.
-        std::thread::spawn(move || {
-            let sys = actix::System::new();
-            sys.block_on(async move {
-                let router = ActorRouter::new(actor_tx).start();
-                if router_tx.send(router.clone()).is_err() {
-                    // println!("[ERROR] Failed to deliver ActorRouter addr to Replica");
-                }
-
-                pending::<()>().await; // Keep the Actix system running indefinitely.
-            });
-        });
+        // Start the actor-based "database" subsystem (ActorRouter + Actix system hidden inside).
+        let db = super::database::Database::start().await?;
 
         // Start the reusable Station abstraction (stdin-based simulator runs inside it).
         let station = Station::start(pumps).await?;
@@ -277,9 +273,6 @@ impl Replica {
             is_offline: false,
             offline_queue: VecDeque::new(),
             station_requests: HashMap::new(),
-            router: router_rx.await.map_err(|e| AppError::ActorSystem {
-                details: format!("failed to receive ActorRouter address: {e}"),
-            })?,
         };
 
         // Join inicial contra el líder para que rebroadcastée el ClusterView.
@@ -292,6 +285,8 @@ impl Replica {
             )
             .await;
 
-        replica.run(connection, actor_rx, station).await
+        // Usamos el loop genérico de `Node::run`, igual que el Leader:
+        // - own `connection`, `db` y `station`.
+        replica.run(connection, db, station).await
     }
 }
