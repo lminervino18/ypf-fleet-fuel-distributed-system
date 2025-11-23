@@ -111,4 +111,29 @@ mod test {
         assert_eq!(received3, message);
         handle1.await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_receiving_messages_from_different_addresses_with_only_one_conn_max() {
+        let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12359);
+        let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12360);
+        let address3 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12361);
+        let message = Message::Ack { op_id: 1 };
+        let message_copy = message.clone();
+        let mut connection1 = Connection::start(address1, 1).await.unwrap();
+        let handle = task::spawn(async move {
+            let mut connection2 = Connection::start(address2, 1).await.unwrap();
+            connection2
+                .send(message_copy.clone(), &address1)
+                .await
+                .unwrap();
+            let mut connection3 = Connection::start(address3, 1).await.unwrap();
+            connection3.send(message_copy, &address1).await.unwrap();
+        });
+
+        let received2 = connection1.recv().await.unwrap();
+        assert_eq!(received2, message);
+        let received3 = connection1.recv().await.unwrap();
+        assert_eq!(received3, message);
+        handle.await.unwrap();
+    }
 }
