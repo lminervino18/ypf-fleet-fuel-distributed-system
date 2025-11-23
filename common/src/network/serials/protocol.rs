@@ -7,6 +7,10 @@ pub const MSG_TYPE_ACK: u8 = 0x02;
 pub const OP_TYPE_CHARGE: u8 = 0x00;
 pub const OP_TYPE_LIMIT_CARD: u8 = 0x01;
 pub const OP_TYPE_LIMIT_ACCOUNT: u8 = 0x02;
+pub const OP_TYPE_QUERY_ACCOUNT: u8 = 0x03;
+pub const OP_TYPE_QUERY_CARDS: u8 = 0x04;
+pub const OP_TYPE_QUERY_CARD: u8 = 0x05;
+pub const OP_TYPE_BILL: u8 = 0x06;
 
 // attribute variants
 pub const NO_LIMIT: f32 = -1.0;
