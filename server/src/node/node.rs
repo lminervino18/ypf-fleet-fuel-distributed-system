@@ -21,17 +21,19 @@ pub trait Node {
     async fn handle_request(
         &mut self,
         connection: &mut Connection,
-        op_id: u32,
+        req_id: u32,
         op: Operation,
         client_addr: SocketAddr,
     ) -> AppResult<()>;
 
     async fn handle_log(&mut self, connection: &mut Connection, op_id: u32, op: Operation);
 
-    async fn handle_ack(&mut self, connection: &mut Connection, id: u32);
+    async fn handle_ack(&mut self, connection: &mut Connection, op_id: u32);
 
     async fn handle_operation_result(
         &mut self,
+        connection: &mut Connection,
+        station: &mut Station,
         op_id: u32,
         operation: Operation,
         success: bool,
@@ -41,7 +43,12 @@ pub trait Node {
     /// Default dispatcher for Actor events.
     ///
     /// Currently only forwards OperationResult into `handle_operation_result`.
-    async fn handle_actor_event(&mut self, event: ActorEvent) {
+    async fn handle_actor_event(
+        &mut self,
+        connection: &mut Connection,
+        station: &mut Station,
+        event: ActorEvent,
+    ) {
         match event {
             ActorEvent::OperationResult {
                 op_id,
@@ -49,7 +56,7 @@ pub trait Node {
                 success,
                 error,
             } => {
-                self.handle_operation_result(op_id, operation, success, error)
+                self.handle_operation_result(connection, station, op_id, operation, success, error)
                     .await;
             }
             _ => {
@@ -61,8 +68,9 @@ pub trait Node {
 
     async fn handle_charge_request(
         &mut self,
+        connection: &mut Connection,
         station: &mut Station,
-        _pump_id: usize,
+        _pump_id: u32,
         account_id: u64,
         card_id: u64,
         amount: f32,
@@ -152,7 +160,12 @@ pub trait Node {
     /// - `ChargeRequest` into `handle_charge_request`,
     /// - `DisconnectNode` into `handle_disconnect_node`,
     /// - `ConnectNode` into `handle_connect_node`.
-    async fn handle_station_msg(&mut self, station: &mut Station, msg: StationToNodeMsg) {
+    async fn handle_station_msg(
+        &mut self,
+        connection: &mut Connection,
+        station: &mut Station,
+        msg: StationToNodeMsg,
+    ) {
         match msg {
             StationToNodeMsg::ChargeRequest {
                 pump_id,
@@ -162,15 +175,13 @@ pub trait Node {
                 request_id,
             } => {
                 self.handle_charge_request(
-                    station, pump_id, account_id, card_id, amount, request_id,
+                    connection, station, pump_id, account_id, card_id, amount, request_id,
                 )
                 .await;
             }
-
             StationToNodeMsg::DisconnectNode => {
                 self.handle_disconnect_node().await;
             }
-
             StationToNodeMsg::ConnectNode => {
                 self.handle_connect_node().await;
             }
@@ -220,10 +231,20 @@ pub trait Node {
     /// - ensure we always keep our own (id, address) entry consistent.
     async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>);
 
+    async fn handle_cluster_update(
+        &mut self,
+        connection: &mut Connection,
+        new_member: (u64, SocketAddr),
+    );
+
     /// Default handler for any node-to-node Message.
     async fn handle_node_msg(&mut self, connection: &mut Connection, msg: Message) {
         match msg {
-            Message::Request { op_id, op, addr } => {
+            Message::Request {
+                req_id: op_id,
+                op,
+                addr,
+            } => {
                 self.handle_request(connection, op_id, op, addr).await;
             }
             Message::Log { op_id, op } => {
@@ -249,12 +270,13 @@ pub trait Node {
                 self.handle_coordinator(connection, leader_id, leader_addr)
                     .await;
             }
-            Message::Join { node_id, addr } => {
+            Message::Join { addr } => {
                 self.handle_join(connection, node_id, addr).await;
             }
             Message::ClusterView { members } => {
                 self.handle_cluster_view(members).await;
             }
+            _ => todo!(),
         }
     }
 
@@ -313,7 +335,7 @@ pub trait Node {
                 pump_msg = station.recv() => {
                     match pump_msg {
                         Some(msg) => {
-                            self.handle_station_msg(&mut station, msg).await;
+                            self.handle_station_msg(&mut connection, &mut station, msg).await;
                         }
                         None => {
                             // Station side closed its channel.
@@ -327,7 +349,7 @@ pub trait Node {
                 actor_evt = actor_rx.recv() => {
                     match actor_evt {
                         Some(evt) => {
-                            self.handle_actor_event(evt).await;
+                            self.handle_actor_event(&mut connection, &mut station, evt).await;
                         }
                         None => {
                             // Actor system stopped; for now, we treat it as a fatal condition.

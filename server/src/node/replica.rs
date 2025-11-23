@@ -1,5 +1,5 @@
 use super::{
-    actors::{actor_router::ActorRouter, ActorEvent},
+    actors::{actor_router::ActorRouter, ActorEvent, RouterCmd},
     election::bully::Bully,
     node::Node,
     utils::get_id_given_addr,
@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 /// ONLINE (kept locally in replica implementation).
 #[derive(Debug, Clone)]
 struct StationPendingCharge {
+    pump_id: u32,
     account_id: u64,
     card_id: u64,
     amount: f64,
@@ -64,15 +65,50 @@ pub struct Replica {
 impl Node for Replica {
     async fn handle_charge_request(
         &mut self,
-        _station: &mut Station,
-        _pump_id: usize,
-        _account_id: u64,
-        _card_id: u64,
-        _amount: f32,
-        _request_id: u64,
+        connection: &mut Connection,
+        station: &mut Station,
+        pump_id: usize,
+        account_id: u64,
+        card_id: u64,
+        amount: f32,
+        request_id: u64,
     ) {
-        // Not wired yet: replicas do not handle station-originated charges directly.
-        todo!();
+        if self.is_offline {
+            self.offline_queue.push_back(OfflineQueuedCharge {
+                request_id,
+                account_id,
+                card_id,
+                amount,
+            });
+            let msg = NodeToStationMsg::ChargeResult {
+                request_id,
+                allowed: true,
+                error: None,
+            };
+            if let Err(_e) = station.send(msg).await {}
+            return;
+        }
+
+        let pending = StationPendingCharge {
+            pump_id,
+            account_id,
+            card_id,
+            amount,
+        };
+        self.station_requests.insert(pump_id, pending);
+        connection.send(
+            Message::Request {
+                req_id: pump_id, // magic trickkk :)
+                op: Operation::Charge {
+                    account_id,
+                    card_id,
+                    amount,
+                    from_offline_station: false,
+                },
+                addr: (),
+            },
+            address,
+        );
     }
 
     async fn handle_operation_result(
@@ -82,8 +118,10 @@ impl Node for Replica {
         _success: bool,
         _error: Option<crate::errors::VerifyError>,
     ) {
-        // This will be wired if we ever have replicas executing operations locally.
-        todo!();
+        connection
+            .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
+            .await
+            .unwrap();
     }
 
     async fn handle_request(
@@ -95,21 +133,22 @@ impl Node for Replica {
     ) -> AppResult<()> {
         // Redirect to leader node.
         connection
-            .send(Message::Request { op_id, addr, op }, &self.leader_addr)
-            .await
-            .unwrap();
-        todo!();
+            .send(
+                Message::Request {
+                    req_id: op_id,
+                    addr,
+                    op,
+                },
+                &self.leader_addr,
+            )
+            .await?;
     }
 
     async fn handle_log(&mut self, connection: &mut Connection, op_id: u32, new_op: Operation) {
         // Store the replicated operation locally and acknowledge back to the leader.
         self.operations.insert(op_id, new_op);
-        // self.commit_operation(new_op_id - 1).await; // TODO: this logic should be in actors module.
-        connection
-            .send(Message::Ack { op_id }, &self.leader_addr)
-            .await
-            .unwrap();
-        todo!();
+        self.commit_operation(op_id - 1).await; // TODO: this logic should be in actors module.
+                                                // commit is async so it's handled below
     }
 
     async fn handle_ack(&mut self, _connection: &mut Connection, _id: u32) {
@@ -234,13 +273,41 @@ impl Node for Replica {
         // No-op for replicas.
     }
 
-    /// Replicas update their local membership when receiving a ClusterView snapshot.
+    async fn handle_cluster_update(
+        &mut self,
+        connection: &mut Connection,
+        new_member: (u64, SocketAddr),
+    ) {
+        self.members.insert(new_member.0, new_member.1);
+    }
+
     async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>) {
-        self.handle_cluster_view_message(members);
+        // si llega el clúster update es porque nosotros quienes mandamos el join así que está ok
+        // limpiar el member que tenemos
+        self.members.clear();
+        for (id, addr) in members {
+            self.members.insert(id, addr);
+        }
+
+        // Ensure we are present with the correct address.
+        self.members.insert(self.id, self.address);
     }
 }
 
 impl Replica {
+    async fn commit_operation(&mut self, op_id: u32) {
+        let Some(op) = self.operations.remove(&op_id) else {
+            todo!();
+        };
+
+        self.router
+            .send(RouterCmd::Execute {
+                op_id,
+                operation: op,
+            })
+            .await
+    }
+
     /// - boots the ConnectionManager (TCP),
     /// - boots the ActorRouter in a dedicated Actix system thread,
     /// - starts the Station abstraction (which internally spawns the simulator with `pumps` pumps on stdin),
@@ -303,26 +370,15 @@ impl Replica {
 
         // Immediately announce ourselves to the leader so it can
         // rebroadcast a fresh ClusterView (membership snapshot).
-        let join_msg = Message::Join {
-            node_id: replica.id,
-            addr: replica.address,
-        };
-        let _ = connection.send(join_msg, &replica.leader_addr).await;
+        let _ = connection
+            .send(
+                Message::Join {
+                    addr: replica.address,
+                },
+                &replica.leader_addr,
+            )
+            .await;
 
         replica.run(connection, actor_rx, station).await
-    }
-
-    /// Handle an incoming ClusterView snapshot:
-    /// - replace our current membership with the provided one,
-    /// - but ensure we always include ourselves with our known address.
-    pub fn handle_cluster_view_message(&mut self, members: Vec<(u64, SocketAddr)>) {
-        self.members.clear();
-
-        for (id, addr) in members {
-            self.members.insert(id, addr);
-        }
-
-        // Ensure we are present with the correct address.
-        self.members.insert(self.id, self.address);
     }
 }
