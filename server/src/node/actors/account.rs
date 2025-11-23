@@ -176,6 +176,54 @@ impl Handler<AccountMsg> for AccountActor {
                     }
                 }
             }
+
+            AccountMsg::ExecuteQueryAccount { op_id } => {
+                let msg = format!(
+                    "[Account {}] Query: limit={:?}, consumed={}",
+                    self.account_id, self.account_limit, self.account_consumed
+                );
+                println!("{msg}");
+
+                self.send_internal(RouterInternalMsg::OperationCompleted {
+                    op_id,
+                    success: true,
+                    error: None,
+                });
+            }
+
+            AccountMsg::ExecuteQueryCards { op_id } => {
+                let msg = format!(
+                    "[Account {}] QueryCards",
+                    self.account_id
+                );
+                println!("{msg}");
+
+                self.send_internal(RouterInternalMsg::OperationCompleted {
+                    op_id,
+                    success: true,
+                    error: None,
+                });
+            }
+
+            AccountMsg::ExecuteBilling { op_id, period } => {
+                let msg = match period {
+                    Some(p) => format!(
+                        "[Account {}] Billing for period {}",
+                        self.account_id, p
+                    ),
+                    None => format!(
+                        "[Account {}] Billing for all periods",
+                        self.account_id
+                    ),
+                };
+                println!("{msg}");
+
+                self.send_internal(RouterInternalMsg::OperationCompleted {
+                    op_id,
+                    success: true,
+                    error: None,
+                });
+            }
         }
     }
 }

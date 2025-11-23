@@ -103,6 +103,15 @@ pub enum AccountMsg {
     /// 2) apply the new limit if allowed,
     /// 3) notify the router via `RouterInternalMsg::OperationCompleted`.
     ApplyAccountLimit { op_id: u32, new_limit: Option<f32> },
+
+    /// Execute a query for this account.
+    ExecuteQueryAccount { op_id: u32 },
+
+    /// Execute a query for the cards of this account.
+    ExecuteQueryCards { op_id: u32 },
+
+    /// Execute billing for this account for a given period (optional).
+    ExecuteBilling { op_id: u32, period: Option<String> },
 }
 
 /// Reply from AccountActor back to CardActor for a specific charge.
@@ -152,6 +161,9 @@ pub enum CardMsg {
 
     /// Execute a card-limit change.
     ExecuteLimitChange { op_id: u32, new_limit: Option<f32> },
+
+    /// Execute a query for this card.
+    ExecuteQueryCard { op_id: u32 },
 
     /// Generic debug / diagnostic for the card.
     Debug(String),

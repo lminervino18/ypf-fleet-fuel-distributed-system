@@ -337,6 +337,20 @@ impl Handler<CardMsg> for CardActor {
                 }
             }
 
+            CardMsg::ExecuteQueryCard { op_id } => {
+                // Report the current balance of the card.
+                let balance = self.limit.map_or(f32::INFINITY, |lim| lim - self.consumed);
+                self.send_internal(RouterInternalMsg::Debug(format!(
+                    "[Card {}/{}] QueryCard result: balance = {:.2}",
+                    self.card_id, self.account_id, balance
+                )));
+                self.send_internal(RouterInternalMsg::OperationCompleted {
+                    op_id,
+                    success: true,
+                    error: None,
+                });
+            }
+
             CardMsg::Debug(text) => {
                 self.send_internal(RouterInternalMsg::Debug(format!(
                     "[Card {}/{}] {}",
