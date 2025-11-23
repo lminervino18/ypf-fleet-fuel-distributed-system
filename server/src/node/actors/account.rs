@@ -1,5 +1,4 @@
 //! AccountActor: manages one account and account-wide state.
-
 use actix::prelude::*;
 use std::collections::HashMap;
 
@@ -95,7 +94,7 @@ impl Handler<AccountMsg> for AccountActor {
                     // OFFLINE REPLAY: saltar chequeos y aplicar siempre
                     self.account_consumed += amount;
 
-                    let _ = reply_to.do_send(AccountChargeReply {
+                    reply_to.do_send(AccountChargeReply {
                         op_id,
                         success: true,
                         error: None,
@@ -113,7 +112,7 @@ impl Handler<AccountMsg> for AccountActor {
                     Ok(()) => {
                         self.account_consumed += amount;
 
-                        let _ = reply_to.do_send(AccountChargeReply {
+                        reply_to.do_send(AccountChargeReply {
                             op_id,
                             success: true,
                             error: None,

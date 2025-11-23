@@ -69,10 +69,7 @@ pub enum AccountMsg {
     /// `num_cards` indica cuántas tarjetas se van a consultar; la Account
     /// espera exactamente esa cantidad de `CardQueryReply` antes de
     /// responderle al Router.
-    StartAccountQuery {
-        op_id: u32,
-        num_cards: usize,
-    },
+    StartAccountQuery { op_id: u32, num_cards: usize },
 
     /// Respuesta de una tarjeta a un query de cuenta.
     ///
@@ -111,10 +108,7 @@ pub enum CardMsg {
     ExecuteLimitChange { op_id: u32, new_limit: Option<f32> },
 
     /// Query this card's current consumption (used by account queries).
-    QueryCardState {
-        op_id: u32,
-        account_id: u64,
-    },
+    QueryCardState { op_id: u32, account_id: u64 },
 
     /// Generic debug / diagnostic for the card.
     Debug(String),

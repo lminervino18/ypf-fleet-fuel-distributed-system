@@ -7,13 +7,8 @@ use super::{
 use crate::errors::{AppError, AppResult};
 use actix::{Actor, Addr};
 use common::{
-    operation::Operation,
-    operation_result::OperationResult,
-    Connection,
-    Message,
-    NodeToStationMsg,
-    Station,
-    StationToNodeMsg,
+    operation::Operation, operation_result::OperationResult, Connection, Message, NodeToStationMsg,
+    Station, StationToNodeMsg,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -55,76 +50,27 @@ pub struct Replica {
     coords: (f64, f64),
     max_conns: usize,
     address: SocketAddr,
-    /// Current leader address (updated on Coordinator messages).
     leader_addr: SocketAddr,
-    /// Current cluster membership: node_id -> address (including self & leader).
     members: HashMap<u64, SocketAddr>,
     bully: Arc<Mutex<Bully>>,
-    /// Log local: op_id -> Operation.
     operations: HashMap<u32, Operation>,
     is_offline: bool,
-    offline_queue: VecDeque<OfflineQueuedCharge>,
-    /// Pending station-originated charges while ONLINE.
+    offline_queue: VecDeque<Operation>,
     station_requests: HashMap<u64, StationPendingCharge>,
     router: Addr<ActorRouter>,
 }
 
 impl Node for Replica {
-    async fn handle_charge_request(
-        &mut self,
-        connection: &mut Connection,
-        station: &mut Station,
-        pump_id: u32,
-        account_id: u64,
-        card_id: u64,
-        amount: f32,
-        request_id: u64,
-    ) {
-        if self.is_offline {
-            // Igual que el Leader: modo OFFLINE → encolamos y respondemos OK a la estación.
-            self.offline_queue.push_back(OfflineQueuedCharge {
-                request_id,
-                account_id,
-                card_id,
-                amount,
-            });
+    fn is_offline(&self) -> bool {
+        self.is_offline
+    }
 
-            let msg = NodeToStationMsg::ChargeResult {
-                request_id,
-                allowed: true,
-                error: None,
-            };
-            let _ = station.send(msg).await;
-            return;
-        }
+    fn log_offline_opeartion(&mut self, op: Operation) {
+        self.offline_queue.push_back(op);
+    }
 
-        // ONLINE: guardamos info de la request de la estación.
-        let pending = StationPendingCharge {
-            pump_id,
-            account_id,
-            card_id,
-            amount,
-        };
-        self.station_requests.insert(request_id, pending);
-
-        // Reenviamos la operación al líder como cliente “normal”.
-        let op = Operation::Charge {
-            account_id,
-            card_id,
-            amount,
-            from_offline_station: false,
-        };
-
-        let _ = connection
-            .send(
-                Message::Request {
-                    req_id: pump_id, // mismo “truco” que tenías: usar pump_id como req_id
-                    op,
-                    addr: self.address,
-                },
-                &self.leader_addr,
-            )
-            .await;
+    fn get_address(&self) -> SocketAddr {
+        self.address
     }
 
     async fn handle_operation_result(
@@ -135,8 +81,6 @@ impl Node for Replica {
         _operation: Operation,
         _result: OperationResult,
     ) {
-        // Mantengo exactamente la intención que tenías:
-        // ignorar el resultado de negocio y mandarle un ACK al líder.
         connection
             .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
             .await
@@ -238,13 +182,7 @@ impl Node for Replica {
         .await;
     }
 
-    /// Replicas ignoran Join directamente — los nodos nuevos deben hacer Join contra el líder.
-    async fn handle_join(
-        &mut self,
-        _connection: &mut Connection,
-        _node_id: u64,
-        _addr: SocketAddr,
-    ) {
+    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr) {
         // No-op for replicas.
     }
 
@@ -269,14 +207,18 @@ impl Node for Replica {
 }
 
 impl Replica {
-    async fn commit_operation(&mut self, op_id: u32) {
+    async fn commit_operation(&mut self, op_id: u32) -> AppResult<()> {
         let Some(op) = self.operations.remove(&op_id) else {
             todo!();
         };
 
         // Igual que en Leader: fire-and-forget al router.
-        self.router
-            .do_send(RouterCmd::Execute { op_id, operation: op });
+        self.router.do_send(RouterCmd::Execute {
+            op_id,
+            operation: op,
+        });
+
+        Ok(())
     }
 
     /// - boots the ConnectionManager (TCP),

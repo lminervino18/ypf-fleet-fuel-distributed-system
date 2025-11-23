@@ -48,8 +48,12 @@ pub enum Operation {
     /// The response will contain:
     /// - total consumption of the account,
     /// - a per-card breakdown (card_id -> consumption).
-    AccountQuery {
+    AccountQuery { account_id: u64 },
+
+    /// Perform billing for an account, optionally for a specific period.
+    Bill {
         account_id: u64,
+        period: Option<String>,
     },
 }
 

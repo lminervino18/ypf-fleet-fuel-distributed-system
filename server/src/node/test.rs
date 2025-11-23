@@ -99,8 +99,7 @@ mod bully_election_test {
             .unwrap();
 
         println!(
-            "IDs: leader={}, r1={}, r2={}, r3={}, highest={}",
-            leader_id, replica1_id, replica2_id, replica3_id, highest_id
+            "IDs: leader={leader_id}, r1={replica1_id}, r2={replica2_id}, r3={replica3_id}, highest={highest_id}"
         );
 
         // Create connections for each node
@@ -134,17 +133,15 @@ mod bully_election_test {
         all_peer_ids.insert(replica3_id, replica3_addr);
 
         // Determine which replica should start first (lowest ID triggers cascade)
-        let mut replica_ids = vec![
-            (replica1_id, replica1_addr),
+        let mut replica_ids = [(replica1_id, replica1_addr),
             (replica2_id, replica2_addr),
-            (replica3_id, replica3_addr),
-        ];
+            (replica3_id, replica3_addr)];
         replica_ids.sort_by_key(|(id, _)| *id);
 
         // Start election from lowest-ID replica
         // to simulate complete election process
         let (lowest_id, lowest_addr) = replica_ids[0];
-        println!("Starting election from replica with ID: {}", lowest_id);
+        println!("Starting election from replica with ID: {lowest_id}");
 
         let (conn, bully) = if lowest_id == replica1_id {
             (&mut replica1_conn, &replica1_bully)
@@ -227,17 +224,15 @@ mod bully_election_test {
             // assert_eq!(r2_state.leader_id, Some(highest_id), "Replica2 should know highest-ID won");
             // assert_eq!(r3_state.leader_id, Some(highest_id), "Replica3 should know highest-ID won");
 
-            println!("Test completed. Current winner: ID={}", lowest_id);
+            println!("Test completed. Current winner: ID={lowest_id}");
             println!(
-                "Expected winner (when protocol is complete): ID={}",
-                highest_id
+                "Expected winner (when protocol is complete): ID={highest_id}"
             );
             println!("\nNote: This test will work correctly once message passing between");
             println!("      replicas is implemented. Currently only the initiating replica");
             println!("      updates its state. When complete, all replicas should recognize");
             println!(
-                "      the highest-ID node ({}) as the coordinator.",
-                highest_id
+                "      the highest-ID node ({highest_id}) as the coordinator."
             );
         }
 

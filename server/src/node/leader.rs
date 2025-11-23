@@ -28,23 +28,6 @@ struct StationPendingCharge {
     amount: f32,
 }
 
-/// Internal state for a charge coming from a station pump
-/// while the node is OFFLINE.
-///
-/// These operations are:
-/// - immediately acknowledged to the station as OK,
-/// - not sent to the actor system while offline,
-/// - stored in this queue so that, once connectivity is restored,
-///   they can be replayed into the ActorRouter with the
-///   `from_offline_station = true` flag set.
-#[derive(Debug, Clone)]
-struct OfflineQueuedCharge {
-    request_id: u64,
-    account_id: u64,
-    card_id: u64,
-    amount: f32,
-}
-
 /// Leader node.
 ///
 /// The Leader wires together:
@@ -84,14 +67,10 @@ pub struct Leader {
     current_op_id: u32,
     coords: (f64, f64),
     address: SocketAddr,
-    max_conns: usize,
-    /// Current cluster membership: node_id -> address (including self).
     members: HashMap<u64, SocketAddr>,
-    /// Stored operations indexed by op_id.
     operations: HashMap<u32, PendingOperation>,
     is_offline: bool,
-    offline_queue: VecDeque<OfflineQueuedCharge>,
-    /// Pending ONLINE station-originated charges.
+    offline_queue: VecDeque<Operation>,
     station_requests: HashMap<u32, (usize, StationPendingCharge)>,
     router: Addr<ActorRouter>,
 }
@@ -100,20 +79,37 @@ pub struct Leader {
 // Node trait implementation
 // ==========================================================
 impl Node for Leader {
+    fn is_offline(&self) -> bool {
+        self.is_offline
+    }
+
+    fn log_offline_opeartion(&mut self, op: Operation) {
+        self.offline_queue.push_back(op);
+    }
+
+    fn get_address(&self) -> SocketAddr {
+        self.address
+    }
+
     async fn handle_request(
         &mut self,
         connection: &mut Connection,
-        op_id: u32,
+        req_id: u32,
         op: Operation,
         client_addr: SocketAddr,
     ) -> AppResult<()> {
         // Store the operation locally.
-        if client_addr != self.address {
-            self.log_operation(op.clone(), client_addr, None);
-        }
+        self.current_op_id += 1;
+        self.operations.insert(
+            self.current_op_id,
+            PendingOperation::new(op.clone(), client_addr, req_id),
+        );
 
         // Build the log message to replicate.
-        let msg = Message::Log { op_id, op };
+        let msg = Message::Log {
+            op_id: self.current_op_id,
+            op,
+        };
         // Broadcast the log to all known members except self.
         for (node_id, addr) in &self.members {
             if *node_id == self.id {
@@ -170,7 +166,7 @@ impl Node for Leader {
                 if let OperationResult::Charge(charge_res) = result {
                     let (allowed, error) = match charge_res {
                         ChargeResult::Ok => (true, None),
-                        ChargeResult::VerifyError(e) => (false, Some(e)),
+                        ChargeResult::Failed(e) => (false, Some(e)),
                     };
 
                     let msg = NodeToStationMsg::ChargeResult {
@@ -202,49 +198,6 @@ impl Node for Leader {
                 &pending.client_addr,
             )
             .await;
-    }
-
-    async fn handle_charge_request(
-        &mut self,
-        connection: &mut Connection,
-        station: &mut Station,
-        _pump_id: u32,
-        account_id: u64,
-        card_id: u64,
-        amount: f32,
-        request_id: u32,
-    ) {
-        if self.is_offline {
-            // OFFLINE MODE:
-            self.offline_queue.push_back(OfflineQueuedCharge {
-                request_id,
-                account_id,
-                card_id,
-                amount,
-            });
-
-            // Respuesta inmediata como si hubiera salido bien.
-            let msg = NodeToStationMsg::ChargeResult {
-                request_id,
-                allowed: true,
-                error: None,
-            };
-            let _ = station.send(msg).await;
-
-            return;
-        }
-
-        // ONLINE MODE:
-        let op = Operation::Charge {
-            account_id,
-            card_id,
-            amount,
-            from_offline_station: false,
-        };
-
-        self.log_operation(op.clone(), self.address, Some(_pump_id));
-        // op_id 0 es “dummy”, la lógica real de op_id la llevás en `log_operation`.
-        let _ = self.handle_request(connection, 0, op, self.address).await;
     }
 
     async fn handle_election(
@@ -282,21 +235,22 @@ impl Node for Leader {
 
     /// Called when we receive a `Message::Join` through the generic
     /// Node dispatcher.
-    async fn handle_join(&mut self, connection: &mut Connection, node_id: u64, addr: SocketAddr) {
+    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr) {
+        let node_id = get_id_given_addr(addr); // gracias ale :)
         self.members.insert(node_id, addr);
         let view_msg = Message::ClusterView {
             members: self.members.iter().map(|(id, addr)| (*id, *addr)).collect(),
         };
         // le mandamos el clúster view al que entró
-        let _ = connection.send(view_msg, &addr).await;
-        // y le mandamos sólo el nuevo al resto de las réplicas
-        for (_, replica) in &self.members {
+        connection.send(view_msg, &addr).await.unwrap(); // TODO: handle this errors!!
+                                                         // y le mandamos sólo el nuevo al resto de las réplicas
+        for replica_addr in self.members.values() {
             let _ = connection
                 .send(
                     Message::ClusterUpdate {
                         new_member: (node_id, addr),
                     },
-                    replica,
+                    replica_addr,
                 )
                 .await;
         }
@@ -321,19 +275,6 @@ impl Node for Leader {
 }
 
 impl Leader {
-    fn log_operation(
-        &mut self,
-        op: Operation,
-        client_addr: SocketAddr,
-        station_request_id: Option<u32>,
-    ) {
-        self.current_op_id += 1;
-        self.operations.insert(
-            self.current_op_id,
-            PendingOperation::new(op.clone(), client_addr, station_request_id),
-        );
-    }
-
     /// Start a Leader node:
     ///
     /// - boots the ConnectionManager (TCP),
@@ -378,7 +319,6 @@ impl Leader {
             current_op_id: 0,
             coords,
             address,
-            max_conns,
             members,
             operations: HashMap::new(),
             is_offline: false,

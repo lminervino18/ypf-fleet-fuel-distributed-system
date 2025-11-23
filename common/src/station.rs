@@ -196,8 +196,7 @@ async fn run_station_simulator(
                             let msg = StationToNodeMsg::DisconnectNode;
                             if let Err(e) = to_node_tx.send(msg).await {
                                 eprintln!(
-                                    "[Station][to-node][ERROR] Failed to send DisconnectNode: {}",
-                                    e
+                                    "[Station][to-node][ERROR] Failed to send DisconnectNode: {e}"
                                 );
                             }
                             continue;
@@ -207,8 +206,7 @@ async fn run_station_simulator(
                             let msg = StationToNodeMsg::ConnectNode;
                             if let Err(e) = to_node_tx.send(msg).await {
                                 eprintln!(
-                                    "[Station][to-node][ERROR] Failed to send ConnectNode: {}",
-                                    e
+                                    "[Station][to-node][ERROR] Failed to send ConnectNode: {e}"
                                 );
                             }
                             continue;
@@ -234,8 +232,7 @@ async fn run_station_simulator(
                                         ),
                                         None => {
                                             println!(
-                                                "[Station][INTERNAL] request_id={} not found right after creation",
-                                                req_id
+                                                "[Station][INTERNAL] request_id={req_id} not found right after creation"
                                             );
                                             // For safety, free the pump if it was marked.
                                             for slot in &mut in_flight_by_pump {
@@ -249,8 +246,7 @@ async fn run_station_simulator(
                                     };
 
                                 println!(
-                                    "[Station] pump={} -> ChargeRequest(account={}, card={}, amount={}, request_id={})",
-                                    pump_id, account_id, card_id, amount, request_id
+                                    "[Station] pump={pump_id} -> ChargeRequest(account={account_id}, card={card_id}, amount={amount}, request_id={request_id})"
                                 );
 
                                 let msg = StationToNodeMsg::ChargeRequest {
@@ -263,8 +259,7 @@ async fn run_station_simulator(
 
                                 if let Err(e) = to_node_tx.send(msg).await {
                                     eprintln!(
-                                        "[Station][to-node][ERROR] Failed to send ChargeRequest: {}",
-                                        e
+                                        "[Station][to-node][ERROR] Failed to send ChargeRequest: {e}"
                                     );
                                     // Rollback: free pump and remove request.
                                     in_flight_by_pump[pump_id] = None;
@@ -275,7 +270,7 @@ async fn run_station_simulator(
                                 // No new request created (e.g. parse error already logged).
                             }
                             Err(e) => {
-                                eprintln!("[Station][input][ERROR] {}", e);
+                                eprintln!("[Station][input][ERROR] {e}");
                             }
                         }
                     }
@@ -284,7 +279,7 @@ async fn run_station_simulator(
                         break;
                     }
                     Err(e) => {
-                        eprintln!("[Station][input][ERROR] Failed to read line: {}", e);
+                        eprintln!("[Station][input][ERROR] Failed to read line: {e}");
                         // Continue loop.
                     }
                 }
@@ -436,8 +431,7 @@ fn handle_node_event(
             // Find original request.
             let Some(req) = requests.remove(&request_id) else {
                 println!(
-                    "[Station][WARN] Received ChargeResult for unknown request_id={}",
-                    request_id
+                    "[Station][WARN] Received ChargeResult for unknown request_id={request_id}"
                 );
                 return;
             };
@@ -461,7 +455,7 @@ fn handle_node_event(
         }
 
         NodeToStationMsg::Debug(text) => {
-            println!("[Station][DEBUG] {}", text);
+            println!("[Station][DEBUG] {text}");
         }
     }
 }

@@ -9,9 +9,7 @@ use crate::node::actors::messages::{
 use super::account::AccountActor;
 use super::card::CardActor;
 use common::operation::Operation;
-use common::operation_result::{
-    AccountQueryResult, ChargeResult, LimitResult, OperationResult,
-};
+use common::operation_result::{AccountQueryResult, ChargeResult, LimitResult, OperationResult};
 
 /// Router actor that owns and routes to AccountActor and CardActor instances.
 ///
@@ -123,7 +121,6 @@ impl Handler<RouterCmd> for ActorRouter {
                             from_offline_station,
                         });
                     }
-
                     Operation::LimitAccount {
                         account_id,
                         new_limit,
@@ -131,7 +128,6 @@ impl Handler<RouterCmd> for ActorRouter {
                         let acc = self.get_or_create_account(account_id, ctx);
                         acc.do_send(AccountMsg::ApplyAccountLimit { op_id, new_limit });
                     }
-
                     Operation::LimitCard {
                         account_id,
                         card_id,
@@ -140,7 +136,6 @@ impl Handler<RouterCmd> for ActorRouter {
                         let card = self.get_or_create_card(account_id, card_id, ctx);
                         card.do_send(CardMsg::ExecuteLimitChange { op_id, new_limit });
                     }
-
                     Operation::AccountQuery { account_id } => {
                         // NUEVO: El Router arranca el query pidiéndole a la Account
                         // que espere N respuestas, y envía QueryCardState a cada Card
@@ -156,22 +151,17 @@ impl Handler<RouterCmd> for ActorRouter {
                         let num_cards = card_ids.len();
 
                         // 1) avisar a la cuenta cuántas tarjetas tiene que esperar
-                        acc.do_send(AccountMsg::StartAccountQuery {
-                            op_id,
-                            num_cards,
-                        });
+                        acc.do_send(AccountMsg::StartAccountQuery { op_id, num_cards });
 
                         // 2) pedirle a cada tarjeta su estado
                         for card_id in card_ids {
                             if let Some(card_addr) = self.cards.get(&(account_id, card_id)) {
-                                card_addr.do_send(CardMsg::QueryCardState {
-                                    op_id,
-                                    account_id,
-                                });
+                                card_addr.do_send(CardMsg::QueryCardState { op_id, account_id });
                             }
                         }
                         // El resultado final llegará vía RouterInternalMsg::AccountQueryCompleted
                     }
+                    Operation::Bill { account_id, period } => todo!(),
                 }
             }
 
@@ -207,8 +197,7 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                         // This should not normally happen: we got a completion
                         // for an operation we never registered.
                         self.emit(ActorEvent::Debug(format!(
-                            "[Router] OperationCompleted for unknown op_id={}",
-                            op_id
+                            "[Router] OperationCompleted for unknown op_id={op_id}",
                         )));
                         return;
                     }
@@ -261,6 +250,7 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                             per_card_spent: HashMap::new(),
                         })
                     }
+                    Operation::Bill { account_id, period } => todo!(),
                 };
 
                 self.emit(ActorEvent::OperationResult {

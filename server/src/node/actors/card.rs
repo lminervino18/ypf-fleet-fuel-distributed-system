@@ -198,9 +198,7 @@ impl Handler<CardMsg> for CardActor {
                     self.send_internal(RouterInternalMsg::OperationCompleted {
                         op_id,
                         success: false,
-                        error: Some(VerifyError::ChargeLimit(
-                            LimitCheckError::CardLimitExceeded,
-                        )),
+                        error: Some(VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded)),
                     });
                     return;
                 }

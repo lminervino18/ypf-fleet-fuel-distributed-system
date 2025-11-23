@@ -2,7 +2,7 @@ use super::actors::ActorEvent;
 use crate::errors::AppResult;
 use common::operation::Operation;
 use common::operation_result::OperationResult;
-use common::{Connection, Message, Station, StationToNodeMsg};
+use common::{Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
 use std::net::SocketAddr;
 use tokio::select;
 use tokio::sync::mpsc::Receiver;
@@ -71,16 +71,44 @@ pub trait Node {
         }
     }
 
+    fn is_offline(&self) -> bool;
+    fn log_offline_opeartion(&mut self, op: Operation);
+    fn get_address(&self) -> SocketAddr;
+
     async fn handle_charge_request(
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
-        _pump_id: u32,
         account_id: u64,
         card_id: u64,
         amount: f32,
-        request_id: u64,
-    );
+        request_id: u32,
+    ) {
+        if self.is_offline() {
+            self.log_offline_opeartion(Operation::Charge {
+                account_id,
+                card_id,
+                amount,
+                from_offline_station: true,
+            });
+            let msg = NodeToStationMsg::ChargeResult {
+                request_id,
+                allowed: true,
+                error: None,
+            };
+            if let Err(_e) = station.send(msg).await {}
+            return;
+        }
+
+        let op = Operation::Charge {
+            account_id,
+            card_id,
+            amount,
+            from_offline_station: false,
+        };
+
+        self.handle_request(connection, request_id, op, self.get_address());
+    }
 
     /// Default OFFLINE transition handler.
     ///
@@ -180,7 +208,7 @@ pub trait Node {
                 request_id,
             } => {
                 self.handle_charge_request(
-                    connection, station, pump_id, account_id, card_id, amount, request_id,
+                    connection, station, account_id, card_id, amount, request_id,
                 )
                 .await;
             }
@@ -214,7 +242,7 @@ pub trait Node {
 
     // === Cluster membership hooks (Join / ClusterView) ===
 
-    async fn handle_join(&mut self, connection: &mut Connection, node_id: u64, addr: SocketAddr);
+    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr);
 
     async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>);
 
@@ -225,14 +253,18 @@ pub trait Node {
     );
 
     /// Default handler for any node-to-node Message.
-    async fn handle_node_msg(&mut self, connection: &mut Connection, msg: Message) {
+    async fn handle_node_msg(
+        &mut self,
+        connection: &mut Connection,
+        msg: Message,
+    ) -> AppResult<()> {
         match msg {
             Message::Request {
                 req_id: op_id,
                 op,
                 addr,
             } => {
-                self.handle_request(connection, op_id, op, addr).await;
+                self.handle_request(connection, op_id, op, addr).await?;
             }
             Message::Log { op_id, op } => {
                 self.handle_log(connection, op_id, op).await;
@@ -258,15 +290,15 @@ pub trait Node {
                     .await;
             }
             Message::Join { addr } => {
-                // ojo: acá te falta cómo obtener node_id, esto ya venía así
-                // en tu código original. Lo dejo igual.
-                self.handle_join(connection, /* node_id */ 0, addr).await;
+                self.handle_join(connection, addr).await;
             }
             Message::ClusterView { members } => {
                 self.handle_cluster_view(members).await;
             }
             _ => todo!(),
         }
+
+        Ok(())
     }
 
     /// Main async event loop for any node role (Leader / Replica / Station-backed node).
