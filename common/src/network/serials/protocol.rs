@@ -15,10 +15,18 @@ pub const OP_TYPE_QUERY_CARDS: u8 = 0x04;
 pub const OP_TYPE_QUERY_CARD: u8 = 0x05;
 pub const OP_TYPE_BILL: u8 = 0x06;
 
+// operation result types
+pub const CHARGE_RESULT: u8 = 0x00;
+pub const LIMIT_ACCOUNT_RESULT: u8 = 0x02;
+pub const LIMIT_CARD_RESULT: u8 = 0x03;
+pub const ACC_QUERY_RESULT: u8 = 0x04;
+
 // attribute variants
 pub const NO_LIMIT: f32 = -1.0;
 pub const TRUE: u8 = 0x01;
 pub const FALSE: u8 = 0x00;
+pub const OK: u8 = 0x02;
+pub const ERR: u8 = 0x03;
 
 // lenghts of attribute serials
 pub const OP_ID_SRL_LEN: usize = size_of::<u32>();

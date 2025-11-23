@@ -49,5 +49,5 @@ pub enum LimitResult {
 pub struct AccountQueryResult {
     pub account_id: u64,
     pub total_spent: f32,
-    pub per_card_spent: HashMap<u64, f32>,
+    pub per_card_spent: Vec<(u64, f32)>,
 }
