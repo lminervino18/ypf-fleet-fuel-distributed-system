@@ -263,6 +263,45 @@ impl Node for Replica {
 }
 
 impl Replica {
+    pub fn into_leader(self) -> Leader {
+        use super::leader::Leader;
+
+
+        Leader::from_existing(
+            self.id,
+            current_op_id,
+            self.coords,
+            self.address,
+            self.members,
+            self.bully,
+            self.operations,
+            self.is_offline,
+            self.offline_queue,
+        )
+    }
+    pub fn from_existing(
+        id: u64,
+        coords: (f64, f64),
+        address: SocketAddr,
+        leader_addr: SocketAddr,
+        members: HashMap<u64, SocketAddr>,
+        bully: Arc<Mutex<Bully>>,
+        operations: HashMap<u32, Operation>,
+        is_offline: bool,
+        offline_queue: VecDeque<Operation>,
+    ) -> Self {
+        Self {
+            id,
+            coords,
+            address,
+            leader_addr,
+            members,
+            bully,
+            operations,
+            is_offline,
+            offline_queue,
+        }
+    }
     async fn commit_operation(&mut self, db: &mut Database, op_id: u32) -> AppResult<()> {
         let Some(op) = self.operations.remove(&op_id) else {
             todo!();
