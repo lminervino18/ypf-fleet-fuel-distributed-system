@@ -139,6 +139,8 @@ impl Node for Leader {
         connection: &mut Connection,
         addr: SocketAddr,
     ) -> AppResult<()> {
+
+        println!("[LEADER] Received role query from {:?}", addr);
         let role_msg = Message::RoleResponse {
             node_id: get_id_given_addr(self.address),
             role: common::NodeRole::Leader,
