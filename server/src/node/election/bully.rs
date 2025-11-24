@@ -70,6 +70,7 @@ pub async fn conduct_election(
             leader_addr: address,
         };
         for p in &all_peers {
+            
             let _ = connection.send(coordinator_msg.clone(), p).await;
         }
     } else {

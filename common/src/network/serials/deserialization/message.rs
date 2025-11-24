@@ -18,6 +18,9 @@ impl TryFrom<Vec<u8>> for Message {
             MSG_TYPE_CLUSTER_UPDATE => deserialize_cluster_update_message(&payload[1..]),
             MSG_TYPE_RESPONSE => deserialize_response_message(&payload[1..]),
             MSG_TYPE_ROLE_QUERY => deserialize_role_query_message(&payload[1..]),
+            MSG_TYPE_COORDINATOR => deserialize_coordinator_message(&payload[1..]),
+            MSG_TYPE_ELECTION => deserialize_election_message(&payload[1..]),
+            MSG_TYPE_ELECTION_OK => deserialize_election_ok_message(&payload[1..]),
             _ => Err(AppError::InvalidData {
                 details: format!(
                     "unknown node message type {}, with contents {:?}",
@@ -26,6 +29,51 @@ impl TryFrom<Vec<u8>> for Message {
             }),
         }
     }
+}
+
+fn deserialize_coordinator_message(payload: &[u8]) -> AppResult<Message> {
+    let mut ptr = 0;
+    let leader_id = u64::from_be_bytes(
+        payload[ptr..ptr + NODE_ID_SRL_LEN]
+            .try_into()
+            .map_err(|e| AppError::InvalidProtocol {
+                details: format!("failed to deserialize leader_id in coordinator message: {e}"),
+            })?,
+    );
+    ptr += NODE_ID_SRL_LEN;
+    let leader_addr = deserialize_socket_address_srl(&payload[ptr..])?;
+    Ok(Message::Coordinator {
+        leader_id,
+        leader_addr,
+    })
+}
+
+fn deserialize_election_message(payload: &[u8]) -> AppResult<Message> {
+    let mut ptr = 0;
+    let candidate_id = u64::from_be_bytes(
+        payload[ptr..ptr + NODE_ID_SRL_LEN]
+            .try_into()
+            .map_err(|e| AppError::InvalidProtocol {
+                details: format!("failed to deserialize candidate_id in election message: {e}"),
+            })?,
+    );
+    ptr += NODE_ID_SRL_LEN;
+    let candidate_addr = deserialize_socket_address_srl(&payload[ptr..])?;
+    Ok(Message::Election {
+        candidate_id,
+        candidate_addr,
+    })
+}
+
+fn deserialize_election_ok_message(payload: &[u8]) -> AppResult<Message> {
+    let responder_id = u64::from_be_bytes(
+        payload[0..NODE_ID_SRL_LEN]
+            .try_into()
+            .map_err(|e| AppError::InvalidProtocol {
+                details: format!("failed to deserialize responder_id in election_ok message: {e}"),
+            })?,
+    );
+    Ok(Message::ElectionOk { responder_id })
 }
 
 fn deserialize_role_query_message(payload: &[u8]) -> AppResult<Message> {
