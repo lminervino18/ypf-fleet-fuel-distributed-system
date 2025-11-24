@@ -36,7 +36,10 @@ pub struct Handler {
 }
 
 impl Handler {
-    pub async fn start(address: &SocketAddr, receiver_tx: Arc<Sender<Message>>) -> AppResult<Self> {
+    pub async fn start(
+        address: &SocketAddr,
+        receiver_tx: Arc<Sender<AppResult<Message>>>,
+    ) -> AppResult<Self> {
         let stream =
             TcpStream::connect(address)
                 .await
@@ -49,7 +52,7 @@ impl Handler {
 
     pub async fn start_from(
         stream: TcpStream,
-        receiver_tx: Arc<Sender<Message>>,
+        receiver_tx: Arc<Sender<AppResult<Message>>>,
     ) -> AppResult<Self> {
         let (messages_tx, sender_rx) = mpsc::channel(MSG_BUFF_SIZE);
         let address = stream.peer_addr().map_err(|e| AppError::Unexpected {
@@ -77,7 +80,7 @@ impl Handler {
         stream: TcpStream,
         messages_tx: Sender<Message>,
         sender_rx: Receiver<Message>,
-        receiver_tx: Arc<Sender<Message>>,
+        receiver_tx: Arc<Sender<AppResult<Message>>>,
         address: SocketAddr,
     ) -> AppResult<Self> {
         let (stream_rx, stream_tx) = stream.into_split();
@@ -91,6 +94,25 @@ impl Handler {
         })
     }
 
+    async fn handle_recv_result(
+        sender: &mut StreamSender<Message>,
+        received: AppResult<MessageKind>,
+        last_seen: &mut Instant,
+    ) -> AppResult<()> {
+        match received {
+            Ok(msg_kind) => match msg_kind {
+                HeartbeatRequest => Ok(sender.send_heartbeat_reply().await?),
+                HeartbeatReply => {
+                    *last_seen = Instant::now();
+                    Ok(())
+                }
+                NodeMessage => Ok(()),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    // este run se podría alindar un toque ...
     fn run(
         mut sender: StreamSender<Message>,
         mut receiver: StreamReceiver<Message>,
@@ -100,29 +122,39 @@ impl Handler {
             let mut last_seen = Instant::now();
             loop {
                 select! {
+                        // mando msjs q el handle escribió en el mpsc
                         sent = sender.send() => { match sent {
                             Ok(()) => {},
                             Err(AppError::ChannelClosed) => { break; },
+                            Err(AppError::ConnectionLostWith { address }) => {
+                                receiver.write_connection_lost().await?;
+                                return Err(AppError::ConnectionLostWith { address });
+                            }
                             Err(e) => return Err(e),
                         }},
-                        received = receiver.recv() => { match received {
-                                Ok(msg_kind) => match msg_kind {
-                                    HeartbeatRequest => {
-                                        sender.send_heartbeat_reply().await?;
-                                    },
-                                    HeartbeatReply => last_seen = Instant::now(),
-                                    NodeMessage => {/* dejo pasar el msj */},
-                                },
-                                Err(AppError::ChannelClosed) => { break; }, // cerró connection
-                                Err(e) => return Err(e),
-                            }
+                        // leo por recv stream y escribo en el mpsc que tiene Connection
+                        received = receiver.recv() => {
+                            if let Err(e) = Self::handle_recv_result(&mut sender, received, &mut last_seen).await {
+                                match e {
+                                    AppError::ChannelClosed => { break; },
+                                    AppError::ConnectionLostWith { address } => {
+                                        receiver.write_connection_lost().await?;
+                                        return Err(AppError::ConnectionLostWith { address });
+                                    }
+                                    _ => return Err(e),
+                                };
+                            };
                         },
+                        // si se cumplió esta duration entonces mando hearbeat
                         _ = sleep(HEARTBEAT_FREQUENCY) => {
                             sender.send_heartbeat_request().await?;
                         }
                 }
 
+                // cada vez que hice alguna de las tres cosas anteriores me fijo si hay timeout del
+                // heartbeat
                 if Instant::now() - last_seen > HEARTBEAT_TIMEOUT {
+                    receiver.write_connection_lost().await?;
                     return Err(AppError::ConnectionLostWith { address });
                 }
             }
@@ -177,7 +209,7 @@ mod test {
             .await
             .unwrap();
         let received = receiver_rx.recv().await.unwrap();
-        assert_eq!(received, message);
+        assert_eq!(received, Ok(message));
         handle.await.unwrap();
     }
 
@@ -226,7 +258,10 @@ mod test {
             .await
             .unwrap();
         let received = receiver_rx.recv().await.unwrap();
-        assert_eq!(received, message);
+        assert_eq!(received, Ok(message));
         handle1.await.unwrap();
     }
+
+    // #[tokio::test]
+    async fn tesst_send_result_in_connection_lost_with_if_peer_is_down() {}
 }

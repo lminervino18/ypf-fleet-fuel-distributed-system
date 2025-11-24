@@ -1,10 +1,10 @@
-use super::{Message, acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler};
+use super::{acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler, Message};
 use crate::errors::{AppError, AppResult};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
     sync::{
-        Mutex,
         mpsc::{self, Receiver, Sender},
+        Mutex,
     },
     task::JoinHandle,
 };
@@ -14,8 +14,8 @@ const MSG_BUFF_SIZE: usize = 1600;
 pub struct Connection {
     active: Arc<Mutex<HashMap<SocketAddr, Handler>>>,
     acceptor_handle: JoinHandle<()>,
-    messages_tx: Arc<Sender<Message>>, // sólo para pasarle a quienes me mandan (Receiver)
-    messages_rx: Receiver<Message>,
+    messages_tx: Arc<Sender<AppResult<Message>>>, // sólo para pasarle a quienes me mandan (Receiver)
+    messages_rx: Receiver<AppResult<Message>>,
     max_conns: usize,
 }
 
@@ -51,7 +51,15 @@ impl Connection {
     }
 
     pub async fn recv(&mut self) -> AppResult<Message> {
-        self.messages_rx.recv().await.ok_or(AppError::ChannelClosed)
+        // NOTE: acá si todos los handlers están abajo tiro ConnectionLost, o sea
+        // asumimos que perdimos la conexión **nosotros** pero el tema es que no
+        // deberíamos hacer entonces nunca un recv sin antes haber instanciado alguna
+        // conexión y eso no sé si está ok... o sea de entrada todos los nodos mandan
+        // join por ej pero habrá que ver
+        self.messages_rx
+            .recv()
+            .await
+            .ok_or(AppError::ConnectionLost)?
     }
 }
 
@@ -152,6 +160,7 @@ mod test {
         let result1 = connection2.send(Message::Ack { op_id: 0 }, &address1).await;
         assert_eq!(result1, Ok(()));
         drop(connection1);
+        sleep(Duration::from_secs(3)).await;
         let result2 = connection2.send(Message::Ack { op_id: 0 }, &address1).await;
         assert_eq!(
             result2,
@@ -161,8 +170,8 @@ mod test {
 
     #[tokio::test]
     async fn test04_recv_results_in_connection_lost_with_with_if_peer_is_down() {
-        let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12368);
-        let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12369);
+        let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12370);
+        let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12371);
         let mut connection1 = Connection::start(address1, 1).await.unwrap();
         let mut connection2 = Connection::start(address2, 1).await.unwrap();
         let msg = Message::Ack { op_id: 0 };
@@ -170,6 +179,7 @@ mod test {
         let result1 = connection2.recv().await;
         assert_eq!(result1, Ok(msg));
         drop(connection1);
+        sleep(Duration::from_secs(3)).await;
         let result2 = connection2.recv().await;
         assert_eq!(
             result2,

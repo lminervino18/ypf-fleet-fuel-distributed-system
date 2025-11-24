@@ -1,13 +1,13 @@
-use super::Message;
 use super::active_helpers::add_handler_from;
 use super::handler::Handler;
+use super::Message;
 use crate::errors::{AppError, AppResult};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
 use tokio::task::{self, JoinHandle};
 
 const INCOMING_BUFF_SIZE: usize = 300;
@@ -22,7 +22,7 @@ impl Acceptor {
     pub async fn start(
         address: SocketAddr,
         active: Arc<Mutex<HashMap<SocketAddr, Handler>>>,
-        messages_tx: Arc<Sender<Message>>,
+        messages_tx: Arc<Sender<AppResult<Message>>>,
         max_conns: usize,
     ) -> AppResult<JoinHandle<()>> {
         let mut acceptor = Acceptor::new(address, active, max_conns).await?;
@@ -49,7 +49,7 @@ impl Acceptor {
         })
     }
 
-    async fn run(&mut self, messages_tx: Arc<Sender<Message>>) {
+    async fn run(&mut self, messages_tx: Arc<Sender<AppResult<Message>>>) {
         while let Ok((stream, _)) = self.listener.accept().await {
             let Ok(handler) = Handler::start_from(stream, messages_tx.clone()).await else {
                 continue;

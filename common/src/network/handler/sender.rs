@@ -57,7 +57,7 @@ impl<T: Into<Vec<u8>>> StreamSender<T> {
                 }),
             })?;
 
-        return Ok(());
+        Ok(())
     }
 }
 

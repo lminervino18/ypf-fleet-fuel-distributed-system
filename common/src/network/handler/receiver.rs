@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::{io::AsyncReadExt, net::tcp::OwnedReadHalf, sync::mpsc::Sender};
 
 pub struct StreamReceiver<T> {
-    messages_tx: Arc<Sender<T>>,
+    messages_tx: Arc<Sender<AppResult<T>>>,
     stream: OwnedReadHalf,
 }
 
@@ -14,11 +14,25 @@ where
     T: TryFrom<Vec<u8>>,
     T::Error: Into<AppError>,
 {
-    pub fn new(messages_tx: Arc<Sender<T>>, stream: OwnedReadHalf) -> Self {
+    pub fn new(messages_tx: Arc<Sender<AppResult<T>>>, stream: OwnedReadHalf) -> Self {
         Self {
             messages_tx,
             stream,
         }
+    }
+
+    /// Writes `ConnectionClosedWith { addr }` in `messages_tx`
+    pub async fn write_connection_lost(&mut self) -> AppResult<()> {
+        self.messages_tx
+            .send(Err(AppError::ConnectionLostWith {
+                address: self.stream.peer_addr().expect(
+                    "receiver failed to get peer address while writing connection_lost message",
+                ),
+            }))
+            .await
+            .map_err(|_| AppError::ChannelClosed)?;
+
+        Ok(())
     }
 
     pub async fn recv(&mut self) -> AppResult<MessageKind> {
@@ -53,7 +67,7 @@ where
         }
 
         self.messages_tx
-            .send(bytes.try_into().map_err(Into::into)?)
+            .send(Ok(bytes.try_into().map_err(Into::into)?))
             .await
             .map_err(|_| AppError::ChannelClosed)?;
 
@@ -92,12 +106,12 @@ mod test {
             .await
             .unwrap();
         let (stream_rx, _) = stream.into_split();
-        let (messages_tx, mut messages_rx) = mpsc::channel::<Message>(1);
+        let (messages_tx, mut messages_rx) = mpsc::channel::<AppResult<Message>>(1);
         let messages_tx = Arc::new(messages_tx);
         let mut receiver = StreamReceiver::new(messages_tx, stream_rx);
         client.await.unwrap();
         receiver.recv().await.unwrap();
         let received_msg = messages_rx.recv().await.unwrap();
-        assert_eq!(received_msg, sent_message);
+        assert_eq!(received_msg, Ok(sent_message));
     }
 }
