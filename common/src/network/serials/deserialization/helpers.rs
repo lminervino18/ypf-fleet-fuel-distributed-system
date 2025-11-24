@@ -1,4 +1,6 @@
-fn deserialize_account_id(payload: &[u8]) -> AppResult<u64> {
+use crate::{AppError, AppResult, network::serials::protocol::*};
+
+pub fn deserialize_account_id(payload: &[u8]) -> AppResult<u64> {
     Ok(u64::from_be_bytes(
         payload[0..ACC_ID_SRL_LEN]
             .try_into()
@@ -8,7 +10,7 @@ fn deserialize_account_id(payload: &[u8]) -> AppResult<u64> {
     ))
 }
 
-fn deserialize_card_id(payload: &[u8]) -> AppResult<u64> {
+pub fn deserialize_card_id(payload: &[u8]) -> AppResult<u64> {
     Ok(u64::from_be_bytes(
         payload[0..CARD_ID_SRL_LEN]
             .try_into()
@@ -18,7 +20,7 @@ fn deserialize_card_id(payload: &[u8]) -> AppResult<u64> {
     ))
 }
 
-fn deserialize_amount(payload: &[u8]) -> AppResult<f32> {
+pub fn deserialize_amount(payload: &[u8]) -> AppResult<f32> {
     Ok(f32::from_be_bytes(
         payload[0..AMOUNT_SRL_LEN]
             .try_into()

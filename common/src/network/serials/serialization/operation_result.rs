@@ -23,13 +23,15 @@ fn serialize_card_spent(card_spent: (u64, f32)) -> Vec<u8> {
 }
 
 fn serialize_account_query_result(result: AccountQueryResult) -> Vec<u8> {
-    let type_srl = [CHARGE_RESULT];
+    let type_srl = [ACC_QUERY_RESULT];
     let account_id_srl = result.account_id.to_be_bytes();
     let total_spent_srl = result.total_spent.to_be_bytes();
+    let per_card_spent_len_srl = result.per_card_spent.len().to_be_bytes();
     let mut srl = vec![];
     srl.extend(type_srl);
     srl.extend(account_id_srl);
     srl.extend(total_spent_srl);
+    srl.extend(per_card_spent_len_srl);
     for card_spent in result.per_card_spent {
         srl.extend(serialize_card_spent(card_spent));
     }
@@ -54,7 +56,7 @@ fn serialize_limit_account_result(result: LimitResult) -> Vec<u8> {
 }
 
 fn serialize_charge_result(result: ChargeResult) -> Vec<u8> {
-    let type_srl = LIMIT_ACCOUNT_RESULT;
+    let type_srl = CHARGE_RESULT;
     let mut srl = vec![];
     srl.push(type_srl);
     match result {

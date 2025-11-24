@@ -5,6 +5,7 @@ pub const MSG_TYPE_ACK: u8 = 0x02;
 pub const MSG_TYPE_JOIN: u8 = 0x03;
 pub const MSG_TYPE_CLUSTER_VIEW: u8 = 0x04;
 pub const MSG_TYPE_CLUSTER_UPDATE: u8 = 0x05;
+pub const MSG_TYPE_RESPONSE: u8 = 0x06;
 
 // operation types
 pub const OP_TYPE_CHARGE: u8 = 0x00;
@@ -29,6 +30,9 @@ pub const BELOW_CURRENT_USAGE: u8 = 0x00;
 pub const CARD_LIMIT_EXCEEDED: u8 = 0x01;
 pub const ACC_LIMIT_EXCEEDED: u8 = 0x02;
 
+// lengths
+pub const LIMIT_CHECK_ERR_LEN: usize = size_of::<u8>();
+
 // attribute variants
 pub const NO_LIMIT: f32 = -1.0;
 pub const TRUE: u8 = 0x01;
@@ -48,6 +52,9 @@ pub const OFFLINE_SRL_LEN: usize = size_of::<u8>();
 pub const NODE_ID_SRL_LEN: usize = size_of::<u64>(); // está así en todos lados, pero 64 bytes???
 pub const MEMBER_SRL_LEN: usize = NODE_ID_SRL_LEN + SOCKET_ADDR_LEN;
 pub const MEMBERS_LEN_SRL_LEN: usize = size_of::<usize>();
+
+pub const PER_CARD_SPENT_LEN: usize = size_of::<usize>();
+pub const CARD_SPENT_LEN: usize = CARD_ID_SRL_LEN + AMOUNT_SRL_LEN;
 
 // lenghts of operation variants
 pub const CHARGE_SRL_LEN: usize =

@@ -194,7 +194,7 @@ impl Node for Leader {
             .send(
                 Message::Response {
                     req_id: pending.request_id,
-                    result,
+                    op_result: result,
                 },
                 &pending.client_addr,
             )

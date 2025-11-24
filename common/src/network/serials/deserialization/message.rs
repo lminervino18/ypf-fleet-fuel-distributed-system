@@ -1,8 +1,8 @@
+use crate::Message;
+use crate::Message::*;
 use crate::errors::AppError;
 use crate::errors::AppResult;
 use crate::network::serials::protocol::*;
-use crate::Message;
-use crate::Message::*;
 use std::net::SocketAddr;
 
 impl TryFrom<Vec<u8>> for Message {
@@ -16,6 +16,7 @@ impl TryFrom<Vec<u8>> for Message {
             MSG_TYPE_JOIN => deserialize_join_message(&payload[1..]),
             MSG_TYPE_CLUSTER_VIEW => deserialize_cluster_view_message(&payload[1..]),
             MSG_TYPE_CLUSTER_UPDATE => deserialize_cluster_update_message(&payload[1..]),
+            MSG_TYPE_RESPONSE => deserialize_response_message(&payload[1..]),
             _ => Err(AppError::InvalidData {
                 details: format!(
                     "unknown node message type {}, with contents {:?}",
@@ -24,6 +25,14 @@ impl TryFrom<Vec<u8>> for Message {
             }),
         }
     }
+}
+
+fn deserialize_response_message(payload: &[u8]) -> AppResult<Message> {
+    let mut ptr = 0;
+    let req_id = deserialize_op_id(&payload[ptr..])?;
+    ptr += OP_ID_SRL_LEN;
+    let op_result = payload[ptr..].try_into()?;
+    Ok(Message::Response { req_id, op_result })
 }
 
 fn deserialize_request_message(payload: &[u8]) -> AppResult<Message> {
@@ -147,7 +156,10 @@ fn deserialize_socket_address_srl(payload: &[u8]) -> AppResult<SocketAddr> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::operation::Operation;
+    use crate::{
+        operation::Operation,
+        operation_result::{ChargeResult, OperationResult},
+    };
 
     #[test]
     fn test_deserialize_valid_op_id_srl() {
@@ -242,6 +254,18 @@ mod test {
     fn test_deserialize_cluster_update_message() {
         let msg = Message::ClusterUpdate {
             new_member: (13248, SocketAddr::from(([127, 0, 0, 1], 12346))),
+        };
+        let msg_srl: Vec<u8> = msg.clone().into();
+        let expected = Ok(msg);
+        let msg = msg_srl.try_into();
+        assert_eq!(msg, expected);
+    }
+
+    #[test]
+    fn test_deserialize_response_message() {
+        let msg = Message::Response {
+            req_id: 12039,
+            op_result: OperationResult::Charge(ChargeResult::Ok),
         };
         let msg_srl: Vec<u8> = msg.clone().into();
         let expected = Ok(msg);
