@@ -237,9 +237,9 @@ mod bully_election_test {
             let b = bully.lock().await;
             assert_eq!(b.leader_id, Some(replica_id), "[TEST] Bully should recognize itself as leader");
             assert_eq!(b.leader_addr, Some(replica_addr), "[TEST] Bully should have correct leader address");
-            assert!(!b.election_in_progress, "[TEST] Election should be finished");
+            assert!(!b.is_election_in_progress(), "[TEST] Election should be finished");
             println!("[TEST] Bully state correctly updated (leader_id={:?}, election_in_progress={})", 
-                     b.leader_id, b.election_in_progress);
+                     b.leader_id, b.is_election_in_progress());
         }
 
         // === PHASE 2: Receive Coordinator from DIFFERENT node (should NOT promote) ===
@@ -356,9 +356,9 @@ mod bully_election_test {
             let b = bully.lock().await;
             assert_eq!(b.leader_id, Some(new_leader_id), "[TEST] Bully should recognize new leader");
             assert_eq!(b.leader_addr, Some(new_leader_addr), "[TEST] Bully should have new leader address");
-            assert!(!b.election_in_progress, "[TEST] Election should be finished");
+            assert!(!b.is_election_in_progress(), "[TEST] Election should be finished");
             println!("[TEST] Bully state correctly updated (leader_id={:?}, election_in_progress={})", 
-                     b.leader_id, b.election_in_progress);
+                     b.leader_id, b.is_election_in_progress());
         }
 
         // === PHASE 2: Receive Coordinator with OWN ID (should NOT demote) ===
