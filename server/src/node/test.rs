@@ -68,6 +68,7 @@ mod node_test {
 #[cfg(test)]
 mod bully_election_test {
     use crate::node::election::bully::Bully;
+    use crate::node::node::Node; // Import the Node trait
     use crate::node::utils::get_id_given_addr;
     use crate::node::{Leader, Replica};
     use common::{Connection, Message};
@@ -165,6 +166,251 @@ mod bully_election_test {
         assert_eq!(leader.test_get_members().len(), members.len(), "[TEST] Leader members match former Replica members");
         }
 
+    /// Test that Replica.handle_coordinator() correctly detects promotion to leader.
+    /// Creates a real Replica, calls handle_coordinator with its own ID, and verifies
+    /// that it returns RoleChange::PromoteToLeader and updates internal state.
+    #[tokio::test]
+    async fn test_bully_election_triggers_role_change() {
+        let replica_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 14200);
+        let old_leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 14201);
+        
+        let replica_id = get_id_given_addr(replica_addr);
+        let old_leader_id = get_id_given_addr(old_leader_addr);
+
+        println!("\n[TEST] === Testing Replica promotion via handle_coordinator ===");
+        println!("[TEST] Replica ID: {}, Old Leader ID: {}", replica_id, old_leader_id);
+
+        // Create a real Replica instance with complete state
+        let mut members = HashMap::new();
+        members.insert(replica_id, replica_addr);
+        members.insert(old_leader_id, old_leader_addr);
+
+        let bully = Arc::new(Mutex::new(Bully::new(replica_id, replica_addr)));
+        
+        // Start with election in progress
+        {
+            let mut b = bully.lock().await;
+            b.mark_start_election();
+            println!("[TEST] Election marked as started");
+        }
+
+        let mut replica = Replica::from_existing(
+            replica_id,
+            (10.0, 20.0),
+            replica_addr,
+            old_leader_addr,
+            members.clone(),
+            bully.clone(),
+            HashMap::new(),
+            false,
+            VecDeque::new(),
+        );
+
+        println!("[TEST] Created Replica with ID={}", replica_id);
+
+        // Create a Connection for handle_coordinator (won't be used but needed for signature)
+        let mut connection = Connection::start(replica_addr, 10)
+            .await
+            .expect("Failed to create connection");
+
+        // === PHASE 1: Receive Coordinator message with OWN ID (should promote) ===
+        println!("\n[TEST] PHASE 1: Calling handle_coordinator with own ID ({})", replica_id);
+        
+        let role_change = replica.handle_coordinator(
+            &mut connection,
+            replica_id,  // Replica won election!
+            replica_addr
+        ).await;
+
+        // Verify that PromoteToLeader was returned
+        match role_change {
+            crate::node::node::RoleChange::PromoteToLeader => {
+                assert!(true, "[TEST] handle_coordinator correctly returned RoleChange::PromoteToLeader");
+            }
+            other => {
+                panic!("[TEST] Expected PromoteToLeader, got {:?}", other);
+            }
+        }
+
+        // Verify Bully state was updated correctly
+        {
+            let b = bully.lock().await;
+            assert_eq!(b.leader_id, Some(replica_id), "[TEST] Bully should recognize itself as leader");
+            assert_eq!(b.leader_addr, Some(replica_addr), "[TEST] Bully should have correct leader address");
+            assert!(!b.election_in_progress, "[TEST] Election should be finished");
+            println!("[TEST] Bully state correctly updated (leader_id={:?}, election_in_progress={})", 
+                     b.leader_id, b.election_in_progress);
+        }
+
+        // === PHASE 2: Receive Coordinator from DIFFERENT node (should NOT promote) ===
+        println!("\n[TEST] PHASE 2: Calling handle_coordinator with different ID");
+        
+        // Create a fresh replica to test the "not my ID" case
+        let bully2 = Arc::new(Mutex::new(Bully::new(replica_id, replica_addr)));
+        let mut replica2 = Replica::from_existing(
+            replica_id,
+            (10.0, 20.0),
+            replica_addr,
+            old_leader_addr,
+            members.clone(),
+            bully2.clone(),
+            HashMap::new(),
+            false,
+            VecDeque::new(),
+        );
+        
+        let role_change_2 = replica2.handle_coordinator(
+            &mut connection,
+            old_leader_id,  // Different node won
+            old_leader_addr
+        ).await;
+
+        // Verify that None was returned
+        match role_change_2 {
+            crate::node::node::RoleChange::None => {
+                assert!(true, "[TEST] handle_coordinator correctly returned RoleChange::None");
+            }
+            other => {
+                panic!("[TEST] Expected None when different node is coordinator, got {:?}", other);
+            }
+        }
+
+        // Verify Bully state was updated to new leader
+        {
+            let b = bully2.lock().await;
+            assert_eq!(b.leader_id, Some(old_leader_id), "[TEST] Bully should recognize new leader");
+            assert_eq!(b.leader_addr, Some(old_leader_addr), "[TEST] Bully should have new leader address");
+            println!("[TEST] Bully state updated to new leader (leader_id={:?})", b.leader_id);
+        }
+    }
+
+    /// Test that Leader.handle_coordinator() correctly detects demotion to replica.
+    /// Creates a real Leader, calls handle_coordinator with different ID, and verifies
+    /// that it returns RoleChange::DemoteToReplica and updates internal state.
+    #[tokio::test]
+    async fn test_leader_receives_coordinator_triggers_demotion() {
+        let current_leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 14300);
+        let new_leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 14301);
+        
+        let current_leader_id = get_id_given_addr(current_leader_addr);
+        let new_leader_id = get_id_given_addr(new_leader_addr);
+
+        println!("\n[TEST] === Testing Leader demotion via handle_coordinator ===");
+        println!("[TEST] Current Leader ID: {}, New Leader ID: {}", current_leader_id, new_leader_id);
+
+        // Create a real Leader instance with complete state
+        let mut members = HashMap::new();
+        members.insert(current_leader_id, current_leader_addr);
+        members.insert(new_leader_id, new_leader_addr);
+
+        let bully = Arc::new(Mutex::new(Bully::new(current_leader_id, current_leader_addr)));
+        
+        // Mark as current coordinator (this is the active leader)
+        {
+            let mut b = bully.lock().await;
+            b.mark_coordinator();
+            assert_eq!(b.leader_id, Some(current_leader_id), "[TEST] Should be current leader");
+            println!("[TEST] Leader marked as coordinator");
+        }
+
+        let mut leader = Leader::from_existing(
+            current_leader_id,
+            5, // current_op_id
+            (30.0, 40.0),
+            current_leader_addr,
+            members.clone(),
+            bully.clone(),
+            HashMap::new(),
+            false,
+            VecDeque::new(),
+        );
+
+        println!("[TEST] Created Leader with ID={}", current_leader_id);
+
+        // Create a Connection for handle_coordinator (won't be used but needed for signature)
+        let mut connection = Connection::start(current_leader_addr, 10)
+            .await
+            .expect("Failed to create connection");
+
+        // === PHASE 1: Receive Coordinator from DIFFERENT node (should demote) ===
+        println!("\n[TEST] PHASE 1: Calling handle_coordinator with different ID ({})", new_leader_id);
+        let role_change = leader.handle_coordinator(
+            &mut connection,
+            new_leader_id,  // Different node won election!
+            new_leader_addr
+        ).await;
+
+        // Verify that DemoteToReplica was returned
+        match role_change {
+            crate::node::node::RoleChange::DemoteToReplica { new_leader_addr: addr } => {
+                assert_eq!(addr, new_leader_addr, "[TEST] New leader address should match");
+                println!("[TEST] handle_coordinator correctly returned RoleChange::DemoteToReplica");
+            }
+            other => {
+                panic!("[TEST] Expected DemoteToReplica, got {:?}", other);
+            }
+        }
+
+        // Verify Bully state was updated correctly
+        {
+            let b = bully.lock().await;
+            assert_eq!(b.leader_id, Some(new_leader_id), "[TEST] Bully should recognize new leader");
+            assert_eq!(b.leader_addr, Some(new_leader_addr), "[TEST] Bully should have new leader address");
+            assert!(!b.election_in_progress, "[TEST] Election should be finished");
+            println!("[TEST] Bully state correctly updated (leader_id={:?}, election_in_progress={})", 
+                     b.leader_id, b.election_in_progress);
+        }
+
+        // === PHASE 2: Receive Coordinator with OWN ID (should NOT demote) ===
+        println!("\n[TEST] PHASE 2: Calling handle_coordinator with own ID");
+        
+        // Create a fresh leader to test the "my ID" case
+        let bully2 = Arc::new(Mutex::new(Bully::new(current_leader_id, current_leader_addr)));
+        {
+            let mut b = bully2.lock().await;
+            b.mark_coordinator();
+        }
+        
+        let mut leader2 = Leader::from_existing(
+            current_leader_id,
+            5,
+            (30.0, 40.0),
+            current_leader_addr,
+            members.clone(),
+            bully2.clone(),
+            HashMap::new(),
+            false,
+            VecDeque::new(),
+        );
+        
+        let role_change_2 = leader2.handle_coordinator(
+            &mut connection,
+            current_leader_id,  // Same ID - re-announcing self as coordinator
+            current_leader_addr
+        ).await;
+
+        // Verify that None was returned
+        match role_change_2 {
+            crate::node::node::RoleChange::None => {
+                println!("[TEST] handle_coordinator correctly returned RoleChange::None");
+            }
+            other => {
+                panic!("[TEST] Expected None when same node is coordinator, got {:?}", other);
+            }
+        }
+
+        // Verify Bully state remains as current leader
+        {
+            let b = bully2.lock().await;
+            assert_eq!(b.leader_id, Some(current_leader_id), "[TEST] Bully should still recognize itself as leader");
+            assert_eq!(b.leader_addr, Some(current_leader_addr), "[TEST] Bully should keep its own address");
+            println!("[TEST] Bully state unchanged (leader_id={:?})", b.leader_id);
+        }
+
+        println!("\n[TEST] === All handle_coordinator assertions passed ===");
+    }
+
+    /// Original test - kept for compatibility
     #[tokio::test]
     async fn test_bully_election_with_leader_and_three_replicas() {
         // Setup: 1 leader + 3 replicas with IDs derived from addresses
