@@ -122,7 +122,7 @@ impl Handler<AccountMsg> for AccountActor {
                         });
                     }
                     Err(err) => {
-                        let _ = reply_to.do_send(AccountChargeReply {
+                        reply_to.do_send(AccountChargeReply {
                             op_id,
                             success: false,
                             error: Some(err),

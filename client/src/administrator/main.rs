@@ -1,5 +1,5 @@
 mod cli;
-mod commands;
+mod command;
 use crate::cli::Cli;
 
 fn main() -> anyhow::Result<()> {

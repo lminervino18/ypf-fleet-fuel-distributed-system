@@ -66,7 +66,7 @@ async fn async_main() -> AppResult<()> {
         let addr: SocketAddr = raw
             .parse()
             .map_err(|e| AppError::Config(
-                format!("invalid known_node address '{}': {e}", raw),
+                format!("invalid known_node address '{raw}': {e}"),
             ))?;
         known_nodes.push(addr);
     }
@@ -77,10 +77,10 @@ async fn async_main() -> AppResult<()> {
     }
 
     println!("[node_client] starting with:");
-    println!("  bind_addr       = {}", bind_addr);
-    println!("  max_connections = {}", max_connections);
-    println!("  num_pumps       = {}", num_pumps);
-    println!("  known_nodes     = {:?}", known_nodes);
+    println!("  bind_addr       = {bind_addr}");
+    println!("  max_connections = {max_connections}");
+    println!("  num_pumps       = {num_pumps}");
+    println!("  known_nodes     = {known_nodes:?}");
 
     // Shared TCP abstraction (same type as leader/replica).
     let connection = Connection::start(bind_addr, max_connections).await?;
