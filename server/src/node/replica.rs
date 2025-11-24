@@ -147,6 +147,17 @@ impl Node for Replica {
     Ok(())
 }
 
+    async fn handle_role_query(
+        &mut self,
+        connection: &mut Connection,
+    ) -> AppResult<()>{
+        let role_msg = Message::RoleResponse {
+            node_id: get_id_given_addr(self.address),
+            role: common::NodeRole::Replica,
+        };
+        connection.send(role_msg, &self.address).await?;
+        Ok(())
+    }
 
     async fn handle_log(
         &mut self,

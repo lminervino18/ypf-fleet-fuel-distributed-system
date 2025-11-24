@@ -17,6 +17,8 @@ use common::operation_result::{ChargeResult, OperationResult};
 use common::{Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
 
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use tokio::select;
 
@@ -29,6 +31,17 @@ struct QueuedCharge {
     account_id: u64,
     card_id: u64,
     amount: f32,
+}
+
+/// Simple hash function to derive a u64 ID from a SocketAddr based on its IP and port
+/// That way we have an unique and consistent ID for each node based on its address
+pub fn get_id_given_addr(addr: SocketAddr) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    addr.ip().hash(&mut hasher);
+    addr.port().hash(&mut hasher);
+    let hash = hasher.finish();
+    let max = 100000;
+    (hash % max) + 1
 }
 
 /// Forwarding client node.
@@ -460,7 +473,7 @@ impl NodeClient {
     /// to the Station (we never registered those ids in `active_online_requests`).
     async fn handle_node_msg(
         &mut self,
-        _connection: &mut Connection,
+        connection: &mut Connection,
         station: &mut Station,
         msg: Message,
     ) -> AppResult<()> {
@@ -477,6 +490,13 @@ impl NodeClient {
 
                 self.handle_response_from_node(station, req_id, op_result)
                     .await?;
+            }
+            Message::RoleQuery{} => {
+            //     let role_msg = Message::RoleResponse {
+            //     node_id: get_id_given_addr(self.bind_addr),
+            //     role: common::NodeRole::Leader,
+            // };
+            // connection.send(role_msg, &self.address).await?;
             }
             other => {
                 // This forwarding client is not part of the cluster protocol,

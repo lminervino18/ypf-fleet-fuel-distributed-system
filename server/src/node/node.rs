@@ -27,6 +27,11 @@ pub trait Node {
         op_result: OperationResult,
     ) -> AppResult<()>;
 
+    async fn handle_role_query(
+        &mut self,
+        connection: &mut Connection,
+    ) -> AppResult<()>;
+
     /// Handle a replicated log entry.
     ///
     /// `db` is passed so implementations (e.g., Replica) can commit the
@@ -315,6 +320,9 @@ pub trait Node {
             Message::Response { req_id, op_result } => {
                 self.handle_response(connection, station, req_id, op_result)
                     .await?;
+            }
+            Message::RoleQuery {} => {
+                self.handle_role_query(connection).await?;
             }
             _ => todo!(),
         }
