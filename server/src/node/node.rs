@@ -1,6 +1,7 @@
 use super::actors::ActorEvent;
 use super::database::Database;
 use crate::errors::AppResult;
+use actix::dev::MessageResponse;
 use common::operation::Operation;
 use common::operation_result::OperationResult;
 use common::{Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
@@ -26,6 +27,14 @@ pub trait Node {
         op: Operation,
         client_addr: SocketAddr,
     ) -> AppResult<()>;
+
+    async fn handle_response(
+        &mut self,
+        connection: &mut Connection,
+        station: &mut Station,
+        req_id: u32,
+        op_result: OperationResult,
+    ) -> AppResult<()> ;
 
     /// Handle a replicated log entry.
     ///
@@ -268,6 +277,7 @@ pub trait Node {
     async fn handle_node_msg(
         &mut self,
         connection: &mut Connection,
+        station: &mut Station,
         db: &mut Database, // CHANGED: pass Database down so Ack / Log can use it
         msg: Message,
     ) -> AppResult<()> {
@@ -308,6 +318,12 @@ pub trait Node {
             Message::ClusterView { members } => {
                 self.handle_cluster_view(members).await;
             }
+            Message::ClusterUpdate { new_member } => {
+                self.handle_cluster_update(connection, new_member).await;
+            }
+            Message::Response { req_id, op_result } => {
+                self.handle_response(connection, station, req_id, op_result).await;
+            }
             _ => todo!(),
         }
 
@@ -329,20 +345,20 @@ pub trait Node {
         loop {
             select! {
                 // periodic tick to check liveness
-                _ = check.tick() => {
-                    let elapsed = last_seen.elapsed();
-                    if elapsed >= liveness_threshold {
-                        self.start_election(&mut connection).await;
-                        last_seen = Instant::now();
-                    }
-                }
+                // _ = check.tick() => {
+                //     let elapsed = last_seen.elapsed();
+                //     if elapsed >= liveness_threshold {
+                //         self.start_election(&mut connection).await;
+                //         last_seen = Instant::now();
+                //     }
+                // }
 
                 // === Node-to-node messages (Raft / Bully / Cluster membership) ===
                 node_msg = connection.recv() => {
                     match node_msg {
                         Ok(msg) => {
                             last_seen = Instant::now();
-                            self.handle_node_msg(&mut connection, &mut db, msg).await;
+                            self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await?;
                         }
                         Err(_e) => {
                             // TODO: manejar errores de red si querés algo más fino

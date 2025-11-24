@@ -6,9 +6,15 @@ use super::{
 };
 use crate::errors::AppResult;
 use common::{
-    operation::Operation, operation_result::OperationResult, Connection, Message, NodeToStationMsg,
-    Station, StationToNodeMsg,
+    operation::Operation,
+    operation_result::{OperationResult, ChargeResult},
+    Connection,
+    Message,
+    NodeToStationMsg,
+    Station,
+    StationToNodeMsg,
 };
+
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
@@ -53,7 +59,6 @@ pub struct Replica {
     operations: HashMap<u32, Operation>,
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
-    station_requests: HashMap<u64, StationPendingCharge>,
     // NOTE: no `router` field anymore; we talk to the actor system via `Database`.
 }
 
@@ -108,22 +113,59 @@ impl Node for Replica {
         Ok(())
     }
 
+     async fn handle_response(
+    &mut self,
+    connection: &mut Connection,
+    station: &mut Station,
+    req_id: u32,
+    op_result: OperationResult,
+) -> AppResult<()> {
+    match op_result {
+        OperationResult::Charge(cr) => {
+            let (allowed, error) = match cr {
+                ChargeResult::Ok => (true, None),
+                ChargeResult::Failed(err) => (false, Some(err)),
+            };
+
+            station
+                .send(NodeToStationMsg::ChargeResult {
+                    request_id: req_id,
+                    allowed,
+                    error,
+                })
+                .await?;
+        }
+
+        // Por ahora ignoramos otros resultados (Limit*, AccountQuery, etc.)
+        // Podés loguearlos o manejarlos según lo vayas necesitando.
+        other => {
+            // Ejemplo de log (si querés dejar algo):
+            // eprintln!("[Node] handle_response: OperationResult inesperado: {:?}", other);
+        }
+    }
+
+    Ok(())
+}
+
+
     async fn handle_log(
         &mut self,
-        _connection: &mut Connection,
+        connection: &mut Connection,
         db: &mut Database,
         op_id: u32,
         new_op: Operation,
     ) {
+        println!("[REPLICA] Received Log for op_id={}: {:?}", op_id, new_op);
         // Guardamos el log y commiteamos la operación anterior.
         self.operations.insert(op_id, new_op);
         if op_id == 0 {
+            connection.send(Message::Ack { op_id: 0 }, &self.leader_addr).await.unwrap();
             return; // si es la primera no hay op previamente loggeada
         }
 
         // Igual que antes, pero ahora via `Database` en vez de `router`.
         // Ignoramos el Result como ya hacíamos antes.
-        self.commit_operation(db, op_id - 1).await;
+        self.commit_operation(db, op_id - 1).await.unwrap();
     }
 
     async fn handle_ack(&mut self, _connection: &mut Connection, _db: &mut Database, _id: u32) {
@@ -203,6 +245,8 @@ impl Node for Replica {
         new_member: (u64, SocketAddr),
     ) {
         self.members.insert(new_member.0, new_member.1);
+        println!("[REPLICA] new cluster member added: {:?}", new_member);
+        println!("[REPLICA] current members: {:?}", self.members.len());
     }
 
     async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>) {
@@ -214,6 +258,7 @@ impl Node for Replica {
 
         // Ensure we are present with the correct address.
         self.members.insert(self.id, self.address);
+        println!("[REPLICA] updated cluster view: {:?}", self.members);
     }
 }
 
@@ -272,7 +317,6 @@ impl Replica {
             operations: HashMap::new(),
             is_offline: false,
             offline_queue: VecDeque::new(),
-            station_requests: HashMap::new(),
         };
 
         // Join inicial contra el líder para que rebroadcastée el ClusterView.
