@@ -1,8 +1,8 @@
+use crate::Message;
+use crate::Message::*;
 use crate::errors::AppError;
 use crate::errors::AppResult;
 use crate::network::serials::protocol::*;
-use crate::Message;
-use crate::Message::*;
 use std::net::SocketAddr;
 
 impl TryFrom<Vec<u8>> for Message {
@@ -28,8 +28,9 @@ impl TryFrom<Vec<u8>> for Message {
     }
 }
 
-fn deserialize_role_query_message(_payload: &[u8]) -> AppResult<Message> {
-    Ok(Message::RoleQuery)
+fn deserialize_role_query_message(payload: &[u8]) -> AppResult<Message> {
+    let addr = deserialize_socket_address_srl(payload)?;
+    Ok(Message::RoleQuery { addr })
 }
 
 fn deserialize_response_message(payload: &[u8]) -> AppResult<Message> {

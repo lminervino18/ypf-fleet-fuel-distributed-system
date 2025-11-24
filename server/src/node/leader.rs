@@ -100,7 +100,7 @@ impl Node for Leader {
         client_addr: SocketAddr,
     ) -> AppResult<()> {
         // Store the operation locally.
-        println!("[LEADER] Handling new request from {:?}: {:?}", client_addr, op);
+        println!("[LEADER] Handling new request from {client_addr:?}: {op:?}");
         self.operations.insert(
             self.current_op_id,
             PendingOperation::new(op.clone(), client_addr, req_id),
@@ -139,6 +139,21 @@ impl Node for Leader {
         todo!()
     }
 
+    async fn handle_role_query(
+        &mut self,
+        connection: &mut Connection,
+        addr: SocketAddr,
+    ) -> AppResult<()> {
+
+        println!("[LEADER] Received role query from {:?}", addr);
+        let role_msg = Message::RoleResponse {
+            node_id: get_id_given_addr(self.address),
+            role: common::NodeRole::Leader,
+        };
+        connection.send(role_msg, &addr).await?;
+        Ok(())
+    }
+    
     async fn handle_log(
         &mut self,
         _connection: &mut Connection,
@@ -157,7 +172,7 @@ impl Node for Leader {
             return; // TODO: handle this case (unknown op_id).
         };
 
-        println!("[LEADER] Received ACK for op_id {}", op_id);
+        println!("[LEADER] Received ACK for op_id {op_id}");
         pending.ack_count += 1;
         if pending.ack_count != (self.members.len() - 1) / 2 {
             return;
@@ -320,7 +335,7 @@ impl Node for Leader {
                 )
                 .await;
         }
-        println!("[LEADER] New node joined: {:?} (ID={})", addr, node_id);
+        println!("[LEADER] New node joined: {addr:?} (ID={node_id})");
         println!("[LEADER] Current members: {:?}", self.members.len());
         // TODO: una vez q le avisaste a todas las réplicas hay que llamar a una elección de líder
     }
