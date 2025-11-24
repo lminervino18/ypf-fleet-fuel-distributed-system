@@ -1,6 +1,6 @@
 use crate::network::serials::protocol::*;
 use crate::operation_result::OperationResult;
-use crate::{operation::Operation, Message};
+use crate::{Message, operation::Operation};
 use crate::{Message::*, NodeRole};
 use std::net::{IpAddr, SocketAddr};
 
@@ -18,7 +18,7 @@ impl From<Message> for Vec<u8> {
             ClusterView { members } => serialize_cluster_view_message(members),
             ClusterUpdate { new_member } => serialize_cluster_update_message(new_member),
             Response { req_id, op_result } => serialize_response_message(req_id, op_result),
-            RoleQuery => serialize_role_query_message(),
+            RoleQuery { addr } => serialize_role_query_message(addr),
             RoleResponse { node_id, role } => serialize_role_response_message(node_id, role),
             _ => todo!(),
         }
@@ -40,9 +40,12 @@ fn serialize_role_response_message(node_id: u64, role: NodeRole) -> Vec<u8> {
     srl
 }
 
-fn serialize_role_query_message() -> Vec<u8> {
+fn serialize_role_query_message(addr: SocketAddr) -> Vec<u8> {
     let type_srl = MSG_TYPE_ROLE_QUERY;
-    vec![type_srl]
+    let addr_srl = serialize_socket_address(addr);
+    let mut srl = vec![type_srl];
+    srl.extend(addr_srl);
+    srl
 }
 
 // importante que las operations vayan a lo último para que el checkeo de los lenghts sea
