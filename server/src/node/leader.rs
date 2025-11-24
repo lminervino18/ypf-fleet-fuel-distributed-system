@@ -280,9 +280,6 @@ impl Node for Leader {
     async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
         let mut b = self.bully.lock().await;
         b.on_election_ok(responder_id);
-
-        // we should step down
-        todo!("[Bully ID={}] Received ElectionOk, stepping down", self.id);
     }
 
     async fn handle_coordinator(
