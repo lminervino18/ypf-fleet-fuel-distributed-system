@@ -63,19 +63,108 @@ mod node_test {
     } */
 }
 
+
+    
 #[cfg(test)]
 mod bully_election_test {
     use crate::node::election::bully::Bully;
     use crate::node::utils::get_id_given_addr;
-    use common::Connection;
-    use std::collections::HashMap;
+    use crate::node::{Leader, Replica};
+    use common::{Connection, Message};
+    use std::collections::{HashMap, VecDeque};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tokio::time::{sleep, Duration};
+    /// Test Leader → Replica conversion with state preservation.
+    #[tokio::test]
+    async fn test_leader_to_replica_conversion() {
+        let current_leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 14100);
+        let new_leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 14101);
+        
+        let current_leader_id = get_id_given_addr(current_leader_addr);
+        let new_leader_id = get_id_given_addr(new_leader_addr);
 
-    /// Test Bully election with 1 leader (low ID) and 3 replicas.
-    /// Simulates leader failure and verifies the replica with highest ID becomes coordinator.
+        // Create a Leader with some state
+        let mut members = HashMap::new();
+        members.insert(current_leader_id, current_leader_addr);
+        members.insert(new_leader_id, new_leader_addr);
+
+        let bully = Arc::new(Mutex::new(Bully::new(current_leader_id, current_leader_addr)));
+        {
+            let mut b = bully.lock().await;
+            b.mark_coordinator(); // Mark as current coordinator
+        }
+
+        let leader = Leader::from_existing(
+            current_leader_id,
+            5, // current_op_id
+            (30.0, 40.0),
+            current_leader_addr,
+            members.clone(),
+            bully.clone(),
+            HashMap::new(), // operations from replica (not used by Leader)
+            false,
+            VecDeque::new(),
+        );
+
+        let replica = leader.into_replica(new_leader_addr);
+
+        assert_eq!(replica.test_get_id(), current_leader_id, "[TEST] Replica ID matches former Leader ID");
+        assert_eq!(replica.test_get_members().len(), members.len(), "[TEST] Replica members match former Leader members");
+        assert_eq!(replica.test_get_operations(), HashMap::new(), "[TEST] Replica operations log is empty");
+
+    }
+
+
+    
+    #[tokio::test]
+    async fn test_replica_to_leader_conversion() {
+        let replica_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 14000);
+        let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 14001);
+        
+        let replica_id = get_id_given_addr(replica_addr);
+        let leader_id = get_id_given_addr(leader_addr);
+
+        // Create a Replica with some state
+        let mut members = HashMap::new();
+        members.insert(replica_id, replica_addr);
+        members.insert(leader_id, leader_addr);
+
+        let bully = Arc::new(Mutex::new(Bully::new(replica_id, replica_addr)));
+        
+        // Simulate some operations in the replica's log
+        let mut operations = HashMap::new();
+        operations.insert(1, common::operation::Operation::Charge {
+            account_id: 100,
+            card_id: 200,
+            amount: 50.0,
+            from_offline_station: false,
+        });
+        operations.insert(2, common::operation::Operation::Charge {
+            account_id: 101,
+            card_id: 201,
+            amount: 75.0,
+            from_offline_station: false,
+        });
+
+        let replica = Replica::from_existing(
+            replica_id,
+            (10.0, 20.0),
+            replica_addr,
+            leader_addr,
+            members.clone(),
+            bully.clone(),
+            operations.clone(),
+            false,
+            VecDeque::new(),
+        );
+
+        let leader = replica.into_leader();
+        assert_eq!(leader.test_get_id(), replica_id, "[TEST] Replica ID matches");
+        assert_eq!(leader.test_get_members().len(), members.len(), "[TEST] Leader members match former Replica members");
+        }
+
     #[tokio::test]
     async fn test_bully_election_with_leader_and_three_replicas() {
         // Setup: 1 leader + 3 replicas with IDs derived from addresses

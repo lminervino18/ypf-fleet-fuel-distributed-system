@@ -439,4 +439,19 @@ impl Replica {
             }
         }
     }
+
+
+    /// Test helpers to access private fields.
+    #[cfg(test)]
+    pub fn test_get_id(&self) -> u64 {
+        self.id
+    }
+    #[cfg(test)]
+    pub fn test_get_members(&self) -> HashMap<u64, SocketAddr> {
+        self.members.clone()
+    }
+    #[cfg(test)]
+    pub fn test_get_operations(&self) -> HashMap<u32, Operation> {
+        self.operations.clone()
+    }
 }
