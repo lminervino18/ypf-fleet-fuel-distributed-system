@@ -76,6 +76,27 @@ impl Node for Replica {
         self.address
     }
 
+    async fn start_election(&mut self, connection: &mut Connection) {
+        // Build peer_ids map from the current membership (excluding self).
+        let mut peer_ids = HashMap::new();
+        for (peer_id, addr) in &self.members {
+            if *peer_id == self.id {
+                continue;
+            }
+
+            peer_ids.insert(*peer_id, *addr);
+        }
+
+        crate::node::election::bully::conduct_election(
+            &self.bully,
+            connection,
+            peer_ids,
+            self.id,
+            self.address,
+        )
+        .await;
+    }
+
     async fn handle_operation_result(
         &mut self,
         connection: &mut Connection,
@@ -231,30 +252,9 @@ impl Node for Replica {
             return super::node::RoleChange::PromoteToLeader;
         } else {
             // Update our local "current leader" pointer
-        self.leader_addr = leader_addr;
+            self.leader_addr = leader_addr;
             super::node::RoleChange::None
         }
-    }
-
-    async fn start_election(&mut self, connection: &mut Connection) {
-        // Build peer_ids map from the current membership (excluding self).
-        let mut peer_ids = HashMap::new();
-        for (peer_id, addr) in &self.members {
-            if *peer_id == self.id {
-                continue;
-            }
-
-            peer_ids.insert(*peer_id, *addr);
-        }
-
-        crate::node::election::bully::conduct_election(
-            &self.bully,
-            connection,
-            peer_ids,
-            self.id,
-            self.address,
-        )
-        .await;
     }
 
     async fn handle_join(&mut self, _connection: &mut Connection, _addr: SocketAddr) {
@@ -443,7 +443,7 @@ impl Replica {
             )
             .await;
 
-        // para manera cambios de rol
+        // para cambios de rol
         // Usamos el loop genérico de `Node::run`, igual que el Leader:
         // - own `connection`, `db` y `station`.
         loop {
@@ -469,6 +469,10 @@ impl Replica {
     #[cfg(test)]
     pub fn test_get_id(&self) -> u64 {
         self.id
+    }
+    #[cfg(test)]
+    pub fn test_get_leader_id(&self) -> u64 {
+        get_id_given_addr(self.leader_addr)
     }
     #[cfg(test)]
     pub fn test_get_members(&self) -> HashMap<u64, SocketAddr> {

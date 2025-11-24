@@ -6,6 +6,9 @@ pub const MSG_TYPE_JOIN: u8 = 0x03;
 pub const MSG_TYPE_CLUSTER_VIEW: u8 = 0x04;
 pub const MSG_TYPE_CLUSTER_UPDATE: u8 = 0x05;
 pub const MSG_TYPE_RESPONSE: u8 = 0x06;
+pub const MSG_TYPE_ELECTION: u8 = 0x09;
+pub const MSG_TYPE_ELECTION_OK: u8 = 0x0A;
+pub const MSG_TYPE_COORDINATOR: u8 = 0x0B;
 // debug msgs
 pub const MSG_TYPE_ROLE_QUERY: u8 = 0x07;
 pub const MSG_TYPE_ROLE_RESPONSE: u8 = 0x08;

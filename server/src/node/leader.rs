@@ -269,19 +269,20 @@ impl Node for Leader {
             b.should_reply_ok(candidate_id)
         };
         if should_reply {
+            // if i'm higher, reply OK
             let reply = Message::ElectionOk {
                 responder_id: self.id,
             };
             let _ = connection.send(reply, &candidate_addr).await;
-
-            // Start own election immediately.
-            self.start_election(connection).await;
         }
     }
 
     async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
         let mut b = self.bully.lock().await;
         b.on_election_ok(responder_id);
+
+        // we should step down
+        todo!("[Bully ID={}] Received ElectionOk, stepping down", self.id);
     }
 
     async fn handle_coordinator(
