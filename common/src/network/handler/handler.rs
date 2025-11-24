@@ -1,7 +1,7 @@
 use super::{receiver::StreamReceiver, sender::StreamSender};
 use crate::{
-    Message,
     errors::{AppError, AppResult},
+    Message,
 };
 use std::{
     net::SocketAddr,

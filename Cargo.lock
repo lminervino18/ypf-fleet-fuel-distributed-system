@@ -189,7 +189,12 @@ dependencies = [
  "anyhow",
  "clap",
  "common",
+ "tokio",
 ]
+
+[[package]]
+name = "cluster-tests"
+version = "0.1.0"
 
 [[package]]
 name = "colorchoice"

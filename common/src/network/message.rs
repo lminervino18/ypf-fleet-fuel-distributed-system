@@ -77,7 +77,9 @@ pub enum Message {
     },
 
     // debug msgs for typescript simulation fend
-    RoleQuery,
+    RoleQuery {
+        addr: SocketAddr,
+    },
     RoleResponse {
         node_id: u64,
         role: NodeRole,

@@ -1,6 +1,7 @@
 use super::actors::ActorEvent;
 use super::database::Database;
 use crate::errors::AppResult;
+use crate::node::database;
 use actix::dev::MessageResponse;
 use common::operation::Operation;
 use common::operation_result::OperationResult;
@@ -9,11 +10,20 @@ use std::net::SocketAddr;
 use tokio::select;
 use tokio::time::Duration;
 
+/// Signal to indicate if a role change should occur.
+#[derive(Debug, Clone)]
+pub enum RoleChange {
+    None,
+    PromoteToLeader,
+    DemoteToReplica { new_leader_addr: SocketAddr },
+}
+
 pub trait Node {
     // messages from connection
     async fn handle_request(
         &mut self,
         connection: &mut Connection,
+        database: &mut Database,
         req_id: u32,
         op: Operation,
         client_addr: SocketAddr,
@@ -25,6 +35,12 @@ pub trait Node {
         station: &mut Station,
         req_id: u32,
         op_result: OperationResult,
+    ) -> AppResult<()>;
+
+    async fn handle_role_query(
+        &mut self,
+        connection: &mut Connection,
+        addr: SocketAddr,
     ) -> AppResult<()>;
 
     /// Handle a replicated log entry.
@@ -90,6 +106,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
+        database: &mut Database,    
         account_id: u64,
         card_id: u64,
         amount: f32,
@@ -118,7 +135,7 @@ pub trait Node {
             from_offline_station: false,
         };
 
-        self.handle_request(connection, request_id, op, self.get_address())
+        self.handle_request(connection, database,request_id, op, self.get_address())
             .await
             .unwrap();
     }
@@ -210,6 +227,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
+        database: &mut Database,
         msg: StationToNodeMsg,
     ) {
         match msg {
@@ -220,7 +238,7 @@ pub trait Node {
                 request_id,
             } => {
                 self.handle_charge_request(
-                    connection, station, account_id, card_id, amount, request_id,
+                    connection, station, database, account_id, card_id, amount, request_id,
                 )
                 .await;
             }
@@ -248,7 +266,7 @@ pub trait Node {
         connection: &mut Connection,
         leader_id: u64,
         leader_addr: SocketAddr,
-    );
+    ) -> RoleChange;
 
     async fn start_election(&mut self, connection: &mut Connection);
 
@@ -265,26 +283,30 @@ pub trait Node {
     );
 
     /// Default handler for any node-to-node Message.
+    /// Returns RoleChange to signal if a role transition should occur.
     async fn handle_node_msg(
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
         db: &mut Database, // CHANGED: pass Database down so Ack / Log can use it
         msg: Message,
-    ) -> AppResult<()> {
-        match msg {
+    ) -> AppResult<RoleChange> {
+        let role_change = match msg {
             Message::Request {
                 req_id: op_id,
                 op,
                 addr,
             } => {
-                self.handle_request(connection, op_id, op, addr).await?;
+                self.handle_request(connection, db,op_id, op, addr).await?;
+                RoleChange::None
             }
             Message::Log { op_id, op } => {
                 self.handle_log(connection, db, op_id, op).await;
+                RoleChange::None
             }
             Message::Ack { op_id } => {
                 self.handle_ack(connection, db, op_id).await;
+                RoleChange::None
             }
             Message::Election {
                 candidate_id,
@@ -292,43 +314,54 @@ pub trait Node {
             } => {
                 self.handle_election(connection, candidate_id, candidate_addr)
                     .await;
+                RoleChange::None
             }
             Message::ElectionOk { responder_id } => {
                 self.handle_election_ok(connection, responder_id).await;
+                RoleChange::None
             }
             Message::Coordinator {
                 leader_id,
                 leader_addr,
             } => {
                 self.handle_coordinator(connection, leader_id, leader_addr)
-                    .await;
+                    .await
             }
             Message::Join { addr } => {
                 self.handle_join(connection, addr).await;
+                RoleChange::None
             }
             Message::ClusterView { members } => {
                 self.handle_cluster_view(members).await;
+                RoleChange::None
             }
             Message::ClusterUpdate { new_member } => {
                 self.handle_cluster_update(connection, new_member).await;
+                RoleChange::None
             }
             Message::Response { req_id, op_result } => {
-                self.handle_response(connection, station, req_id, op_result)
-                    .await;
+                let _ = self.handle_response(connection, station, req_id, op_result)
+                    .await?;
+                RoleChange::None
+            }
+            Message::RoleQuery { addr } => {
+                self.handle_role_query(connection, addr).await?;
+                RoleChange::None
             }
             _ => todo!(),
-        }
+        };
 
-        Ok(())
+        Ok(role_change)
     }
 
     /// Main async event loop for any node role (Leader / Replica / Station-backed node).
+    /// Returns a RoleChange signal if the node should switch roles.
     async fn run(
         &mut self,
         mut connection: Connection,
         mut db: Database,
         mut station: Station,
-    ) -> AppResult<()> {
+    ) -> AppResult<RoleChange> {
         use tokio::time::{interval, Instant};
         let mut check = interval(Duration::from_millis(100));
         let liveness_threshold = Duration::from_millis(300);
@@ -350,7 +383,14 @@ pub trait Node {
                     match node_msg {
                         Ok(msg) => {
                             last_seen = Instant::now();
-                            self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await?;
+                            let role_change = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await?;
+                            match role_change {
+                                RoleChange::None => {},
+                                change => {
+                                    println!("[NODE] Role change detected: {:?}", change);
+                                    return Ok(change);
+                                }
+                            }
                         }
                         Err(_e) => {
                             // TODO: manejar errores de red si querés algo más fino
@@ -362,7 +402,7 @@ pub trait Node {
                 pump_msg = station.recv() => {
                     match pump_msg {
                         Some(msg) => {
-                            self.handle_station_msg(&mut connection, &mut station, msg).await;
+                            self.handle_station_msg(&mut connection, &mut station,&mut db, msg).await;
                         }
                         None => {
                             // Station side closed its channel.

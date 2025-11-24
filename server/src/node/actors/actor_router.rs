@@ -17,7 +17,7 @@ use common::operation_result::{AccountQueryResult, ChargeResult, LimitResult, Op
 /// - Maintain and create AccountActor and CardActor instances as needed.
 /// - Route `RouterCmd::Execute` to the correct actors.
 /// - Receive `RouterInternalMsg::*` from cards/accounts.
-/// - Emit un único `ActorEvent::OperationResult` hacia el Node.
+/// - Emit a single `ActorEvent::OperationResult` towards the Node.
 pub struct ActorRouter {
     /// Maps account_id to AccountActor address.
     pub accounts: HashMap<u64, Addr<AccountActor>>,
@@ -137,11 +137,43 @@ impl Handler<RouterCmd> for ActorRouter {
                         card.do_send(CardMsg::ExecuteLimitChange { op_id, new_limit });
                     }
                     Operation::AccountQuery { account_id } => {
-                        // NUEVO: El Router arranca el query pidiéndole a la Account
-                        // que espere N respuestas, y envía QueryCardState a cada Card
+                        // Router starts the query by telling the Account
+                        // how many cards to expect, and then asks each Card
+                        // for its state.
                         let acc = self.get_or_create_account(account_id, ctx);
 
-                        // Determinar qué tarjetas pertenecen a esta cuenta
+                        // Determine which cards belong to this account.
+                        let mut card_ids = Vec::new();
+                        for (acc_id, card_id) in self.cards.keys() {
+                            if *acc_id == account_id {
+                                card_ids.push(*card_id);
+                            }
+                        }
+                        let num_cards = card_ids.len();
+
+                        // 1) tell the account how many cards to wait for
+                        acc.do_send(AccountMsg::StartAccountQuery { op_id, num_cards });
+
+                        // 2) ask each card for its state (NO reset).
+                        for card_id in card_ids {
+                            if let Some(card_addr) = self.cards.get(&(account_id, card_id)) {
+                                card_addr.do_send(CardMsg::QueryCardState {
+                                    op_id,
+                                    account_id,
+                                    reset_after_report: false,
+                                });
+                            }
+                        }
+                        // The final result arrives via RouterInternalMsg::AccountQueryCompleted
+                    }
+                    Operation::Bill { account_id, period: _ } => {
+                        // Igual a AccountQuery, pero:
+                        // - la Account entra en modo "billing" (StartAccountBill),
+                        // - las Cards reportan y se resetean (reset_after_report=true),
+                        // - la Account también resetea account_consumed al finalizar.
+                        let acc = self.get_or_create_account(account_id, ctx);
+
+                        // Determinar tarjetas de esta cuenta
                         let mut card_ids = Vec::new();
                         for ((acc_id, card_id), _) in &self.cards {
                             if *acc_id == account_id {
@@ -150,18 +182,20 @@ impl Handler<RouterCmd> for ActorRouter {
                         }
                         let num_cards = card_ids.len();
 
-                        // 1) avisar a la cuenta cuántas tarjetas tiene que esperar
-                        acc.do_send(AccountMsg::StartAccountQuery { op_id, num_cards });
+                        acc.do_send(AccountMsg::StartAccountBill { op_id, num_cards });
 
-                        // 2) pedirle a cada tarjeta su estado
                         for card_id in card_ids {
                             if let Some(card_addr) = self.cards.get(&(account_id, card_id)) {
-                                card_addr.do_send(CardMsg::QueryCardState { op_id, account_id });
+                                card_addr.do_send(CardMsg::QueryCardState {
+                                    op_id,
+                                    account_id,
+                                    reset_after_report: true,
+                                });
                             }
                         }
-                        // El resultado final llegará vía RouterInternalMsg::AccountQueryCompleted
+                        // El resultado llega también como AccountQueryCompleted,
+                        // y el Router lo mapeará a OperationResult::AccountQuery.
                     }
-                    Operation::Bill { account_id, period } => todo!(),
                 }
             }
 
@@ -203,7 +237,7 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                     }
                 };
 
-                // Mapear a OperationResult para Charge / LimitAccount / LimitCard
+                // Map to OperationResult for Charge / LimitAccount / LimitCard
                 let result = match operation {
                     Operation::Charge { .. } => {
                         let cr = if success {
@@ -212,7 +246,7 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                             ChargeResult::Failed(
                                 error
                                     .clone()
-                                    .expect("VerifyError esperado si success == false"),
+                                    .expect("VerifyError expected if success == false"),
                             )
                         };
                         OperationResult::Charge(cr)
@@ -224,7 +258,7 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                             LimitResult::Failed(
                                 error
                                     .clone()
-                                    .expect("VerifyError esperado si success == false"),
+                                    .expect("VerifyError expected if success == false"),
                             )
                         };
                         OperationResult::LimitAccount(lr)
@@ -236,21 +270,29 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                             LimitResult::Failed(
                                 error
                                     .clone()
-                                    .expect("VerifyError esperado si success == false"),
+                                    .expect("VerifyError expected if success == false"),
                             )
                         };
                         OperationResult::LimitCard(lr)
                     }
                     Operation::AccountQuery { .. } => {
-                        // AccountQuery no debería entrar acá; lo manejamos con
-                        // AccountQueryCompleted. Fallback defensivo.
+                        // AccountQuery should be handled by AccountQueryCompleted.
+                        // Defensive fallback.
                         OperationResult::AccountQuery(AccountQueryResult {
                             account_id: 0,
                             total_spent: 0.0,
                             per_card_spent: Vec::new(),
                         })
                     }
-                    Operation::Bill { account_id, period } => todo!(),
+                    Operation::Bill { .. } => {
+                        // Bill también se resuelve por AccountQueryCompleted;
+                        // si llega acá sería un bug de wiring.
+                        OperationResult::AccountQuery(AccountQueryResult {
+                            account_id: 0,
+                            total_spent: 0.0,
+                            per_card_spent: Vec::new(),
+                        })
+                    }
                 };
 
                 self.emit(ActorEvent::OperationResult {
@@ -272,13 +314,14 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                     Some(op) => op.clone(),
                     None => {
                         self.emit(ActorEvent::Debug(format!(
-                            "[Router] AccountQueryCompleted for unknown op_id={}",
-                            op_id
+                            "[Router] AccountQueryCompleted for unknown op_id={op_id}"
                         )));
                         return;
                     }
                 };
 
+                // Tanto para AccountQuery como para Bill devolvemos
+                // OperationResult::AccountQuery con el mismo payload.
                 let result = OperationResult::AccountQuery(AccountQueryResult {
                     account_id,
                     total_spent,
@@ -303,8 +346,6 @@ impl Handler<RouterInternalMsg> for ActorRouter {
 
 #[cfg(test)]
 mod tests {
-    use std::thread::sleep;
-
     use super::*;
     use actix::prelude::*;
     use tokio::sync::mpsc;
@@ -316,14 +357,14 @@ mod tests {
         AccountQueryResult, ChargeResult, LimitResult, OperationResult,
     };
 
-    /// Helper: crea un Router con su canal de eventos hacia el "Node".
+    /// Helper: create a Router with its event channel towards the "Node".
     fn make_router() -> (Addr<ActorRouter>, mpsc::Receiver<ActorEvent>) {
         let (tx, rx) = mpsc::channel::<ActorEvent>(16);
         let router = ActorRouter::new(tx).start();
         (router, rx)
     }
 
-    /// Espera hasta recibir un `ActorEvent::OperationResult` para el `op_id` dado.
+    /// Wait until we receive an `ActorEvent::OperationResult` for the given op_id.
     async fn wait_for_result(
         rx: &mut mpsc::Receiver<ActorEvent>,
         op_id: u32,
@@ -340,11 +381,20 @@ mod tests {
                     return (operation, result, success, error);
                 }
                 _ => {
-                    // Ignoramos otros eventos / op_ids.
+                    // Ignore other events / op_ids.
                 }
             }
         }
-        panic!("No se recibió OperationResult para op_id={op_id}");
+        panic!("Did not receive OperationResult for op_id={op_id}");
+    }
+
+    /// Small helper to get the spent amount for a card_id from a Vec<(card_id, amount)>.
+    fn spent_for_card(per_card_spent: &[(u64, f32)], card_id: u64) -> f32 {
+        per_card_spent
+            .iter()
+            .find(|(id, _)| *id == card_id)
+            .map(|(_, v)| *v)
+            .unwrap_or(0.0)
     }
 
     #[actix_rt::test]
@@ -375,11 +425,11 @@ mod tests {
 
         match result {
             OperationResult::Charge(ChargeResult::Ok) => {}
-            other => panic!("Esperábamos ChargeResult::Ok, obtuvimos {:?}", other),
+            other => panic!("Esperábamos ChargeResult::Ok, obtuvimos {other:?}"),
         }
 
         // De paso, el router debería haber creado 1 cuenta y 1 tarjeta.
-        assert_eq!(router.try_send(RouterCmd::GetLog).is_ok(), true);
+        assert!(router.try_send(RouterCmd::GetLog).is_ok());
     }
 
     #[actix_rt::test]
@@ -389,7 +439,7 @@ mod tests {
         let account_id = 2;
         let card_id = 20;
 
-        // 1) Seteamos límite de tarjeta a 10.0
+        // 1) Set card limit to 10.0
         let op_id_limit = 1;
         let op_limit = Operation::LimitCard {
             account_id,
@@ -408,10 +458,10 @@ mod tests {
         assert!(error.is_none());
         match result {
             OperationResult::LimitCard(LimitResult::Ok) => {}
-            other => panic!("Esperábamos LimitResult::Ok, obtuvimos {:?}", other),
+            other => panic!("Esperábamos LimitResult::Ok, obtuvimos {other:?}"),
         }
 
-        // 2) Intentamos un cargo que excede ese límite (20.0 > 10.0)
+        // 2) Charge exceeding that limit (20.0 > 10.0)
         let op_id_charge = 2;
         let op_charge = Operation::Charge {
             account_id,
@@ -428,21 +478,20 @@ mod tests {
         let (_operation, result, success, error) = wait_for_result(&mut rx, op_id_charge).await;
 
         assert!(!success);
-        let err = error.expect("Esperábamos un VerifyError");
+        let err = error.expect("Expected a VerifyError");
         match err {
             VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded) => {}
-            other => panic!("Esperábamos CardLimitExceeded, obtuvimos {:?}", other),
+            other => panic!("Esperábamos CardLimitExceeded, obtuvimos {other:?}"),
         }
 
         match result {
             OperationResult::Charge(ChargeResult::Failed(e)) => match e {
                 VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded) => {}
                 other => panic!(
-                    "Esperábamos ChargeResult::Failed(CardLimitExceeded), obtuvimos {:?}",
-                    other
+                    "Esperábamos ChargeResult::Failed(CardLimitExceeded), obtuvimos {other:?}",
                 ),
             },
-            other => panic!("Esperábamos ChargeResult::Failed(_), obtuvimos {:?}", other),
+            other => panic!("Esperábamos ChargeResult::Failed(_), obtuvimos {other:?}"),
         }
     }
 
@@ -453,7 +502,7 @@ mod tests {
         let account_id = 3;
         let card_id = 30;
 
-        // Generamos consumo: dos cargos online que siempre pasan porque no hay límite inicial.
+        // Generate consumption: two charges that pass because there is no initial limit.
         let op_id_c1 = 1;
         let op_c1 = Operation::Charge {
             account_id,
@@ -480,8 +529,7 @@ mod tests {
         });
         let _ = wait_for_result(&mut rx, op_id_c2).await;
 
-        // En este punto, la cuenta ya tiene 35.0 consumidos.
-        // Intentamos fijar un límite menor (10.0) -> debe fallar por BelowCurrentUsage.
+        // Now consumption is 35.0. Setting limit to 10.0 should fail.
         let op_id_limit = 3;
         let op_limit = Operation::LimitAccount {
             account_id,
@@ -498,23 +546,21 @@ mod tests {
         assert_eq!(operation, op_limit);
         assert!(!success);
 
-        let err = error.expect("Esperábamos VerifyError");
+        let err = error.expect("Expected VerifyError");
         match err {
             VerifyError::LimitUpdate(LimitUpdateError::BelowCurrentUsage) => {}
-            other => panic!("Esperábamos BelowCurrentUsage, obtuvimos {:?}", other),
+            other => panic!("Esperábamos BelowCurrentUsage, obtuvimos {other:?}"),
         }
 
         match result {
             OperationResult::LimitAccount(LimitResult::Failed(e)) => match e {
                 VerifyError::LimitUpdate(LimitUpdateError::BelowCurrentUsage) => {}
                 other => panic!(
-                    "Esperábamos LimitResult::Failed(BelowCurrentUsage), obtuvimos {:?}",
-                    other
+                    "Esperábamos LimitResult::Failed(BelowCurrentUsage), obtuvimos {other:?}"
                 ),
             },
             other => panic!(
-                "Esperábamos LimitAccount(LimitResult::Failed), obtuvimos {:?}",
-                other
+                "Esperábamos LimitAccount(LimitResult::Failed), obtuvimos {other:?}"
             ),
         }
     }
@@ -550,20 +596,19 @@ mod tests {
                 assert!(per_card_spent.is_empty());
             }
             other => panic!(
-                "Esperábamos AccountQueryResult vacío, obtuvimos {:?}",
-                other
+                "Esperábamos AccountQueryResult vacío, obtuvimos {other:?}"
             ),
         }
     }
 
     #[actix_rt::test]
     async fn account_query_aggregates_per_card_and_total() {
-        /*         let (router, mut rx) = make_router();
+        let (router, mut rx) = make_router();
 
         let account_id = 5;
         let card_id = 50;
 
-        // Cargamos dos veces la misma tarjeta
+        // Two charges on the same card: 10.0 + 15.0
         let op_id_charge1 = 1;
         let op_charge1 = Operation::Charge {
             account_id,
@@ -590,7 +635,7 @@ mod tests {
         });
         let _ = wait_for_result(&mut rx, op_id_charge2).await;
 
-        // Ahora pedimos un AccountQuery
+        // Now ask for an AccountQuery
         let op_id_query = 3;
         let op_query = Operation::AccountQuery { account_id };
         router.do_send(RouterCmd::Execute {
@@ -612,27 +657,27 @@ mod tests {
             }) => {
                 assert_eq!(acc, account_id);
                 assert_eq!(total_spent, 25.0);
-                let spent_card = per_card_spent.get(&card_id).copied().unwrap_or(0.0);
+                let spent_card = spent_for_card(&per_card_spent, card_id);
                 assert_eq!(spent_card, 25.0);
             }
             other => panic!(
-                "Esperábamos AccountQueryResult con totales, obtuvimos {:?}",
+                "Expected AccountQueryResult with totals, got {:?}",
                 other
             ),
-        } */
+        }
     }
 
     #[actix_rt::test]
     async fn multiple_operations_interleaved_stay_correlated_by_op_id() {
-        /*         let (router, mut rx) = make_router();
+        let (router, mut rx) = make_router();
 
         let account_id = 6;
         let card_id = 60;
 
-        // Enviamos varias operaciones intercaladas:
+        // Send several interleaved operations:
         // 1: Charge
         // 2: LimitCard
-        // 3: Charge (que va a fallar por límite)
+        // 3: Charge (expected to fail due to limit)
         // 4: AccountQuery
         let op1 = Operation::Charge {
             account_id,
@@ -675,7 +720,7 @@ mod tests {
         let mut results: HashMap<u32, (Operation, OperationResult, bool, Option<VerifyError>)> =
             HashMap::new();
 
-        // Esperamos hasta tener los 4 OperationResult (uno por op_id).
+        // Wait until we have 4 OperationResult events (one per op_id).
         while results.len() < 4 {
             if let Some(ev) = rx.recv().await {
                 if let ActorEvent::OperationResult {
@@ -689,13 +734,13 @@ mod tests {
                     results.insert(op_id, (operation, result, success, error));
                 }
             } else {
-                panic!("Canal cerrado antes de recibir los 4 OperationResult");
+                panic!("Channel closed before receiving all 4 OperationResults");
             }
         }
 
-        // ---------- op_id = 1: Charge chico -> OK ----------
+        // ---------- op_id = 1: small Charge -> OK ----------
         let (operation1, result1, success1, error1) =
-            results.remove(&1).expect("Falta resultado para op_id=1");
+            results.remove(&1).expect("Missing result for op_id=1");
         assert_eq!(operation1, op1);
         assert!(success1);
         assert!(error1.is_none());
@@ -703,7 +748,7 @@ mod tests {
 
         // ---------- op_id = 2: LimitCard -> OK ----------
         let (operation2, result2, success2, error2) =
-            results.remove(&2).expect("Falta resultado para op_id=2");
+            results.remove(&2).expect("Missing result for op_id=2");
         assert_eq!(operation2, op2);
         assert!(success2);
         assert!(error2.is_none());
@@ -712,15 +757,15 @@ mod tests {
             OperationResult::LimitCard(LimitResult::Ok)
         ));
 
-        // ---------- op_id = 3: Cargo grande sobre límite -> FAIL ----------
+        // ---------- op_id = 3: large Charge over the limit -> FAIL ----------
         let (_operation3, result3, success3, error3) =
-            results.remove(&3).expect("Falta resultado para op_id=3");
+            results.remove(&3).expect("Missing result for op_id=3");
         assert!(!success3);
-        let err3 = error3.expect("Esperábamos VerifyError para op3");
+        let err3 = error3.expect("Expected VerifyError for op3");
         match err3 {
             VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded) => {}
             other => panic!(
-                "Esperábamos CardLimitExceeded en op3, obtuvimos {:?}",
+                "Expected CardLimitExceeded in op3, got {:?}",
                 other
             ),
         }
@@ -728,21 +773,21 @@ mod tests {
             OperationResult::Charge(ChargeResult::Failed(e)) => match e {
                 VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded) => {}
                 other => panic!(
-                    "Esperábamos ChargeResult::Failed(CardLimitExceeded) en op3, obtuvimos {:?}",
+                    "Expected ChargeResult::Failed(CardLimitExceeded) in op3, got {:?}",
                     other
                 ),
             },
             other => panic!(
-                "Esperábamos ChargeResult::Failed(_) en op3, obtuvimos {:?}",
+                "Expected ChargeResult::Failed(_) in op3, got {:?}",
                 other
             ),
         }
 
         // ---------- op_id = 4: AccountQuery ----------
-        // Por la naturaleza concurrente, la query puede ver 0 o 5,
-        // pero nunca más de 5 (un solo cargo exitoso) y debe ser coherente.
+        // Depending on timing, the query can see 0 or 5,
+        // but never more than 5 (only one successful charge).
         let (operation4, result4, success4, error4) =
-            results.remove(&4).expect("Falta resultado para op_id=4");
+            results.remove(&4).expect("Missing result for op_id=4");
         assert_eq!(operation4, op4);
         assert!(success4);
         assert!(error4.is_none());
@@ -755,33 +800,33 @@ mod tests {
             }) => {
                 assert_eq!(acc, account_id);
 
-                let spent_card = per_card_spent.get(&card_id).copied().unwrap_or(0.0);
+                let spent_card = spent_for_card(&per_card_spent, card_id);
 
-                // Coherencia interna: con una sola tarjeta, total == gasto de esa tarjeta.
+                // Internal consistency: with a single card, total == spent for that card.
                 assert!(
                     (total_spent - spent_card).abs() < f32::EPSILON,
-                    "total_spent ({}) y spent_card ({}) no coinciden",
+                    "total_spent ({}) and spent_card ({}) do not match",
                     total_spent,
                     spent_card
                 );
 
-                // Por construcción del test, nunca tiene que aparecer más de 5.0
+                // By construction of the test, we should never see > 5.0 here.
                 assert!(
                     total_spent <= 5.0 + f32::EPSILON,
-                    "AccountQuery vio más consumo del posible: {}",
+                    "AccountQuery saw more consumption than possible: {}",
                     total_spent
                 );
             }
             other => panic!(
-                "Esperábamos AccountQueryResult tras intercalado, obtuvimos {:?}",
+                "Expected AccountQueryResult after interleaving, got {:?}",
                 other
             ),
-        } */
+        }
     }
 
     #[actix_rt::test]
     async fn account_query_multiple_cards_sums_correctly() {
-        /*         let (router, mut rx) = make_router();
+        let (router, mut rx) = make_router();
 
         let account_id = 100;
         let card_a = 10;
@@ -806,7 +851,7 @@ mod tests {
         match res {
             OperationResult::Charge(ChargeResult::Ok) => {}
             other => panic!(
-                "Esperábamos ChargeResult::Ok para card_a, obtuvimos {:?}",
+                "Expected ChargeResult::Ok for card_a, got {:?}",
                 other
             ),
         }
@@ -829,7 +874,7 @@ mod tests {
         match res {
             OperationResult::Charge(ChargeResult::Ok) => {}
             other => panic!(
-                "Esperábamos ChargeResult::Ok para card_b, obtuvimos {:?}",
+                "Expected ChargeResult::Ok for card_b, got {:?}",
                 other
             ),
         }
@@ -852,12 +897,12 @@ mod tests {
         match res {
             OperationResult::Charge(ChargeResult::Ok) => {}
             other => panic!(
-                "Esperábamos ChargeResult::Ok para card_c, obtuvimos {:?}",
+                "Expected ChargeResult::Ok for card_c, got {:?}",
                 other
             ),
         }
 
-        // Ahora pedimos el AccountQuery para esa cuenta
+        // Now ask for AccountQuery for that account
         let op_id_q = 4;
         let op_q = Operation::AccountQuery { account_id };
         router.do_send(RouterCmd::Execute {
@@ -874,33 +919,33 @@ mod tests {
             OperationResult::AccountQuery(AccountQueryResult {
                 account_id: acc,
                 total_spent,
-                mut per_card_spent,
+                per_card_spent,
             }) => {
                 assert_eq!(acc, account_id);
                 // 10 + 15 + 5
                 assert_eq!(total_spent, 30.0);
 
-                // Chequeamos que estén las 3 tarjetas
+                // Should contain the 3 cards.
                 assert_eq!(per_card_spent.len(), 3);
 
-                let a = per_card_spent.remove(&card_a).unwrap_or(0.0);
-                let b = per_card_spent.remove(&card_b).unwrap_or(0.0);
-                let c = per_card_spent.remove(&card_c).unwrap_or(0.0);
+                let a = spent_for_card(&per_card_spent, card_a);
+                let b = spent_for_card(&per_card_spent, card_b);
+                let c = spent_for_card(&per_card_spent, card_c);
 
                 assert_eq!(a, 10.0);
                 assert_eq!(b, 15.0);
                 assert_eq!(c, 5.0);
             }
             other => panic!(
-                "Esperábamos AccountQueryResult con 3 tarjetas, obtuvimos {:?}",
+                "Expected AccountQueryResult with 3 cards, got {:?}",
                 other
             ),
-        } */
+        }
     }
 
     #[actix_rt::test]
     async fn account_query_multiple_cards_includes_offline_charges() {
-        /*         let (router, mut rx) = make_router();
+        let (router, mut rx) = make_router();
 
         let account_id = 200;
         let card_online = 11;
@@ -924,12 +969,12 @@ mod tests {
         match res {
             OperationResult::Charge(ChargeResult::Ok) => {}
             other => panic!(
-                "Esperábamos ChargeResult::Ok para card_online, obtuvimos {:?}",
+                "Expected ChargeResult::Ok for card_online, got {:?}",
                 other
             ),
         }
 
-        // card_offline: 50.0 (from_offline_station = true, debe contarse igual)
+        // card_offline: 50.0 (from_offline_station = true, but should be counted)
         let op_id_off = 2;
         let op_off = Operation::Charge {
             account_id,
@@ -947,7 +992,7 @@ mod tests {
         match res {
             OperationResult::Charge(ChargeResult::Ok) => {}
             other => panic!(
-                "Esperábamos ChargeResult::Ok para card_offline, obtuvimos {:?}",
+                "Expected ChargeResult::Ok for card_offline, got {:?}",
                 other
             ),
         }
@@ -975,32 +1020,32 @@ mod tests {
                 // 8 + 50
                 assert_eq!(total_spent, 58.0);
 
-                let spent_online = per_card_spent.get(&card_online).copied().unwrap_or(0.0);
-                let spent_offline = per_card_spent.get(&card_offline).copied().unwrap_or(0.0);
+                let spent_online = spent_for_card(&per_card_spent, card_online);
+                let spent_offline = spent_for_card(&per_card_spent, card_offline);
 
                 assert_eq!(spent_online, 8.0);
                 assert_eq!(spent_offline, 50.0);
             }
             other => panic!(
-                "Esperábamos AccountQueryResult con cargos online+offline, obtuvimos {:?}",
+                "Expected AccountQueryResult with online+offline, got {:?}",
                 other
             ),
-        } */
+        }
     }
 
     #[actix_rt::test]
     async fn account_query_is_account_scoped() {
-        /*         let (router, mut rx) = make_router();
+        let (router, mut rx) = make_router();
 
-        // Cuenta A con una tarjeta
+        // Account A with one card
         let account_a = 300;
         let card_a1 = 1;
 
-        // Cuenta B con otra tarjeta
+        // Account B with another card
         let account_b = 400;
         let card_b1 = 2;
 
-        // Cargamos en la cuenta A: 20.0
+        // Charge Account A: 20.0
         let op_id_a = 1;
         let op_a = Operation::Charge {
             account_id: account_a,
@@ -1018,12 +1063,12 @@ mod tests {
         match res {
             OperationResult::Charge(ChargeResult::Ok) => {}
             other => panic!(
-                "Esperábamos ChargeResult::Ok para cuenta A, obtuvimos {:?}",
+                "Expected ChargeResult::Ok for account A, got {:?}",
                 other
             ),
         }
 
-        // Cargamos en la cuenta B: 99.0
+        // Charge Account B: 99.0
         let op_id_b = 2;
         let op_b = Operation::Charge {
             account_id: account_b,
@@ -1041,12 +1086,12 @@ mod tests {
         match res {
             OperationResult::Charge(ChargeResult::Ok) => {}
             other => panic!(
-                "Esperábamos ChargeResult::Ok para cuenta B, obtuvimos {:?}",
+                "Expected ChargeResult::Ok for account B, got {:?}",
                 other
             ),
         }
 
-        // Ahora pedimos AccountQuery SOLO para account_a
+        // Now query only Account A
         let op_id_q_a = 3;
         let op_q_a = Operation::AccountQuery {
             account_id: account_a,
@@ -1067,20 +1112,22 @@ mod tests {
                 total_spent,
                 per_card_spent,
             }) => {
-                // Debe ser sólo la cuenta A con su propio cargo
+                // Must only include account A and its own charge.
                 assert_eq!(account_id, account_a);
                 assert_eq!(total_spent, 20.0);
 
-                // Sólo debería estar card_a1
+                // Only card_a1 should be present.
                 assert_eq!(per_card_spent.len(), 1);
-                let spent_a1 = per_card_spent.get(&card_a1).copied().unwrap_or(0.0);
+                let spent_a1 = spent_for_card(&per_card_spent, card_a1);
                 assert_eq!(spent_a1, 20.0);
-                assert!(!per_card_spent.contains_key(&card_b1));
+
+                let has_b1 = per_card_spent.iter().any(|(id, _)| *id == card_b1);
+                assert!(!has_b1, "AccountQuery for A should not contain card_b1");
             }
             other => panic!(
-                "Esperábamos AccountQueryResult sólo para account_a, obtuvimos {:?}",
+                "Expected AccountQueryResult only for account_a, got {:?}",
                 other
             ),
-        } */
+        }
     }
 }
