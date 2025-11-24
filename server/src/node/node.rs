@@ -9,15 +9,6 @@ use std::net::SocketAddr;
 use tokio::select;
 use tokio::time::Duration;
 
-/// Role of a node in the YPF Ruta distributed system.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum NodeRole {
-    Leader,
-    Replica,
-    Station,
-}
-
 pub trait Node {
     // messages from connection
     async fn handle_request(
@@ -34,7 +25,7 @@ pub trait Node {
         station: &mut Station,
         req_id: u32,
         op_result: OperationResult,
-    ) -> AppResult<()> ;
+    ) -> AppResult<()>;
 
     /// Handle a replicated log entry.
     ///
@@ -322,7 +313,8 @@ pub trait Node {
                 self.handle_cluster_update(connection, new_member).await;
             }
             Message::Response { req_id, op_result } => {
-                self.handle_response(connection, station, req_id, op_result).await;
+                self.handle_response(connection, station, req_id, op_result)
+                    .await;
             }
             _ => todo!(),
         }

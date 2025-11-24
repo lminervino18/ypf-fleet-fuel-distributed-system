@@ -1,7 +1,7 @@
-use crate::Message::*;
 use crate::network::serials::protocol::*;
 use crate::operation_result::OperationResult;
-use crate::{Message, operation::Operation};
+use crate::{operation::Operation, Message};
+use crate::{Message::*, NodeRole};
 use std::net::{IpAddr, SocketAddr};
 
 impl From<Message> for Vec<u8> {
@@ -18,9 +18,31 @@ impl From<Message> for Vec<u8> {
             ClusterView { members } => serialize_cluster_view_message(members),
             ClusterUpdate { new_member } => serialize_cluster_update_message(new_member),
             Response { req_id, op_result } => serialize_response_message(req_id, op_result),
+            RoleQuery => serialize_role_query_message(),
+            RoleResponse { node_id, role } => serialize_role_response_message(node_id, role),
             _ => todo!(),
         }
     }
+}
+
+fn serialize_role_response_message(node_id: u64, role: NodeRole) -> Vec<u8> {
+    let type_srl = MSG_TYPE_ROLE_RESPONSE;
+    let node_id_srl = node_id.to_be_bytes();
+    let role_srl = match role {
+        NodeRole::Leader => NODE_ROLE_LEADER,
+        NodeRole::Replica => NODE_ROLE_REPLICA,
+        NodeRole::Station => NODE_ROLE_CLIENT,
+    };
+    let mut srl = vec![];
+    srl.push(type_srl);
+    srl.extend(node_id_srl);
+    srl.push(role_srl);
+    srl
+}
+
+fn serialize_role_query_message() -> Vec<u8> {
+    let type_srl = MSG_TYPE_ROLE_QUERY;
+    vec![type_srl]
 }
 
 // importante que las operations vayan a lo último para que el checkeo de los lenghts sea

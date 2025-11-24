@@ -1,8 +1,8 @@
-use crate::Message;
-use crate::Message::*;
 use crate::errors::AppError;
 use crate::errors::AppResult;
 use crate::network::serials::protocol::*;
+use crate::Message;
+use crate::Message::*;
 use std::net::SocketAddr;
 
 impl TryFrom<Vec<u8>> for Message {
@@ -17,6 +17,7 @@ impl TryFrom<Vec<u8>> for Message {
             MSG_TYPE_CLUSTER_VIEW => deserialize_cluster_view_message(&payload[1..]),
             MSG_TYPE_CLUSTER_UPDATE => deserialize_cluster_update_message(&payload[1..]),
             MSG_TYPE_RESPONSE => deserialize_response_message(&payload[1..]),
+            MSG_TYPE_ROLE_QUERY => deserialize_role_query_message(&payload[1..]),
             _ => Err(AppError::InvalidData {
                 details: format!(
                     "unknown node message type {}, with contents {:?}",
@@ -25,6 +26,10 @@ impl TryFrom<Vec<u8>> for Message {
             }),
         }
     }
+}
+
+fn deserialize_role_query_message(_payload: &[u8]) -> AppResult<Message> {
+    Ok(Message::RoleQuery)
 }
 
 fn deserialize_response_message(payload: &[u8]) -> AppResult<Message> {

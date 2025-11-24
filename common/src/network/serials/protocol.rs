@@ -6,6 +6,12 @@ pub const MSG_TYPE_JOIN: u8 = 0x03;
 pub const MSG_TYPE_CLUSTER_VIEW: u8 = 0x04;
 pub const MSG_TYPE_CLUSTER_UPDATE: u8 = 0x05;
 pub const MSG_TYPE_RESPONSE: u8 = 0x06;
+// debug msgs
+pub const MSG_TYPE_ROLE_QUERY: u8 = 0x07;
+pub const MSG_TYPE_ROLE_RESPONSE: u8 = 0x08;
+pub const NODE_ROLE_LEADER: u8 = 0x00;
+pub const NODE_ROLE_REPLICA: u8 = 0x01;
+pub const NODE_ROLE_CLIENT: u8 = 0x02;
 
 // operation types
 pub const OP_TYPE_CHARGE: u8 = 0x00;
