@@ -1,6 +1,7 @@
 use super::{
     database::{Database, DatabaseCmd},
     election::bully::Bully,
+    leader::Leader,
     node::Node,
     utils::get_id_given_addr,
 };
@@ -218,13 +219,20 @@ impl Node for Replica {
         _connection: &mut Connection,
         leader_id: u64,
         leader_addr: SocketAddr,
-    ) {
+    ) -> super::node::RoleChange {
         let mut b = self.bully.lock().await;
         b.on_coordinator(leader_id, leader_addr);
-        // Update our local "current leader" pointer as well.
-        self.leader_addr = leader_addr;
+        drop(b); // release lock
 
-        // TODO: promoción a líder si corresponde.
+        // Check if we should promote to leader
+        if leader_id == self.id {
+            println!("[REPLICA {}] Promoting to LEADER", self.id);
+            return super::node::RoleChange::PromoteToLeader;
+        } else {
+            // Update our local "current leader" pointer
+        self.leader_addr = leader_addr;
+            super::node::RoleChange::None
+        }
     }
 
     async fn start_election(&mut self, connection: &mut Connection) {
@@ -276,6 +284,66 @@ impl Node for Replica {
 }
 
 impl Replica {
+    /// Convert this Replica into a Leader.
+    /// Consumes self and returns a Leader.
+    pub fn into_leader(self) -> Leader {
+        use super::leader::Leader;
+
+        // When promoting, we use the replica's last op_id as current_op_id
+        let current_op_id = self
+            .operations
+            .keys()
+            .max()
+            .map(|k| *k)
+            .unwrap_or(0);
+        // let only_last_op = self
+        //     .operations
+        //     .get(&current_op_id)
+        //     .cloned()
+        //     .map(|op| {
+        //         let mut map = HashMap::new();
+        //         map.insert(current_op_id, op);
+        //         map
+        //     })
+        //     .unwrap_or_default();
+
+        Leader::from_existing(
+            self.id,
+            current_op_id,
+            self.coords,
+            self.address,
+            self.members,
+            self.bully,
+            self.operations,
+            self.is_offline,
+            self.offline_queue,
+        )
+    }
+
+    /// Create a new Replica from existing node state (used for Leader demotion)
+    pub fn from_existing(
+        id: u64,
+        coords: (f64, f64),
+        address: SocketAddr,
+        leader_addr: SocketAddr,
+        members: HashMap<u64, SocketAddr>,
+        bully: Arc<Mutex<Bully>>,
+        operations: HashMap<u32, Operation>,
+        is_offline: bool,
+        offline_queue: VecDeque<Operation>,
+    ) -> Self {
+        Self {
+            id,
+            coords,
+            address,
+            leader_addr,
+            members,
+            bully,
+            operations,
+            is_offline,
+            offline_queue,
+        }
+    }
     async fn commit_operation(&mut self, db: &mut Database, op_id: u32) -> AppResult<()> {
         let Some(op) = self.operations.remove(&op_id) else {
             todo!();
@@ -290,12 +358,44 @@ impl Replica {
         Ok(())
     }
 
+    /// Continue running as Replica after being demoted from Leader.
+    /// Reuses existing state from the leader.
+    pub async fn run_from_leader(
+        mut replica: Replica,
+        address: SocketAddr,
+        coords: (f64, f64),
+        max_conns: usize,
+        pumps: usize,
+    ) -> AppResult<()> {
+        // Recreate resources that were consumed by leader.run()
+        let db = super::database::Database::start().await?;
+        let station = Station::start(pumps).await?;
+        let connection = Connection::start(address, max_conns).await?;
+
+        // Loop para manejar cambios de rol
+        loop {
+            let role_change = replica.run(connection, db, station).await?;
+            
+            match role_change {
+                super::node::RoleChange::PromoteToLeader => {
+                    println!("[REPLICA] Converting to Leader...");
+                    let leader = replica.into_leader();
+                    return Box::pin(Leader::run_from_replica(leader, address, coords, max_conns, pumps)).await;
+                }
+                _ => {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     /// - boots the ConnectionManager (TCP),
     /// - boots the actor system wrapped in `Database` (Actix in a dedicated thread),
     /// - starts the Station abstraction (which internally spawns the simulator with `pumps` pumps on stdin),
     /// - seeds the cluster membership (self + leader),
     /// - sends an initial Join message to the leader,
     /// - then enters the main async event loop.
+    /// If promoted to Leader, converts itself and continues running as Leader.
     pub async fn start(
         address: SocketAddr,
         leader_addr: SocketAddr,
@@ -342,8 +442,39 @@ impl Replica {
             )
             .await;
 
+        // para manera cambios de rol
         // Usamos el loop genérico de `Node::run`, igual que el Leader:
         // - own `connection`, `db` y `station`.
-        replica.run(connection, db, station).await
+        loop {
+            let role_change = replica.run(connection, db, station).await?;
+            
+            match role_change {
+                super::node::RoleChange::PromoteToLeader => {
+                    println!("[REPLICA] Converting to Leader...");
+                    // con Pin le digo al compilador que el Future se quedara en la misma dirección de memoria y que las referencias internas son validas
+                    let leader = replica.into_leader();
+                    return Box::pin(Leader::run_from_replica(leader, address, coords, max_conns, pumps)).await;
+                }
+                _ => {
+                    // if there's no role change, it means run() ended for another reason
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+
+    /// Test helpers to access private fields.
+    #[cfg(test)]
+    pub fn test_get_id(&self) -> u64 {
+        self.id
+    }
+    #[cfg(test)]
+    pub fn test_get_members(&self) -> HashMap<u64, SocketAddr> {
+        self.members.clone()
+    }
+    #[cfg(test)]
+    pub fn test_get_operations(&self) -> HashMap<u32, Operation> {
+        self.operations.clone()
     }
 }
