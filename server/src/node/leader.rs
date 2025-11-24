@@ -374,7 +374,7 @@ mod test {
                     task::spawn(async move {
                         tokio::time::timeout(
                             Duration::from_secs(1),
-                            Leader::start(leader_addr, (0.0, 0.0), 1, 1),
+                            Leader::start(leader_addr, (0.0, 0.0), 10, 1),
                         )
                         .await
                         .unwrap()
@@ -405,6 +405,72 @@ mod test {
                 (get_id_given_addr(replica_addr), replica_addr),
             ],
         };
+        // FIXME: este test a veces falla porq las addr vienen al revés, comparar sets
         assert_eq!(received, expected);
+    }
+
+    #[tokio::test]
+    async fn test_leader_sends_log_to_two_replicas_when_receiving_a_request() {
+        // init del test (sí, muy largo :(  )
+        let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12364);
+        let replica1_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12365);
+        let replica2_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12366);
+        let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12367);
+        let _leader_handle = spawn_leader_in_thread(leader_addr);
+        thread::sleep(Duration::from_secs(1)); // fuerzo context switch
+        let mut replica1 = Connection::start(replica1_addr, 1).await.unwrap();
+        let mut replica2 = Connection::start(replica2_addr, 1).await.unwrap();
+        // joineo las reps
+        replica1
+            .send(
+                Message::Join {
+                    addr: replica1_addr,
+                },
+                &leader_addr,
+            )
+            .await
+            .unwrap();
+        // vuelo los msjs de cluster view
+        let _ = replica1.recv().await.unwrap();
+        thread::sleep(Duration::from_secs(1));
+        replica2
+            .send(
+                Message::Join {
+                    addr: replica2_addr,
+                },
+                &leader_addr,
+            )
+            .await
+            .unwrap();
+        let _ = replica2.recv().await.unwrap();
+        // ahora la salsa dea
+        let op = Operation::Charge {
+            account_id: 10,
+            card_id: 1500,
+            amount: 134989.5,
+            from_offline_station: false,
+        }; //  op random
+        let mut client = Connection::start(client_addr, 1).await.unwrap();
+        client
+            .send(
+                Message::Request {
+                    req_id: 0,
+                    op: op.clone(),
+                    addr: client_addr,
+                },
+                &leader_addr,
+            )
+            .await
+            .unwrap(); // request al líder
+        let expected_log = Message::Log { op_id: 0, op };
+        assert_eq!(replica1.recv().await.unwrap(), expected_log);
+        assert_eq!(replica2.recv().await.unwrap(), expected_log);
+        // ahora la response
+        /* let op_result = OperationResult::Charge(ChargeResult::Ok);
+        let expected_response = Message::Response {
+            req_id: 0,
+            op_result,
+        };
+        assert_eq!(client.recv().await.unwrap(), expected_response); */
     }
 }
