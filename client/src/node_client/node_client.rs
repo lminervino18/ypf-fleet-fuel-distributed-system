@@ -491,12 +491,12 @@ impl NodeClient {
                 self.handle_response_from_node(station, req_id, op_result)
                     .await?;
             }
-            Message::RoleQuery{} => {
-            //     let role_msg = Message::RoleResponse {
-            //     node_id: get_id_given_addr(self.bind_addr),
-            //     role: common::NodeRole::Leader,
-            // };
-            // connection.send(role_msg, &self.address).await?;
+            Message::RoleQuery{addr } => {
+                 let role_msg = Message::RoleResponse {
+                 node_id: get_id_given_addr(self.bind_addr),
+                 role: common::NodeRole::Station,
+             };
+             connection.send(role_msg, &addr).await?;
             }
             other => {
                 // This forwarding client is not part of the cluster protocol,

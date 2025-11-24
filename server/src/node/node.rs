@@ -30,6 +30,7 @@ pub trait Node {
     async fn handle_role_query(
         &mut self,
         connection: &mut Connection,
+        addr: SocketAddr,
     ) -> AppResult<()>;
 
     /// Handle a replicated log entry.
@@ -321,8 +322,8 @@ pub trait Node {
                 self.handle_response(connection, station, req_id, op_result)
                     .await?;
             }
-            Message::RoleQuery {} => {
-                self.handle_role_query(connection).await?;
+            Message::RoleQuery { addr } => {
+                self.handle_role_query(connection, addr).await?;
             }
             _ => todo!(),
         }
