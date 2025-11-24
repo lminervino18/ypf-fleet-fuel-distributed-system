@@ -68,7 +68,6 @@ pub struct Leader {
     operations: HashMap<u32, PendingOperation>,
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
-    station_requests: HashMap<u32, (usize, StationPendingCharge)>,
     // NOTE: we no longer store Database here; it is owned by `run()`.
 }
 
@@ -96,7 +95,7 @@ impl Node for Leader {
         client_addr: SocketAddr,
     ) -> AppResult<()> {
         // Store the operation locally.
-        self.current_op_id += 1;
+        println!("[LEADER] Handling new request from {:?}: {:?}", client_addr, op);
         self.operations.insert(
             self.current_op_id,
             PendingOperation::new(op.clone(), client_addr, req_id),
@@ -120,7 +119,19 @@ impl Node for Leader {
                 .await?;
         }
 
+        self.current_op_id += 1;
+
         Ok(())
+    }
+
+    async fn handle_response(
+        &mut self,
+        connection: &mut Connection,
+        station: &mut Station,
+        req_id: u32,
+        op_result: OperationResult,
+    ) -> AppResult<()> {
+        todo!()
     }
 
     async fn handle_log(
@@ -136,15 +147,23 @@ impl Node for Leader {
 
     // CHANGED SIGNATURE: now receives `db: &mut Database`
     async fn handle_ack(&mut self, _connection: &mut Connection, db: &mut Database, op_id: u32) {
+
         let Some(pending) = self.operations.get_mut(&op_id) else {
-            todo!(); // TODO: handle this case (unknown op_id).
+            return; // TODO: handle this case (unknown op_id).
         };
 
+        println!("[LEADER] Received ACK for op_id {}", op_id);
         pending.ack_count += 1;
-        if pending.ack_count <= (self.members.len() - 1) / 2 {
+        if pending.ack_count != (self.members.len() - 1) / 2 {
             return;
         }
 
+        println!(
+            "[LEADER] Majority ACKs reached for op_id {} ({} / {})",
+            op_id,
+            pending.ack_count,
+            self.members.len()
+        );
         // Mayoría alcanzada → ejecutar la operación en el mundo de actores.
         //
         // Instead of talking directly to ActorRouter / RouterCmd, we now
@@ -253,6 +272,9 @@ impl Node for Leader {
         connection.send(view_msg, &addr).await.unwrap(); // TODO: handle this errors!!
                                                          // y le mandamos sólo el nuevo al resto de las réplicas
         for replica_addr in self.members.values() {
+            if *replica_addr == self.address || *replica_addr == addr {
+                continue;
+            }
             let _ = connection
                 .send(
                     Message::ClusterUpdate {
@@ -262,6 +284,8 @@ impl Node for Leader {
                 )
                 .await;
         }
+        println!("[LEADER] New node joined: {:?} (ID={})", addr, node_id);
+        println!("[LEADER] Current members: {:?}", self.members.len());
         // TODO: una vez q le avisaste a todas las réplicas hay que llamar a una elección de líder
     }
 
@@ -320,7 +344,6 @@ impl Leader {
             operations: HashMap::new(),
             is_offline: false,
             offline_queue: VecDeque::new(),
-            station_requests: HashMap::new(),
         };
 
         // Now `run` takes ownership of `connection`, `db` and `station`,
