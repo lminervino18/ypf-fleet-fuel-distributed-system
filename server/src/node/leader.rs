@@ -95,7 +95,10 @@ impl Node for Leader {
         client_addr: SocketAddr,
     ) -> AppResult<()> {
         // Store the operation locally.
-        println!("[LEADER] Handling new request from {:?}: {:?}", client_addr, op);
+        println!(
+            "[LEADER] Handling new request from {:?}: {:?}",
+            client_addr, op
+        );
         self.operations.insert(
             self.current_op_id,
             PendingOperation::new(op.clone(), client_addr, req_id),
@@ -147,7 +150,6 @@ impl Node for Leader {
 
     // CHANGED SIGNATURE: now receives `db: &mut Database`
     async fn handle_ack(&mut self, _connection: &mut Connection, db: &mut Database, op_id: u32) {
-
         let Some(pending) = self.operations.get_mut(&op_id) else {
             return; // TODO: handle this case (unknown op_id).
         };
@@ -355,45 +357,64 @@ impl Leader {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        thread,
+        time::Duration,
+    };
+    use tokio::task;
 
     #[tokio::test]
-    async fn test_leader_sends_log_msg_when_handling_a_request() {
+    async fn test_leader_sends_cluster_view_when_receiving_join_message() {
         let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12362);
-        let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12363);
-        let replica_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12364);
+        let replica_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12363);
+        thread::spawn(move || {
+            // por dios no sé cómo hacer esto de otra forma, esto es una copia de la expansión de la macro tokio::main
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    task::spawn(async move {
+                        tokio::time::timeout(
+                            Duration::from_secs(1),
+                            Leader::start(leader_addr, (0.0, 0.0), 1, 1),
+                        )
+                        .await
+                        .unwrap()
+                        .unwrap()
+                    })
+                    .await
+                    .unwrap()
+                });
+        });
 
-        Leader::start(leader_addr, (0.0, 0.0), 1, 1).await.unwrap();
-
-        let mut client = Connection::start(client_addr, 1).await.unwrap();
-        let mut replica = Connection::start(replica_addr, 1).await.unwrap();
-
-        replica
-            .send(Message::Join { addr: replica_addr }, &leader_addr)
-            .await
-            .unwrap();
-
-        let op = Operation::Charge {
-            account_id: 13,
-            card_id: 14,
-            amount: 1500.5,
-            from_offline_station: false,
-        };
-
-        client
-            .send(
-                Message::Request {
-                    req_id: 0,
-                    op: op.clone(),
-                    addr: client_addr,
-                },
-                &leader_addr,
+        thread::sleep(Duration::from_secs(1)); // fuerzo context switch
+        let replica_handle = task::spawn(async move {
+            let mut replica =
+                tokio::time::timeout(Duration::from_secs(1), Connection::start(replica_addr, 1))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                replica.send(Message::Join { addr: replica_addr }, &leader_addr),
             )
             .await
+            .unwrap()
             .unwrap();
+            tokio::time::timeout(Duration::from_secs(1), replica.recv())
+                .await
+                .unwrap()
+        });
 
-        let expected = Message::Log { op_id: 0, op };
-        let received = replica.recv().await.unwrap();
+        let received = replica_handle.await.unwrap().unwrap();
+        let expected = Message::ClusterView {
+            members: vec![
+                (get_id_given_addr(leader_addr), leader_addr),
+                (get_id_given_addr(replica_addr), replica_addr),
+            ],
+        };
         assert_eq!(received, expected);
     }
 }
