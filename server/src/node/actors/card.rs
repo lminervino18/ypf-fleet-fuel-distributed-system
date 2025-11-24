@@ -59,7 +59,7 @@ impl CardActor {
         Self {
             card_id,
             account_id,
-            limit: Some(50.0),
+            limit: None,
             consumed: 0.0,
             current_task: None,
             queue: VecDeque::new(),
@@ -83,6 +83,9 @@ impl CardActor {
         Ok(())
     }
 
+
+
+
     /// Check whether we can set a new card limit.
     fn can_set_new_limit(&self, new_limit: Option<f32>) -> Result<(), LimitUpdateError> {
         match new_limit {
@@ -91,6 +94,32 @@ impl CardActor {
             Some(_) => Err(LimitUpdateError::BelowCurrentUsage),
         }
     }
+
+
+    // ==== Helpers sólo para tests ====
+    #[cfg(test)]
+    pub(crate) fn test_check_charge_limit(&self, amount: f32) -> Result<(), LimitCheckError> {
+        self.check_charge_limit(amount)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_can_set_new_limit(
+        &self,
+        new_limit: Option<f32>,
+    ) -> Result<(), LimitUpdateError> {
+        self.can_set_new_limit(new_limit)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_set_consumed(&mut self, consumed: f32) {
+        self.consumed = consumed;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_consumed(&self) -> f32 {
+        self.consumed
+    }
+
 
     /// Start processing the current task, if any.
     fn start_current_task(&mut self, ctx: &mut Context<Self>) {
@@ -286,5 +315,78 @@ impl Handler<AccountChargeReply> for CardActor {
                 )));
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+    use std::collections::VecDeque;
+
+    /// Crea un CardActor de prueba.
+    ///
+    /// Importante: acá seteamos el `limit` en `None` porque el escenario
+    /// que queremos testear es "tarjeta sin límite inicial (límite infinito)".
+    fn make_test_card() -> CardActor {
+        // Creamos un Router y una Account reales sólo para rellenar los Addr,
+        // pero en estos tests nunca les mandamos mensajes.
+        let (tx, _rx) = mpsc::channel(8);
+        let router = ActorRouter::new(tx).start();
+        let account = AccountActor::new(1, router.clone()).start();
+
+        CardActor {
+            card_id: 10,
+            account_id: 1,
+            limit: None,              // <-- límite infinito
+            consumed: 0.0,
+            current_task: None,
+            queue: VecDeque::new(),
+            router,
+            account,
+        }
+    }
+
+    #[actix_rt::test]
+    async fn default_card_has_no_limit_and_allows_large_charges() {
+        let card = make_test_card();
+
+        // Como el límite es None, cualquier monto debería pasar el chequeo.
+        assert!(card.check_charge_limit(10.0).is_ok());
+        assert!(card.check_charge_limit(1_000_000.0).is_ok());
+    }
+
+    #[actix_rt::test]
+    async fn cannot_set_limit_below_current_consumption() {
+        let mut card = make_test_card();
+
+        // Simulamos que la tarjeta ya consumió 30.0
+        card.consumed = 30.0;
+
+        // Bajar el límite a 10.0 (< 30.0) debe fallar
+        let res_bad = card.can_set_new_limit(Some(10.0));
+        assert!(matches!(res_bad, Err(LimitUpdateError::BelowCurrentUsage)));
+
+        // Subir el límite a 50.0 (>= 30.0) debe ser válido
+        let res_ok = card.can_set_new_limit(Some(50.0));
+        assert!(res_ok.is_ok());
+
+        // Quitar el límite (None) siempre debe ser válido
+        let res_none = card.can_set_new_limit(None);
+        assert!(res_none.is_ok());
+    }
+
+    #[actix_rt::test]
+    async fn consumed_field_reflects_updates() {
+        let mut card = make_test_card();
+
+        assert_eq!(card.consumed, 0.0);
+
+        card.consumed = 15.0;
+        assert_eq!(card.consumed, 15.0);
+
+        card.consumed = 42.5;
+        assert_eq!(card.consumed, 42.5);
     }
 }
