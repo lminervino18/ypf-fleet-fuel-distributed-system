@@ -117,7 +117,7 @@ impl Handler {
                                 Err(e) => return Err(e),
                             }
                         },
-                        _ = sleep(HEARTBEAT_TIMEOUT) => {
+                        _ = sleep(HEARTBEAT_FREQUENCY) => {
                             sender.send_heartbeat_request().await?;
                         }
                 }
