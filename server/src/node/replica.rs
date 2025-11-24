@@ -156,7 +156,7 @@ impl Node for Replica {
             node_id: get_id_given_addr(self.address),
             role: common::NodeRole::Replica,
         };
-        connection.send(role_msg, &addrfea).await?;
+        connection.send(role_msg, &addr).await?;
         Ok(())
     }
 
