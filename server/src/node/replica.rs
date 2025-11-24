@@ -5,7 +5,7 @@ use super::{
     node::Node,
     utils::get_id_given_addr,
 };
-use crate::errors::AppResult;
+use crate::{errors::AppResult, node::database};
 use common::{
     operation::Operation,
     operation_result::{OperationResult, ChargeResult},
@@ -95,6 +95,7 @@ impl Node for Replica {
     async fn handle_request(
         &mut self,
         connection: &mut Connection,
+        _database: &mut Database,
         op_id: u32,
         op: Operation,
         addr: SocketAddr,

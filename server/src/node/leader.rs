@@ -95,6 +95,7 @@ impl Node for Leader {
     async fn handle_request(
         &mut self,
         connection: &mut Connection,
+        db: &mut Database,
         req_id: u32,
         op: Operation,
         client_addr: SocketAddr,
@@ -105,6 +106,15 @@ impl Node for Leader {
             self.current_op_id,
             PendingOperation::new(op.clone(), client_addr, req_id),
         );
+
+        if self.members.len() == 1 {
+            println!("[LEADER] Only member in cluster, executing operation directly.");
+            db.send(DatabaseCmd::Execute {
+                op_id: self.current_op_id,
+                operation: op.clone(),
+            });
+            return Ok(());
+        }
 
         // Build the log message to replicate.
         // Broadcast the log to all known members except self.
@@ -174,7 +184,8 @@ impl Node for Leader {
 
         println!("[LEADER] Received ACK for op_id {op_id}");
         pending.ack_count += 1;
-        if pending.ack_count != (self.members.len() - 1) / 2 {
+        if pending.ack_count != (self.members.len() - 1) / 2  && self.members.len() -1 != 1 {
+            
             return;
         }
 

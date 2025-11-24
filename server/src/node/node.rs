@@ -1,6 +1,7 @@
 use super::actors::ActorEvent;
 use super::database::Database;
 use crate::errors::AppResult;
+use crate::node::database;
 use actix::dev::MessageResponse;
 use common::operation::Operation;
 use common::operation_result::OperationResult;
@@ -22,6 +23,7 @@ pub trait Node {
     async fn handle_request(
         &mut self,
         connection: &mut Connection,
+        database: &mut Database,
         req_id: u32,
         op: Operation,
         client_addr: SocketAddr,
@@ -104,6 +106,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
+        database: &mut Database,    
         account_id: u64,
         card_id: u64,
         amount: f32,
@@ -132,7 +135,7 @@ pub trait Node {
             from_offline_station: false,
         };
 
-        self.handle_request(connection, request_id, op, self.get_address())
+        self.handle_request(connection, database,request_id, op, self.get_address())
             .await
             .unwrap();
     }
@@ -224,6 +227,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
+        database: &mut Database,
         msg: StationToNodeMsg,
     ) {
         match msg {
@@ -234,7 +238,7 @@ pub trait Node {
                 request_id,
             } => {
                 self.handle_charge_request(
-                    connection, station, account_id, card_id, amount, request_id,
+                    connection, station, database, account_id, card_id, amount, request_id,
                 )
                 .await;
             }
@@ -293,7 +297,7 @@ pub trait Node {
                 op,
                 addr,
             } => {
-                self.handle_request(connection, op_id, op, addr).await?;
+                self.handle_request(connection, db,op_id, op, addr).await?;
                 RoleChange::None
             }
             Message::Log { op_id, op } => {
@@ -398,7 +402,7 @@ pub trait Node {
                 pump_msg = station.recv() => {
                     match pump_msg {
                         Some(msg) => {
-                            self.handle_station_msg(&mut connection, &mut station, msg).await;
+                            self.handle_station_msg(&mut connection, &mut station,&mut db, msg).await;
                         }
                         None => {
                             // Station side closed its channel.

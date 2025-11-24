@@ -33,8 +33,8 @@ struct QueuedCharge {
     amount: f32,
 }
 
-/// Simple hash function to derive a u64 ID from a SocketAddr based on its IP and port
-/// That way we have an unique and consistent ID for each node based on its address
+/// Simple hash function to derive a u64 ID from a SocketAddr based on its IP and port.
+/// That way we have a unique and consistent ID for each node based on its address.
 pub fn get_id_given_addr(addr: SocketAddr) -> u64 {
     let mut hasher = DefaultHasher::new();
     addr.ip().hash(&mut hasher);
@@ -133,7 +133,7 @@ impl NodeClient {
                         }
                         None => {
                             // Station closed its side: nothing left to do.
-                            println!("[node_client] Station closed; shutting down.");
+                            eprintln!("[node_client] station closed; shutting down");
                             break;
                         }
                     }
@@ -148,8 +148,7 @@ impl NodeClient {
                             self.handle_node_msg(&mut connection, &mut station, msg).await?;
                         }
                         Err(e) => {
-                            // For now, just log network errors. The Connection
-                            // type is responsible for managing sockets.
+                            // Log network errors; Connection manages sockets internally.
                             eprintln!("[node_client] connection recv error: {e:?}");
                         }
                     }
@@ -191,10 +190,9 @@ impl NodeClient {
 
             StationToNodeMsg::DisconnectNode => {
                 self.online = false;
-                println!("[node_client] Switched to OFFLINE mode.");
                 let _ = station
                     .send(NodeToStationMsg::Debug(
-                        "[node_client] Node switched to OFFLINE mode; new charges will be accepted locally and replayed later."
+                        "[node_client] switched to OFFLINE mode; new charges will be accepted locally and replayed later."
                             .to_string(),
                     ))
                     .await;
@@ -202,10 +200,9 @@ impl NodeClient {
 
             StationToNodeMsg::ConnectNode => {
                 self.online = true;
-                println!("[node_client] Switched to ONLINE mode.");
                 let _ = station
                     .send(NodeToStationMsg::Debug(
-                        "[node_client] Node switched to ONLINE mode; replaying queued offline charges (if any)."
+                        "[node_client] switched to ONLINE mode; replaying queued offline charges (if any)."
                             .to_string(),
                     ))
                     .await;
@@ -235,7 +232,7 @@ impl NodeClient {
         if self.known_nodes.is_empty() {
             let _ = station
                 .send(NodeToStationMsg::Debug(
-                    "[node_client] No known nodes; treating charge as offline and enqueuing for later replay."
+                    "[node_client] no known nodes; treating charge as offline and enqueuing for later replay."
                         .to_string(),
                 ))
                 .await;
@@ -275,10 +272,6 @@ impl NodeClient {
         amount: f32,
         request_id: u32,
     ) -> AppResult<()> {
-        println!(
-            "[node_client][OFFLINE] Enqueuing offline charge: account={account_id}, card={card_id}, amount={amount}, request_id={request_id}"
-        );
-
         self.offline_queue.push(QueuedCharge {
             account_id,
             card_id,
@@ -320,15 +313,6 @@ impl NodeClient {
             from_offline_station: false,
         };
 
-        println!(
-            "[node_client][ONLINE] Forwarding Charge(account={}, card={}, amount={}) with request_id={} to known nodes={:?}",
-            account_id,
-            card_id,
-            amount,
-            request_id,
-            self.known_nodes,
-        );
-
         let mut sent = false;
 
         // Try each known node in order until one send succeeds.
@@ -341,15 +325,12 @@ impl NodeClient {
 
             match connection.send(msg, target).await {
                 Ok(()) => {
-                    println!(
-                        "[node_client] Successfully sent request_id={request_id} to {target}"
-                    );
                     sent = true;
                     break;
                 }
                 Err(e) => {
                     eprintln!(
-                        "[node_client] Failed to send request_id={request_id} to {target}: {e:?}"
+                        "[node_client] failed to send request_id={request_id} to {target}: {e:?}"
                     );
                     // Try next node in the list.
                 }
@@ -363,7 +344,7 @@ impl NodeClient {
         } else {
             // All nodes failed: fall back to OFFLINE behavior for this charge.
             eprintln!(
-                "[node_client] All known nodes failed for request_id={request_id}; falling back to OFFLINE behavior (local OK + enqueue)."
+                "[node_client] all known nodes failed for request_id={request_id}; falling back to OFFLINE behavior (local OK + enqueue)."
             );
 
             self.enqueue_offline_charge(station, account_id, card_id, amount, request_id)
@@ -376,7 +357,7 @@ impl NodeClient {
     /// - Tries all known nodes for each charge (in order),
     /// - Uses synthetic `req_id`s (starting from `next_replay_req_id`),
     /// - Sets `from_offline_station = true`,
-    /// - Does NOT send any result back to the Station (the Station ya respondió OK),
+    /// - Does NOT send any result back to the Station,
     /// - If it cannot send a given charge to ANY node, it re-enqueues that charge.
     async fn flush_offline_queue(&mut self, connection: &mut Connection) -> AppResult<()> {
         if self.offline_queue.is_empty() {
@@ -384,19 +365,12 @@ impl NodeClient {
         }
 
         if self.known_nodes.is_empty() {
-            println!(
-                "[node_client] Cannot flush offline queue: no known nodes ({} charges still queued).",
+            eprintln!(
+                "[node_client] cannot flush offline queue: no known nodes ({} charges still queued).",
                 self.offline_queue.len()
             );
             return Ok(());
         }
-
-        let total = self.offline_queue.len();
-
-        println!(
-            "[node_client] Flushing {} offline charges to known nodes {:?} with from_offline_station=true",
-            total, self.known_nodes
-        );
 
         let mut still_pending: Vec<QueuedCharge> = Vec::new();
 
@@ -422,16 +396,12 @@ impl NodeClient {
 
                 match connection.send(msg, target).await {
                     Ok(()) => {
-                        println!(
-                            "[node_client] Replayed offline charge (req_id={} account={} card={} amount={}) to {}",
-                            req_id, queued.account_id, queued.card_id, queued.amount, target
-                        );
                         sent = true;
                         break;
                     }
                     Err(e) => {
                         eprintln!(
-                            "[node_client] Failed to replay offline charge to {target}: {e:?}"
+                            "[node_client] failed to replay offline charge to {target}: {e:?}"
                         );
                         // Try next node.
                     }
@@ -440,20 +410,12 @@ impl NodeClient {
 
             if !sent {
                 // Could not send this charge to ANY node; keep it in the queue.
-                eprintln!(
-                    "[node_client] Could not replay offline charge (account={} card={} amount={}); keeping it queued.",
-                    queued.account_id, queued.card_id, queued.amount
-                );
                 still_pending.push(queued);
             }
         }
 
         // Restore charges that we couldn't flush.
         if !still_pending.is_empty() {
-            println!(
-                "[node_client] {} offline charges remain queued after flush attempt.",
-                still_pending.len()
-            );
             self.offline_queue = still_pending;
         }
 
@@ -476,8 +438,8 @@ impl NodeClient {
             Message::Response { req_id, op_result } => {
                 // Only forward responses that correspond to ONLINE requests.
                 if !self.active_online_requests.remove(&req_id) {
-                    println!(
-                        "[node_client] Response for non-tracked req_id {req_id} (probably offline replay); ignoring at Station level."
+                    eprintln!(
+                        "[node_client] response for non-tracked req_id {req_id} (probably offline replay); ignoring at Station level."
                     );
                     return Ok(());
                 }
@@ -485,17 +447,17 @@ impl NodeClient {
                 self.handle_response_from_node(station, req_id, op_result)
                     .await?;
             }
-            Message::RoleQuery{addr } => {
-                 let role_msg = Message::RoleResponse {
-                 node_id: get_id_given_addr(self.bind_addr),
-                 role: common::NodeRole::Station,
-             };
-             connection.send(role_msg, &addr).await?;
+            Message::RoleQuery { addr } => {
+                let role_msg = Message::RoleResponse {
+                    node_id: get_id_given_addr(self.bind_addr),
+                    role: common::NodeRole::Station,
+                };
+                connection.send(role_msg, &addr).await?;
             }
             other => {
                 // This forwarding client is not part of the cluster protocol,
                 // so all other message types are unexpected and ignored.
-                eprintln!("[node_client] Unexpected message from node: {other:?}");
+                eprintln!("[node_client] unexpected message from node: {other:?}");
             }
         }
 
@@ -532,7 +494,7 @@ impl NodeClient {
                 // For now, we only use Charge operations coming from pumps.
                 let _ = station
                     .send(NodeToStationMsg::Debug(format!(
-                        "[node_client] Ignoring non-charge response for req_id {req_id}: {other:?}"
+                        "[node_client] ignoring non-charge response for req_id {req_id}: {other:?}"
                     )))
                     .await;
             }
