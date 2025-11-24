@@ -114,14 +114,7 @@ async fn run() -> AppResult<()> {
             // Replica::start(address, leader_addr, coords, max_conns, pumps)
             // The replica only knows the leader at startup; any
             // other peers will be learned from the leader.
-            Replica::start(
-                args.address,
-                leader_addr,
-                coords,
-                max_conns,
-                pumps,
-            )
-            .await?;
+            Replica::start(args.address, leader_addr, coords, max_conns, pumps).await?;
         }
 
         RoleArgs::Station { leader_addr: _ } => {

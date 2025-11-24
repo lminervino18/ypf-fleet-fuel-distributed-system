@@ -1,11 +1,11 @@
 use super::actors::ActorEvent;
+use super::database::Database;
 use crate::errors::AppResult;
 use common::operation::Operation;
 use common::operation_result::OperationResult;
 use common::{Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
 use std::net::SocketAddr;
 use tokio::select;
-use tokio::sync::mpsc::Receiver;
 use tokio::time::Duration;
 
 /// Role of a node in the YPF Ruta distributed system.
@@ -27,9 +27,20 @@ pub trait Node {
         client_addr: SocketAddr,
     ) -> AppResult<()>;
 
-    async fn handle_log(&mut self, connection: &mut Connection, op_id: u32, op: Operation);
+    /// Handle a replicated log entry.
+    ///
+    /// `db` is passed so implementations (e.g., Replica) can commit the
+    /// operation into the actor-based "database" without owning Database.
+    async fn handle_log(
+        &mut self,
+        connection: &mut Connection,
+        db: &mut Database,
+        op_id: u32,
+        op: Operation,
+    );
 
-    async fn handle_ack(&mut self, connection: &mut Connection, op_id: u32);
+    // CHANGED: now it also receives a mutable reference to Database.
+    async fn handle_ack(&mut self, connection: &mut Connection, db: &mut Database, op_id: u32);
 
     /// Resultado de una operación que ya pasó por el mundo de actores
     /// (Router + Account + Card) y volvió como OperationResult.
@@ -257,6 +268,7 @@ pub trait Node {
     async fn handle_node_msg(
         &mut self,
         connection: &mut Connection,
+        db: &mut Database, // CHANGED: pass Database down so Ack / Log can use it
         msg: Message,
     ) -> AppResult<()> {
         match msg {
@@ -268,10 +280,10 @@ pub trait Node {
                 self.handle_request(connection, op_id, op, addr).await?;
             }
             Message::Log { op_id, op } => {
-                self.handle_log(connection, op_id, op).await;
+                self.handle_log(connection, db, op_id, op).await;
             }
             Message::Ack { op_id } => {
-                self.handle_ack(connection, op_id).await;
+                self.handle_ack(connection, db, op_id).await;
             }
             Message::Election {
                 candidate_id,
@@ -306,7 +318,7 @@ pub trait Node {
     async fn run(
         &mut self,
         mut connection: Connection,
-        mut actor_rx: Receiver<ActorEvent>,
+        mut db: Database,
         mut station: Station,
     ) -> AppResult<()> {
         use tokio::time::{interval, Instant};
@@ -330,7 +342,7 @@ pub trait Node {
                     match node_msg {
                         Ok(msg) => {
                             last_seen = Instant::now();
-                            self.handle_node_msg(&mut connection, msg).await;
+                            self.handle_node_msg(&mut connection, &mut db, msg).await;
                         }
                         Err(_e) => {
                             // TODO: manejar errores de red si querés algo más fino
@@ -352,7 +364,7 @@ pub trait Node {
                 }
 
                 // === Actor events (OperationResult, etc.) ===
-                actor_evt = actor_rx.recv() => {
+                actor_evt = db.recv() => {
                     match actor_evt {
                         Some(evt) => {
                             self.handle_actor_event(&mut connection, &mut station, evt).await;
