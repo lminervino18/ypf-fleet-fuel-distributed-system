@@ -1,8 +1,9 @@
 use super::database::{Database, DatabaseCmd}; // use the Database abstraction
 use super::node::Node;
 use super::pending_operatoin::PendingOperation;
+use super::replica::Replica;
 use crate::{
-    errors::{AppError, AppResult},
+    errors::AppResult,
     node::utils::get_id_given_addr,
 };
 use common::operation::Operation;
@@ -11,7 +12,9 @@ use common::{Connection, Message, NodeToStationMsg, Station};
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
+    sync::Arc,
 };
+use tokio::sync::Mutex;
 
 /// Internal state for a charge coming from a station pump
 /// while the node is ONLINE.
@@ -65,6 +68,7 @@ pub struct Leader {
     coords: (f64, f64),
     address: SocketAddr,
     members: HashMap<u64, SocketAddr>,
+    bully: Arc<Mutex<Bully>>,
     operations: HashMap<u32, PendingOperation>,
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
@@ -233,31 +237,62 @@ impl Node for Leader {
         candidate_id: u64,
         candidate_addr: SocketAddr,
     ) {
-        // If our id is higher than the candidate, reply with ElectionOk.
-        if self.id > candidate_id {
+        let should_reply = {
+            let b = self.bully.lock().await;
+            b.should_reply_ok(candidate_id)
+        };
+        if should_reply {
             let reply = Message::ElectionOk {
                 responder_id: self.id,
             };
-
             let _ = connection.send(reply, &candidate_addr).await;
+
+            // Start own election immediately.
+            self.start_election(connection).await;
         }
     }
 
-    async fn handle_election_ok(&mut self, _connection: &mut Connection, _responder_id: u64) {
-        // Leader ignores election OKs.
+    async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
+        let mut b = self.bully.lock().await;
+        b.on_election_ok(responder_id);
     }
 
     async fn handle_coordinator(
         &mut self,
         _connection: &mut Connection,
-        _leader_id: u64,
-        _leader_addr: SocketAddr,
-    ) {
-        // Leader ignores coordinator announcements.
+        leader_id: u64,
+        leader_addr: SocketAddr,
+    ) -> super::node::RoleChange {
+        let mut b = self.bully.lock().await;
+        b.on_coordinator(leader_id, leader_addr);
+        drop(b); // release lock
+
+        // Check if we should demote to replica (another node became leader)
+        if leader_id != self.id {
+            println!("[LEADER {}] Demoting to REPLICA, new leader is {}", self.id, leader_id);
+            return super::node::RoleChange::DemoteToReplica { new_leader_addr: leader_addr };
+        }
+        super::node::RoleChange::None
     }
 
-    async fn start_election(&mut self, _connection: &mut Connection) {
-        // Leader doesn't start elections.
+    async fn start_election(&mut self, connection: &mut Connection) {
+        // Build peer_ids map from the current membership (excluding self).
+        let mut peer_ids = HashMap::new();
+        for (peer_id, addr) in &self.members {
+            if *peer_id == self.id {
+                continue;
+            }
+            peer_ids.insert(*peer_id, *addr);
+        }
+
+        crate::node::election::bully::conduct_election(
+            &self.bully,
+            connection,
+            peer_ids,
+            self.id,
+            self.address,
+        )
+        .await;
     }
 
     /// Called when we receive a `Message::Join` through the generic
@@ -341,14 +376,33 @@ impl Leader {
             coords,
             address,
             members,
+            bully: Arc::new(Mutex::new(Bully::new(self_id, address))),
             operations: HashMap::new(),
             is_offline: false,
             offline_queue: VecDeque::new(),
         };
 
-        // Now `run` takes ownership of `connection`, `db` and `station`,
-        // exactly like with Connection and Station.
-        leader.run(connection, db, station).await
+        // Mark self as coordinator in bully state
+        {
+            let mut b = leader.bully.lock().await;
+            b.mark_coordinator();
+        }
+
+        // Loop para manejar cambios de rol
+        loop {
+            let role_change = leader.run(connection, db, station).await?;
+            
+            match role_change {
+                super::node::RoleChange::DemoteToReplica { new_leader_addr } => {
+                    println!("[LEADER] Converting to Replica...");
+                    let replica = leader.into_replica(new_leader_addr);
+                    return Box::pin(Replica::run_from_leader(replica, address, coords, max_conns, pumps)).await;
+                }
+                _ => {
+                    return Ok(());
+                }
+            }
+        }
     }
 }
 

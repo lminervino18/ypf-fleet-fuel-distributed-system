@@ -205,13 +205,20 @@ impl Node for Replica {
         _connection: &mut Connection,
         leader_id: u64,
         leader_addr: SocketAddr,
-    ) {
+    ) -> super::node::RoleChange {
         let mut b = self.bully.lock().await;
         b.on_coordinator(leader_id, leader_addr);
-        // Update our local "current leader" pointer as well.
-        self.leader_addr = leader_addr;
+        drop(b); // release lock
 
-        // TODO: promoción a líder si corresponde.
+        // Check if we should promote to leader
+        if leader_id == self.id {
+            println!("[REPLICA {}] Promoting to LEADER", self.id);
+            return super::node::RoleChange::PromoteToLeader;
+        } else {
+            // Update our local "current leader" pointer
+        self.leader_addr = leader_addr;
+            super::node::RoleChange::None
+        }
     }
 
     async fn start_election(&mut self, connection: &mut Connection) {
@@ -279,6 +286,8 @@ impl Replica {
             self.offline_queue,
         )
     }
+
+    /// Create a new Replica from existing node state (used for Leader demotion)
     pub fn from_existing(
         id: u64,
         coords: (f64, f64),
@@ -322,6 +331,7 @@ impl Replica {
     /// - seeds the cluster membership (self + leader),
     /// - sends an initial Join message to the leader,
     /// - then enters the main async event loop.
+    /// If promoted to Leader, converts itself and continues running as Leader.
     pub async fn start(
         address: SocketAddr,
         leader_addr: SocketAddr,
@@ -368,8 +378,23 @@ impl Replica {
             )
             .await;
 
+        // Loop para manejar cambios de rol
         // Usamos el loop genérico de `Node::run`, igual que el Leader:
         // - own `connection`, `db` y `station`.
-        replica.run(connection, db, station).await
+        loop {
+            let role_change = replica.run(connection, db, station).await?;
+            
+            match role_change {
+                super::node::RoleChange::PromoteToLeader => {
+                    println!("[REPLICA] Converting to Leader...");
+                    let leader = replica.into_leader();
+                    return Box::pin(Leader::run_from_replica(leader, address, coords, max_conns, pumps)).await;
+                }
+                _ => {
+                    // if there's no role change, it means run() ended for another reason
+                    return Ok(());
+                }
+            }
+        }
     }
 }
