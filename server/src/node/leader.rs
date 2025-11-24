@@ -346,12 +346,9 @@ impl Leader {
     /// Convert this Leader into a Replica with the given new leader address.
     /// Consumes self and returns a Replica.
     pub fn into_replica(self, new_leader_addr: SocketAddr) -> Replica {
-        // Convert Leader's PendingOperation map to Replica's Operation map
-        let operations: HashMap<u32, Operation> = self
-            .operations
-            .into_iter()
-            .map(|(id, pending)| (id, pending.op))
-            .collect();
+        // descarto las operaciones pendientes; la replica no las necesita
+        // en todo caso el cliente vuelve a preguntar
+        let operations: HashMap<u32, Operation> = HashMap::new();
 
         Replica::from_existing(
             self.id,
@@ -431,6 +428,7 @@ impl Leader {
                 super::node::RoleChange::DemoteToReplica { new_leader_addr } => {
                     println!("[LEADER] Converting to Replica...");
                     let replica = leader.into_replica(new_leader_addr);
+                    // 
                     return Box::pin(Replica::run_from_leader(replica, address, coords, max_conns, pumps)).await;
                 }
                 _ => {

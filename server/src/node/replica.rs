@@ -283,6 +283,16 @@ impl Replica {
             .max()
             .map(|k| *k)
             .unwrap_or(0);
+        // let only_last_op = self
+        //     .operations
+        //     .get(&current_op_id)
+        //     .cloned()
+        //     .map(|op| {
+        //         let mut map = HashMap::new();
+        //         map.insert(current_op_id, op);
+        //         map
+        //     })
+        //     .unwrap_or_default();
 
         Leader::from_existing(
             self.id,
