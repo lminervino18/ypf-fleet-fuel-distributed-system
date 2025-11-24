@@ -49,7 +49,7 @@ impl Handler {
         self.messages_tx
             .send(msg)
             .await
-            .map_err(|_| AppError::ConnectionClosed { addr: self.address })
+            .map_err(|_| AppError::ConnectionLostWith { addr: self.address })
     }
 
     pub fn stop(&mut self) {

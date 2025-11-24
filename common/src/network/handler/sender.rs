@@ -25,7 +25,7 @@ impl<T: Into<Vec<u8>>> StreamSender<T> {
             self.stream
                 .write_all(&len_bytes)
                 .await
-                .map_err(|_| AppError::ConnectionClosed {
+                .map_err(|_| AppError::ConnectionLostWith {
                     addr: self.stream.peer_addr().unwrap_or_else(|e| {
                         // this should never happen since the skt was ok at the moment of
                         // initialization of this sender
@@ -105,6 +105,6 @@ mod test {
         peer.await.unwrap(); // close the conn on the other side
         messages_tx.send([1, 2, 3, 4, 5]).await.unwrap();
         let result = sender.send().await.unwrap_err();
-        assert_eq!(result, AppError::ConnectionClosed { addr: peer_address });
+        assert_eq!(result, AppError::ConnectionLostWith { addr: peer_address });
     }
 }

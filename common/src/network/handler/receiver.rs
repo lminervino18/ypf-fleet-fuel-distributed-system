@@ -25,7 +25,7 @@ where
         self.stream
             .read_exact(&mut len_bytes)
             .await
-            .map_err(|_| AppError::ConnectionClosed {
+            .map_err(|_| AppError::ConnectionLostWith {
                 addr: self.stream.peer_addr().unwrap_or_else(|e| {
                     // this should never happen since the skt was ok at the moment of
                     // initialization of this sender
@@ -38,7 +38,7 @@ where
         self.stream
             .read_exact(&mut bytes)
             .await
-            .map_err(|_| AppError::ConnectionClosed {
+            .map_err(|_| AppError::ConnectionLostWith {
                 addr: self.stream.peer_addr().unwrap_or_else(|e| {
                     panic!("failed to get peer address during handling of ConnectionClosed: {e}")
                 }),

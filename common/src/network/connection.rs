@@ -64,8 +64,16 @@ impl Drop for Connection {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
-    use tokio::task;
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        time::Duration,
+    };
+    use tokio::{
+        io::AsyncReadExt,
+        net::TcpStream,
+        task::{self, yield_now},
+        time::sleep,
+    };
 
     #[tokio::test]
     async fn test_successful_send_and_recv_between_connections() {
@@ -132,5 +140,46 @@ mod test {
         let received3 = connection1.recv().await.unwrap();
         assert_eq!(received3, message);
         handle.await.unwrap();
+    }
+
+    // en los próximos dos te das cuenta si **a alguien se le cayó la conexión**
+    #[tokio::test]
+    async fn test_send_results_in_connection_with_lost_if_peer_is_down() {
+        let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12368);
+        let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12369);
+        let connection1 = Connection::start(address1, 1).await.unwrap();
+        let mut connection2 = Connection::start(address2, 1).await.unwrap();
+        let result1 = connection2.send(Message::Ack { op_id: 0 }, &address1).await;
+        assert_eq!(result1, Ok(()));
+        drop(connection1);
+        let result2 = connection2.send(Message::Ack { op_id: 0 }, &address1).await;
+        assert_eq!(
+            result2,
+            Err(AppError::ConnectionLostWith { addr: address2 })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recv_results_in_connection_with_lost_with_if_peer_is_down() {
+        let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12368);
+        let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12369);
+        let mut connection1 = Connection::start(address1, 1).await.unwrap();
+        let mut connection2 = Connection::start(address2, 1).await.unwrap();
+        let msg = Message::Ack { op_id: 0 };
+        connection1.send(msg.clone(), &address2).await.unwrap();
+        let result1 = connection2.recv().await;
+        assert_eq!(result1, Ok(msg));
+        drop(connection1);
+        let result2 = connection2.recv().await;
+        assert_eq!(
+            result2,
+            Err(AppError::ConnectionLostWith { addr: address2 })
+        );
+    }
+
+    // cómo sabés que se te cayó a vos la conexión? ...
+    #[tokio::test]
+    async fn test_send_and_recv_result_in_connection_lost_if_all_peers_are_down() {
+        // TODO
     }
 }

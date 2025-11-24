@@ -45,10 +45,13 @@ pub enum AppError {
     #[error("Connection timed out to {addr}")]
     ConnectionTimeout { addr: String },
 
-    /* #[error("Connection I/O error with {addr}: {source}")]
-    ConnectionIO { addr: String, source: io::Error }, */
-    #[error("Connection closed")]
-    ConnectionClosed { addr: SocketAddr },
+    // cuando perdemos la conexión con alguien
+    #[error("Connection lost with {addr}")]
+    ConnectionLostWith { addr: SocketAddr },
+
+    // cuando perdemos la conexión nosotros (o sea con todos)
+    #[error("Connection lost")]
+    ConnectionLost,
 
     #[error("Connection limit reached: max = {max}")]
     ConnectionLimit { max: usize },
