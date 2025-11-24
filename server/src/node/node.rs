@@ -338,6 +338,7 @@ pub trait Node {
             Message::Response { req_id, op_result } => {
                 let _ = self.handle_response(connection, station, req_id, op_result)
                     .await?;
+                RoleChange::None
             }
             Message::RoleQuery { addr } => {
                 self.handle_role_query(connection, addr).await?;
