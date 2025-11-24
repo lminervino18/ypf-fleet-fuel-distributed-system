@@ -130,7 +130,7 @@ pub enum RouterInternalMsg {
         op_id: u32,
         account_id: u64,
         total_spent: f32,
-        per_card_spent: HashMap<u64, f32>,
+        per_card_spent: Vec<(u64, f32)>,
     },
 
     /// Internal debug / diagnostics.

@@ -11,7 +11,7 @@ use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
 struct AccountPendingQuery {
     op_id: u32,
     remaining: usize,
-    per_card_spent: HashMap<u64, f32>,
+    per_card_spent: Vec<(u64, f32)>,
 }
 
 /// Actor that manages a single account and its state.
@@ -159,7 +159,7 @@ impl Handler<AccountMsg> for AccountActor {
                         op_id,
                         account_id: self.account_id,
                         total_spent: self.account_consumed,
-                        per_card_spent: HashMap::new(),
+                        per_card_spent: Vec::new(),
                     });
                     return;
                 }
@@ -168,7 +168,7 @@ impl Handler<AccountMsg> for AccountActor {
                 self.pending_query = Some(AccountPendingQuery {
                     op_id,
                     remaining: num_cards,
-                    per_card_spent: HashMap::new(),
+                    per_card_spent: Vec::new(),
                 });
             }
 
@@ -190,7 +190,7 @@ impl Handler<AccountMsg> for AccountActor {
                     }
                 };
 
-                pending.per_card_spent.insert(card_id, consumed);
+                pending.per_card_spent.push((card_id, consumed));
                 if pending.remaining > 0 {
                     pending.remaining -= 1;
                 }
@@ -198,7 +198,11 @@ impl Handler<AccountMsg> for AccountActor {
                 // ¿ya respondieron todas las tarjetas?
                 if pending.remaining == 0 {
                     let per_card_spent = std::mem::take(&mut pending.per_card_spent);
-                    let total_spent = per_card_spent.values().copied().sum::<f32>();
+                    let total_spent = per_card_spent
+                        .clone()
+                        .into_iter()
+                        .map(|(_card, amount)| amount)
+                        .sum::<f32>();
 
                     let op_id = pending.op_id;
                     let account_id = self.account_id;
@@ -218,11 +222,9 @@ impl Handler<AccountMsg> for AccountActor {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix::prelude::*;
     use tokio::sync::mpsc;
 
     use crate::errors::{LimitCheckError, LimitUpdateError};
