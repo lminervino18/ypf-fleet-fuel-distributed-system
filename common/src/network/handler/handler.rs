@@ -26,7 +26,7 @@ use MessageKind::*;
 
 const HEARTBEAT_FREQUENCY: Duration = Duration::from_secs(1);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(2);
-const MSG_BUFF_SIZE: usize = 10;
+const MSG_BUFF_SIZE: usize = 512;
 
 pub struct Handler {
     handle: JoinHandle<AppResult<()>>,
