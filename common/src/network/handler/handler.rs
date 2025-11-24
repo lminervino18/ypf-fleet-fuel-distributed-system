@@ -3,18 +3,33 @@ use crate::{
     Message,
     errors::{AppError, AppResult},
 };
-use std::{net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::{
     net::TcpStream,
     select,
     sync::mpsc::{self, Receiver, Sender},
     task::{self, JoinHandle},
+    time::sleep,
 };
 
+pub enum MessageKind {
+    HeartbeatRequest,
+    HeartbeatReply,
+    NodeMessage,
+}
+
+use MessageKind::*;
+
+const HEARTBEAT_FREQUENCY: Duration = Duration::from_secs(1);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(2);
 const MSG_BUFF_SIZE: usize = 10;
 
 pub struct Handler {
-    handle: JoinHandle<()>,
+    handle: JoinHandle<AppResult<()>>,
     messages_tx: Sender<Message>,
     pub address: SocketAddr,
     pub last_used: Instant,
@@ -26,7 +41,7 @@ impl Handler {
             TcpStream::connect(address)
                 .await
                 .map_err(|_| AppError::ConnectionRefused {
-                    addr: address.to_string(),
+                    address: address.to_string(),
                 })?;
 
         Self::start_from(stream, receiver_tx).await
@@ -49,7 +64,9 @@ impl Handler {
         self.messages_tx
             .send(msg)
             .await
-            .map_err(|_| AppError::ConnectionLostWith { addr: self.address })
+            .map_err(|_| AppError::ConnectionLostWith {
+                address: self.address,
+            })
     }
 
     pub fn stop(&mut self) {
@@ -67,7 +84,7 @@ impl Handler {
         let sender = StreamSender::new(sender_rx, stream_tx);
         let receiver = StreamReceiver::new(receiver_tx, stream_rx);
         Ok(Self {
-            handle: Self::run(sender, receiver),
+            handle: Self::run(sender, receiver, address),
             messages_tx,
             address,
             last_used: Instant::now(),
@@ -77,29 +94,47 @@ impl Handler {
     fn run(
         mut sender: StreamSender<Message>,
         mut receiver: StreamReceiver<Message>,
-    ) -> JoinHandle<()> {
+        address: SocketAddr,
+    ) -> JoinHandle<AppResult<()>> {
         task::spawn(async move {
+            let mut last_seen = Instant::now();
             loop {
                 select! {
                         sent = sender.send() => { match sent {
                             Ok(()) => {},
                             Err(AppError::ChannelClosed) => { break; },
-                            _ => todo!(),
+                            Err(e) => return Err(e),
                         }},
                         received = receiver.recv() => { match received {
-                                Ok(()) => {},
-                                Err(AppError::ChannelClosed) => { break; },
-                                _ => todo!(),
+                                Ok(msg_kind) => match msg_kind {
+                                    HeartbeatRequest => {
+                                        sender.send_heartbeat_reply().await?;
+                                    },
+                                    HeartbeatReply => last_seen = Instant::now(),
+                                    NodeMessage => {/* dejo pasar el msj */},
+                                },
+                                Err(AppError::ChannelClosed) => { break; }, // cerró connection
+                                Err(e) => return Err(e),
                             }
+                        },
+                        _ = sleep(HEARTBEAT_TIMEOUT) => {
+                            sender.send_heartbeat_request().await?;
                         }
                 }
+
+                if Instant::now() - last_seen > HEARTBEAT_TIMEOUT {
+                    return Err(AppError::ConnectionLostWith { address });
+                }
             }
+
+            Ok(())
         })
     }
 }
 
 impl Drop for Handler {
     fn drop(&mut self) {
+        // TODO: acá tendría que mandar None pero el channel ya es de msg, se podría cambiar
         self.handle.abort();
     }
 }

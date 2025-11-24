@@ -1,3 +1,7 @@
+// heartbeat protocol
+pub const HEARTBEAT_REQUEST: u8 = 0xFE;
+pub const HEARBEAT_REPLY: u8 = 0xFF;
+
 // msg types
 pub const MSG_TYPE_REQUEST: u8 = 0x00;
 pub const MSG_TYPE_LOG: u8 = 0x01;
@@ -6,6 +10,7 @@ pub const MSG_TYPE_JOIN: u8 = 0x03;
 pub const MSG_TYPE_CLUSTER_VIEW: u8 = 0x04;
 pub const MSG_TYPE_CLUSTER_UPDATE: u8 = 0x05;
 pub const MSG_TYPE_RESPONSE: u8 = 0x06;
+
 // debug msgs
 pub const MSG_TYPE_ROLE_QUERY: u8 = 0x07;
 pub const MSG_TYPE_ROLE_RESPONSE: u8 = 0x08;

@@ -39,15 +39,15 @@ pub enum AppError {
         source: AddrParseError,
     },
 
-    #[error("Connection refused to {addr}")]
-    ConnectionRefused { addr: String },
+    #[error("Connection refused to {address}")]
+    ConnectionRefused { address: String },
 
-    #[error("Connection timed out to {addr}")]
-    ConnectionTimeout { addr: String },
+    #[error("Connection timed out to {address}")]
+    ConnectionTimeout { address: String },
 
     // cuando perdemos la conexión con alguien
-    #[error("Connection lost with {addr}")]
-    ConnectionLostWith { addr: SocketAddr },
+    #[error("Connection lost with {address}")]
+    ConnectionLostWith { address: SocketAddr },
 
     // cuando perdemos la conexión nosotros (o sea con todos)
     #[error("Connection lost")]

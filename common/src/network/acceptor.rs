@@ -41,7 +41,7 @@ impl Acceptor {
         Ok(Self {
             listener: TcpListener::bind(address).await.map_err(|_| {
                 AppError::ConnectionRefused {
-                    addr: address.to_string(),
+                    address: address.to_string(),
                 }
             })?,
             active,

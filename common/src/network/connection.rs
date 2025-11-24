@@ -76,7 +76,7 @@ mod test {
     };
 
     #[tokio::test]
-    async fn test_successful_send_and_recv_between_connections() {
+    async fn test00_successful_send_and_recv_between_connections() {
         let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12354);
         let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12355);
         let message = Message::Ack { op_id: 1 };
@@ -93,7 +93,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_sending_messages_to_different_addresses_with_only_one_conn_max() {
+    async fn test01_sending_messages_to_different_addresses_with_only_one_conn_max() {
         let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12356);
         let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12357);
         let address3 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12358);
@@ -118,7 +118,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_receiving_messages_from_different_addresses_with_only_one_conn_max() {
+    async fn test02_receiving_messages_from_different_addresses_with_only_one_conn_max() {
         let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12359);
         let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12360);
         let address3 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12361);
@@ -144,7 +144,7 @@ mod test {
 
     // en los próximos dos te das cuenta si **a alguien se le cayó la conexión**
     #[tokio::test]
-    async fn test_send_results_in_connection_with_lost_if_peer_is_down() {
+    async fn test03_send_results_in_connection_lost_with_if_peer_is_down() {
         let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12368);
         let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12369);
         let connection1 = Connection::start(address1, 1).await.unwrap();
@@ -155,12 +155,12 @@ mod test {
         let result2 = connection2.send(Message::Ack { op_id: 0 }, &address1).await;
         assert_eq!(
             result2,
-            Err(AppError::ConnectionLostWith { addr: address2 })
+            Err(AppError::ConnectionLostWith { address: address1 })
         );
     }
 
     #[tokio::test]
-    async fn test_recv_results_in_connection_with_lost_with_if_peer_is_down() {
+    async fn test04_recv_results_in_connection_lost_with_with_if_peer_is_down() {
         let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12368);
         let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12369);
         let mut connection1 = Connection::start(address1, 1).await.unwrap();
@@ -173,13 +173,13 @@ mod test {
         let result2 = connection2.recv().await;
         assert_eq!(
             result2,
-            Err(AppError::ConnectionLostWith { addr: address2 })
+            Err(AppError::ConnectionLostWith { address: address1 })
         );
     }
 
     // cómo sabés que se te cayó a vos la conexión? ...
-    #[tokio::test]
-    async fn test_send_and_recv_result_in_connection_lost_if_all_peers_are_down() {
+    // #[tokio::test]
+    async fn test05_send_and_recv_result_in_connection_lost_if_all_peers_are_down() {
         // TODO
     }
 }

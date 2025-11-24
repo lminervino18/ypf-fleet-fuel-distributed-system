@@ -1,4 +1,6 @@
+use super::handler::MessageKind::{self, *};
 use crate::errors::{AppError, AppResult};
+use crate::network::serials::protocol::{HEARBEAT_REPLY, HEARTBEAT_REQUEST};
 use std::sync::Arc;
 use tokio::{io::AsyncReadExt, net::tcp::OwnedReadHalf, sync::mpsc::Sender};
 
@@ -19,14 +21,14 @@ where
         }
     }
 
-    pub async fn recv(&mut self) -> AppResult<()> {
+    pub async fn recv(&mut self) -> AppResult<MessageKind> {
         // two bytes for the len of the incoming msg
         let mut len_bytes = [0; size_of::<u16>()];
         self.stream
             .read_exact(&mut len_bytes)
             .await
             .map_err(|_| AppError::ConnectionLostWith {
-                addr: self.stream.peer_addr().unwrap_or_else(|e| {
+                address: self.stream.peer_addr().unwrap_or_else(|e| {
                     // this should never happen since the skt was ok at the moment of
                     // initialization of this sender
                     panic!("failed to get peer address during handling of ConnectionClosed: {e}")
@@ -39,16 +41,23 @@ where
             .read_exact(&mut bytes)
             .await
             .map_err(|_| AppError::ConnectionLostWith {
-                addr: self.stream.peer_addr().unwrap_or_else(|e| {
+                address: self.stream.peer_addr().unwrap_or_else(|e| {
                     panic!("failed to get peer address during handling of ConnectionClosed: {e}")
                 }),
             })?;
+
+        match bytes[..] {
+            [HEARTBEAT_REQUEST] => return Ok(HeartbeatRequest),
+            [HEARBEAT_REPLY] => return Ok(HeartbeatReply),
+            _ => { /* flujo normal */ }
+        }
+
         self.messages_tx
             .send(bytes.try_into().map_err(Into::into)?)
             .await
             .map_err(|_| AppError::ChannelClosed)?;
 
-        Ok(())
+        Ok(NodeMessage)
     }
 }
 
