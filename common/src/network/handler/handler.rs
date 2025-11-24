@@ -89,7 +89,10 @@ impl Handler {
                         received = receiver.recv() => { match received {
                                 Ok(()) => {},
                                 Err(AppError::ChannelClosed) => { break; },
-                                _ => todo!(),
+                               Err(e) => {
+                                eprintln!("[Handler] receiver error: {:?}", e);
+                                break;
+                            }
                             }
                         }
                 }

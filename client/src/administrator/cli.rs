@@ -10,7 +10,7 @@ const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:9000";
 
 /// YPF client
 #[derive(Parser, Debug)]
-#[command(name = "ypf_client")]
+#[command(name = "administrator")]
 #[command(about = "YPF Ruta client - admin CLI")]
 pub struct Cli {
     /// Server address

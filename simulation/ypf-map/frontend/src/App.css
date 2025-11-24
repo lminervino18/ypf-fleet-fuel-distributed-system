@@ -1,0 +1,66 @@
+/* Que todo ocupe la pantalla y sin scroll extra */
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  overflow: hidden;
+}
+
+/* El div del mapa ocupa todo */
+#map {
+  height: 100%;
+  width: 100%;
+}
+
+/* Botón de actualizar: centrado arriba usando la barra de Leaflet */
+.refresh-container {
+  /* Hacemos que este contenedor se "despegue" del borde derecho */
+}
+
+.leaflet-top.leaflet-right {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+}
+
+/* Estética del botón */
+.refresh-button {
+  padding: 8px 14px;
+  background: #1976d2;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.refresh-button:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+/* Spinner reutilizable */
+.spinner {
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
