@@ -6,12 +6,15 @@ use super::actor_router::ActorRouter;
 use super::messages::{AccountChargeReply, AccountMsg, RouterInternalMsg};
 use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
 
-/// Estado interno de un query de cuenta en curso.
+/// Estado interno de un query/bill de cuenta en curso.
 #[derive(Debug)]
 struct AccountPendingQuery {
     op_id: u32,
     remaining: usize,
     per_card_spent: Vec<(u64, f32)>,
+    /// true si es un Bill (hay que resetear al finalizar),
+    /// false si es un AccountQuery normal.
+    billing: bool,
 }
 
 /// Actor that manages a single account and its state.
@@ -164,11 +167,35 @@ impl Handler<AccountMsg> for AccountActor {
                     return;
                 }
 
-                // Iniciar estado interno del query
+                // Iniciar estado interno del query (no billing).
                 self.pending_query = Some(AccountPendingQuery {
                     op_id,
                     remaining: num_cards,
                     per_card_spent: Vec::new(),
+                    billing: false,
+                });
+            }
+
+            AccountMsg::StartAccountBill { op_id, num_cards } => {
+                // Bill sin tarjetas: devolvemos consumo y reseteamos.
+                if num_cards == 0 {
+                    let total_spent = self.account_consumed;
+                    self.account_consumed = 0.0;
+
+                    self.send_internal(RouterInternalMsg::AccountQueryCompleted {
+                        op_id,
+                        account_id: self.account_id,
+                        total_spent,
+                        per_card_spent: Vec::new(),
+                    });
+                    return;
+                }
+
+                self.pending_query = Some(AccountPendingQuery {
+                    op_id,
+                    remaining: num_cards,
+                    per_card_spent: Vec::new(),
+                    billing: true,
                 });
             }
 
@@ -177,11 +204,10 @@ impl Handler<AccountMsg> for AccountActor {
                 card_id,
                 consumed,
             } => {
-                // Solo nos importa si hay un query en curso con ese op_id
+                // Solo nos importa si hay un query/bill en curso con ese op_id
                 let pending = match self.pending_query.as_mut() {
                     Some(p) if p.op_id == op_id => p,
                     _ => {
-                        // Query inesperado; ignorar o loggear
                         self.send_internal(RouterInternalMsg::Debug(format!(
                             "[Account {}] CardQueryReply inesperado: op_id={}",
                             self.account_id, op_id
@@ -195,20 +221,24 @@ impl Handler<AccountMsg> for AccountActor {
                     pending.remaining -= 1;
                 }
 
-                // ¿ya respondieron todas las tarjetas?
                 if pending.remaining == 0 {
                     let per_card_spent = std::mem::take(&mut pending.per_card_spent);
                     let total_spent = per_card_spent
-                        .clone()
-                        .into_iter()
+                        .iter()
                         .map(|(_card, amount)| amount)
                         .sum::<f32>();
 
                     let op_id = pending.op_id;
                     let account_id = self.account_id;
+                    let billing = pending.billing;
 
                     // limpiar estado
                     self.pending_query = None;
+
+                    // Si es Bill, reseteamos el total de la cuenta.
+                    if billing {
+                        self.account_consumed = 0.0;
+                    }
 
                     self.send_internal(RouterInternalMsg::AccountQueryCompleted {
                         op_id,
@@ -255,27 +285,22 @@ mod tests {
         assert!(acc.account_limit.is_none());
         assert_eq!(acc.account_consumed, 0.0);
 
-        // Con None como límite, cualquier monto debería ser aceptado.
         assert!(acc.check_account_limit(10.0).is_ok());
         assert!(acc.check_account_limit(10_000.0).is_ok());
     }
 
     #[actix_rt::test]
     async fn limited_account_blocks_above_limit() {
-        // Cuenta con límite 50, ya consumidos 20
         let acc = make_test_account(Some(50.0), 20.0);
 
-        // 1) Un cargo que deja justo en el límite (20 + 30 = 50) es válido
         assert!(acc.check_account_limit(30.0).is_ok());
 
-        // 2) Un cargo que se pasa (20 + 31 = 51) debe fallar
         let err = acc.check_account_limit(31.0).unwrap_err();
         assert!(matches!(err, LimitCheckError::AccountLimitExceeded));
     }
 
     #[actix_rt::test]
     async fn none_limit_allows_any_amount() {
-        // Cuenta sin límite (None) debería aceptar cualquier monto
         let acc = make_test_account(None, 100.0);
 
         assert!(acc.check_account_limit(1.0).is_ok());
@@ -286,15 +311,12 @@ mod tests {
     async fn can_raise_limit_respects_current_consumption() {
         let already_consumed = 30.0;
 
-        // Subir el límite a algo >= consumo actual es válido
         let res_ok = AccountActor::can_raise_limit(Some(50.0), already_consumed);
         assert!(res_ok.is_ok());
 
-        // Bajar el límite por debajo de lo ya consumido debe fallar
         let err = AccountActor::can_raise_limit(Some(10.0), already_consumed).unwrap_err();
         assert!(matches!(err, LimitUpdateError::BelowCurrentUsage));
 
-        // Pasar a "sin límite" (None) siempre es válido
         let res_none = AccountActor::can_raise_limit(None, already_consumed);
         assert!(res_none.is_ok());
     }
