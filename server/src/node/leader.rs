@@ -1,20 +1,17 @@
-use super::actors::{actor_router::ActorRouter, ActorEvent, RouterCmd};
+use super::database::{Database, DatabaseCmd}; // use the Database abstraction
 use super::node::Node;
 use super::pending_operatoin::PendingOperation;
 use crate::{
     errors::{AppError, AppResult},
     node::utils::get_id_given_addr,
 };
-use actix::{Actor, Addr};
 use common::operation::Operation;
 use common::operation_result::{ChargeResult, OperationResult};
 use common::{Connection, Message, NodeToStationMsg, Station};
 use std::{
     collections::{HashMap, VecDeque},
-    future::pending,
     net::SocketAddr,
 };
-use tokio::sync::{mpsc, oneshot};
 
 /// Internal state for a charge coming from a station pump
 /// while the node is ONLINE.
@@ -32,7 +29,7 @@ struct StationPendingCharge {
 ///
 /// The Leader wires together:
 /// - the TCP ConnectionManager (network),
-/// - the local ActorRouter (Actix),
+/// - the local "database" (actor system wrapped in `Database`),
 /// - the Station abstraction (which internally runs the stdin-driven pump simulator).
 ///
 /// ONLINE behavior (default):
@@ -41,7 +38,7 @@ struct StationPendingCharge {
 ///
 /// 1. Station → Leader: `StationToNodeMsg::ChargeRequest`.
 /// 2. Leader builds `Operation::Charge { .., from_offline_station: false }`
-///    and sends `RouterCmd::Execute { op_id, operation }` to ActorRouter.
+///    and sends a high-level Execute command to the actor system.
 /// 3. ActorRouter/actors run verification + apply internally.
 /// 4. Once finished, ActorRouter emits a single
 ///    `ActorEvent::OperationResult { op_id, operation, result, .. }`.
@@ -58,10 +55,10 @@ struct StationPendingCharge {
 ///   * pump-originated `ChargeRequest`s are:
 ///       - enqueued into `offline_queue`,
 ///       - immediately acknowledged to the station as `allowed = true`,
-///       - **not** sent to the ActorRouter yet.
+///       - **not** sent to the actor system yet.
 /// - Station → Leader: `StationToNodeMsg::ConnectNode`
 ///   sets `is_offline = false` and **replays** all queued charges to
-///   the ActorRouter with `from_offline_station = true`.
+///   the actor system with `from_offline_station = true`.
 pub struct Leader {
     id: u64,
     current_op_id: u32,
@@ -72,7 +69,7 @@ pub struct Leader {
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
     station_requests: HashMap<u32, (usize, StationPendingCharge)>,
-    router: Addr<ActorRouter>,
+    // NOTE: we no longer store Database here; it is owned by `run()`.
 }
 
 // ==========================================================
@@ -126,12 +123,19 @@ impl Node for Leader {
         Ok(())
     }
 
-    async fn handle_log(&mut self, _connection: &mut Connection, _op_id: u32, _op: Operation) {
+    async fn handle_log(
+        &mut self,
+        _connection: &mut Connection,
+        _db: &mut Database,
+        _op_id: u32,
+        _op: Operation,
+    ) {
         // Leader should not receive Log messages.
         todo!(); // TODO: leader should not receive any Log messages.
     }
 
-    async fn handle_ack(&mut self, connection: &mut Connection, op_id: u32) {
+    // CHANGED SIGNATURE: now receives `db: &mut Database`
+    async fn handle_ack(&mut self, _connection: &mut Connection, db: &mut Database, op_id: u32) {
         let Some(pending) = self.operations.get_mut(&op_id) else {
             todo!(); // TODO: handle this case (unknown op_id).
         };
@@ -142,7 +146,10 @@ impl Node for Leader {
         }
 
         // Mayoría alcanzada → ejecutar la operación en el mundo de actores.
-        self.router.do_send(RouterCmd::Execute {
+        //
+        // Instead of talking directly to ActorRouter / RouterCmd, we now
+        // send a high-level DatabaseCmd to the Database abstraction.
+        db.send(DatabaseCmd::Execute {
             op_id,
             operation: pending.op.clone(),
         });
@@ -279,7 +286,7 @@ impl Leader {
     /// Start a Leader node:
     ///
     /// - boots the ConnectionManager (TCP),
-    /// - boots the ActorRouter in a dedicated Actix system thread,
+    /// - boots the actor system wrapped in `Database` (Actix in a dedicated thread),
     /// - starts the Station abstraction (which internally spawns the pump simulator),
     /// - seeds the cluster membership with self (other nodes will join dynamically),
     /// - then enters the main async event loop.
@@ -289,21 +296,8 @@ impl Leader {
         max_conns: usize,
         pumps: usize,
     ) -> AppResult<()> {
-        let (actor_tx, actor_rx) = mpsc::channel::<ActorEvent>(128);
-        let (router_tx, router_rx) = oneshot::channel::<Addr<ActorRouter>>();
-
-        // Spawn a thread for Actix that runs inside a Tokio runtime.
-        std::thread::spawn(move || {
-            let sys = actix::System::new();
-            sys.block_on(async move {
-                let router = ActorRouter::new(actor_tx).start();
-                if router_tx.send(router.clone()).is_err() {
-                    // println!("[ERROR] Failed to deliver ActorRouter addr to Leader");
-                }
-
-                pending::<()>().await; // Keep the Actix system running indefinitely.
-            });
-        });
+        // Start the actor-based "database" subsystem (ActorRouter + Actix system).
+        let db = super::database::Database::start().await?;
 
         // Start the shared Station abstraction (stdin-based simulator).
         let station = Station::start(pumps).await?;
@@ -314,7 +308,9 @@ impl Leader {
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
         members.insert(self_id, address);
 
+        // Start the TCP ConnectionManager for this node.
         let connection = Connection::start(address, max_conns).await?;
+
         let mut leader = Self {
             id: self_id,
             current_op_id: 0,
@@ -325,12 +321,11 @@ impl Leader {
             is_offline: false,
             offline_queue: VecDeque::new(),
             station_requests: HashMap::new(),
-            router: router_rx.await.map_err(|e| AppError::ActorSystem {
-                details: format!("failed to receive ActorRouter address: {e}"),
-            })?,
         };
 
-        leader.run(connection, actor_rx, station).await
+        // Now `run` takes ownership of `connection`, `db` and `station`,
+        // exactly like with Connection and Station.
+        leader.run(connection, db, station).await
     }
 }
 

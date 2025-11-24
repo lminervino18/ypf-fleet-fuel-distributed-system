@@ -133,9 +133,11 @@ mod bully_election_test {
         all_peer_ids.insert(replica3_id, replica3_addr);
 
         // Determine which replica should start first (lowest ID triggers cascade)
-        let mut replica_ids = [(replica1_id, replica1_addr),
+        let mut replica_ids = [
+            (replica1_id, replica1_addr),
             (replica2_id, replica2_addr),
-            (replica3_id, replica3_addr)];
+            (replica3_id, replica3_addr),
+        ];
         replica_ids.sort_by_key(|(id, _)| *id);
 
         // Start election from lowest-ID replica
@@ -225,15 +227,11 @@ mod bully_election_test {
             // assert_eq!(r3_state.leader_id, Some(highest_id), "Replica3 should know highest-ID won");
 
             println!("Test completed. Current winner: ID={lowest_id}");
-            println!(
-                "Expected winner (when protocol is complete): ID={highest_id}"
-            );
+            println!("Expected winner (when protocol is complete): ID={highest_id}");
             println!("\nNote: This test will work correctly once message passing between");
             println!("      replicas is implemented. Currently only the initiating replica");
             println!("      updates its state. When complete, all replicas should recognize");
-            println!(
-                "      the highest-ID node ({highest_id}) as the coordinator."
-            );
+            println!("      the highest-ID node ({highest_id}) as the coordinator.");
         }
 
         // Verify Bully structs are accessible and contain leader information

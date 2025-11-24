@@ -1,6 +1,6 @@
-use std::net::SocketAddr;
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 
 /// Simple hash function to derive a u64 ID from a SocketAddr based on its IP and port
 /// That way we have an unique and consistent ID for each node based on its address
