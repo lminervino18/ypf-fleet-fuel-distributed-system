@@ -143,7 +143,7 @@ impl Handler<RouterCmd> for ActorRouter {
 
                         // Determinar qué tarjetas pertenecen a esta cuenta
                         let mut card_ids = Vec::new();
-                        for ((acc_id, card_id), _) in &self.cards {
+                        for (acc_id, card_id) in self.cards.keys() {
                             if *acc_id == account_id {
                                 card_ids.push(*card_id);
                             }
@@ -272,8 +272,7 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                     Some(op) => op.clone(),
                     None => {
                         self.emit(ActorEvent::Debug(format!(
-                            "[Router] AccountQueryCompleted for unknown op_id={}",
-                            op_id
+                            "[Router] AccountQueryCompleted for unknown op_id={op_id}"
                         )));
                         return;
                     }
@@ -375,11 +374,11 @@ mod tests {
 
         match result {
             OperationResult::Charge(ChargeResult::Ok) => {}
-            other => panic!("Esperábamos ChargeResult::Ok, obtuvimos {:?}", other),
+            other => panic!("Esperábamos ChargeResult::Ok, obtuvimos {other:?}"),
         }
 
         // De paso, el router debería haber creado 1 cuenta y 1 tarjeta.
-        assert_eq!(router.try_send(RouterCmd::GetLog).is_ok(), true);
+        assert!(router.try_send(RouterCmd::GetLog).is_ok());
     }
 
     #[actix_rt::test]
@@ -408,7 +407,7 @@ mod tests {
         assert!(error.is_none());
         match result {
             OperationResult::LimitCard(LimitResult::Ok) => {}
-            other => panic!("Esperábamos LimitResult::Ok, obtuvimos {:?}", other),
+            other => panic!("Esperábamos LimitResult::Ok, obtuvimos {other:?}"),
         }
 
         // 2) Intentamos un cargo que excede ese límite (20.0 > 10.0)
@@ -431,18 +430,17 @@ mod tests {
         let err = error.expect("Esperábamos un VerifyError");
         match err {
             VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded) => {}
-            other => panic!("Esperábamos CardLimitExceeded, obtuvimos {:?}", other),
+            other => panic!("Esperábamos CardLimitExceeded, obtuvimos {other:?}"),
         }
 
         match result {
             OperationResult::Charge(ChargeResult::Failed(e)) => match e {
                 VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded) => {}
                 other => panic!(
-                    "Esperábamos ChargeResult::Failed(CardLimitExceeded), obtuvimos {:?}",
-                    other
+                    "Esperábamos ChargeResult::Failed(CardLimitExceeded), obtuvimos {other:?}",
                 ),
             },
-            other => panic!("Esperábamos ChargeResult::Failed(_), obtuvimos {:?}", other),
+            other => panic!("Esperábamos ChargeResult::Failed(_), obtuvimos {other:?}"),
         }
     }
 
@@ -501,20 +499,18 @@ mod tests {
         let err = error.expect("Esperábamos VerifyError");
         match err {
             VerifyError::LimitUpdate(LimitUpdateError::BelowCurrentUsage) => {}
-            other => panic!("Esperábamos BelowCurrentUsage, obtuvimos {:?}", other),
+            other => panic!("Esperábamos BelowCurrentUsage, obtuvimos {other:?}"),
         }
 
         match result {
             OperationResult::LimitAccount(LimitResult::Failed(e)) => match e {
                 VerifyError::LimitUpdate(LimitUpdateError::BelowCurrentUsage) => {}
                 other => panic!(
-                    "Esperábamos LimitResult::Failed(BelowCurrentUsage), obtuvimos {:?}",
-                    other
+                    "Esperábamos LimitResult::Failed(BelowCurrentUsage), obtuvimos {other:?}"
                 ),
             },
             other => panic!(
-                "Esperábamos LimitAccount(LimitResult::Failed), obtuvimos {:?}",
-                other
+                "Esperábamos LimitAccount(LimitResult::Failed), obtuvimos {other:?}"
             ),
         }
     }
@@ -550,8 +546,7 @@ mod tests {
                 assert!(per_card_spent.is_empty());
             }
             other => panic!(
-                "Esperábamos AccountQueryResult vacío, obtuvimos {:?}",
-                other
+                "Esperábamos AccountQueryResult vacío, obtuvimos {other:?}"
             ),
         }
     }

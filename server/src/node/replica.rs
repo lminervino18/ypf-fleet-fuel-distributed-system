@@ -155,7 +155,7 @@ impl Node for Replica {
         op_id: u32,
         new_op: Operation,
     ) {
-        println!("[REPLICA] Received Log for op_id={}: {:?}", op_id, new_op);
+        println!("[REPLICA] Received Log for op_id={op_id}: {new_op:?}");
         // Guardamos el log y commiteamos la operación anterior.
         self.operations.insert(op_id, new_op);
         if op_id == 0 {
@@ -245,7 +245,7 @@ impl Node for Replica {
         new_member: (u64, SocketAddr),
     ) {
         self.members.insert(new_member.0, new_member.1);
-        println!("[REPLICA] new cluster member added: {:?}", new_member);
+        println!("[REPLICA] new cluster member added: {new_member:?}");
         println!("[REPLICA] current members: {:?}", self.members.len());
     }
 

@@ -263,8 +263,7 @@ impl NodeClient {
         request_id: u32,
     ) -> AppResult<()> {
         println!(
-            "[node_client][OFFLINE] Enqueuing offline charge: account={}, card={}, amount={}, request_id={}",
-            account_id, card_id, amount, request_id
+            "[node_client][OFFLINE] Enqueuing offline charge: account={account_id}, card={card_id}, amount={amount}, request_id={request_id}"
         );
 
         self.offline_queue.push(QueuedCharge {
@@ -330,16 +329,14 @@ impl NodeClient {
             match connection.send(msg, target).await {
                 Ok(()) => {
                     println!(
-                        "[node_client] Successfully sent request_id={} to {}",
-                        request_id, target
+                        "[node_client] Successfully sent request_id={request_id} to {target}"
                     );
                     sent = true;
                     break;
                 }
                 Err(e) => {
                     eprintln!(
-                        "[node_client] Failed to send request_id={} to {}: {:?}",
-                        request_id, target, e
+                        "[node_client] Failed to send request_id={request_id} to {target}: {e:?}"
                     );
                     // Try next node in the list.
                 }
@@ -353,8 +350,7 @@ impl NodeClient {
         } else {
             // All nodes failed: fall back to OFFLINE behavior for this charge.
             eprintln!(
-                "[node_client] All known nodes failed for request_id={}; falling back to OFFLINE behavior (local OK + enqueue).",
-                request_id
+                "[node_client] All known nodes failed for request_id={request_id}; falling back to OFFLINE behavior (local OK + enqueue)."
             );
 
             self.enqueue_offline_charge(station, account_id, card_id, amount, request_id)
@@ -422,8 +418,7 @@ impl NodeClient {
                     }
                     Err(e) => {
                         eprintln!(
-                            "[node_client] Failed to replay offline charge to {}: {:?}",
-                            target, e
+                            "[node_client] Failed to replay offline charge to {target}: {e:?}"
                         );
                         // Try next node.
                     }
@@ -456,8 +451,8 @@ impl NodeClient {
     ///
     /// For this client we only expect:
     /// - `Message::Response { req_id, op_result }`.
-    /// Responses for replayed offline charges will *not* be forwarded back
-    /// to the Station (we never registered those ids in `active_online_requests`).
+    ///   Responses for replayed offline charges will *not* be forwarded back
+    ///   to the Station (we never registered those ids in `active_online_requests`).
     async fn handle_node_msg(
         &mut self,
         _connection: &mut Connection,
@@ -469,8 +464,7 @@ impl NodeClient {
                 // Only forward responses that correspond to ONLINE requests.
                 if !self.active_online_requests.remove(&req_id) {
                     println!(
-                        "[node_client] Response for non-tracked req_id {} (probably offline replay); ignoring at Station level.",
-                        req_id
+                        "[node_client] Response for non-tracked req_id {req_id} (probably offline replay); ignoring at Station level."
                     );
                     return Ok(());
                 }
@@ -481,7 +475,7 @@ impl NodeClient {
             other => {
                 // This forwarding client is not part of the cluster protocol,
                 // so all other message types are unexpected and ignored.
-                eprintln!("[node_client] Unexpected message from node: {:?}", other);
+                eprintln!("[node_client] Unexpected message from node: {other:?}");
             }
         }
 
@@ -518,8 +512,7 @@ impl NodeClient {
                 // For now, we only use Charge operations coming from pumps.
                 let _ = station
                     .send(NodeToStationMsg::Debug(format!(
-                        "[node_client] Ignoring non-charge response for req_id {}: {:?}",
-                        req_id, other
+                        "[node_client] Ignoring non-charge response for req_id {req_id}: {other:?}"
                     )))
                     .await;
             }
