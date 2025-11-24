@@ -1,6 +1,7 @@
 use super::{
     database::{Database, DatabaseCmd},
     election::bully::Bully,
+    leader::Leader,
     node::Node,
     utils::get_id_given_addr,
 };
@@ -270,9 +271,18 @@ impl Node for Replica {
 }
 
 impl Replica {
+    /// Convert this Replica into a Leader.
+    /// Consumes self and returns a Leader.
     pub fn into_leader(self) -> Leader {
         use super::leader::Leader;
 
+        // When promoting, we use the replica's last op_id as current_op_id
+        let current_op_id = self
+            .operations
+            .keys()
+            .max()
+            .map(|k| *k)
+            .unwrap_or(0);
 
         Leader::from_existing(
             self.id,
@@ -323,6 +333,37 @@ impl Replica {
         });
 
         Ok(())
+    }
+
+    /// Continue running as Replica after being demoted from Leader.
+    /// Reuses existing state from the leader.
+    pub async fn run_from_leader(
+        mut replica: Replica,
+        address: SocketAddr,
+        coords: (f64, f64),
+        max_conns: usize,
+        pumps: usize,
+    ) -> AppResult<()> {
+        // Recreate resources that were consumed by leader.run()
+        let db = super::database::Database::start().await?;
+        let station = Station::start(pumps).await?;
+        let connection = Connection::start(address, max_conns).await?;
+
+        // Loop para manejar cambios de rol
+        loop {
+            let role_change = replica.run(connection, db, station).await?;
+            
+            match role_change {
+                super::node::RoleChange::PromoteToLeader => {
+                    println!("[REPLICA] Converting to Leader...");
+                    let leader = replica.into_leader();
+                    return Box::pin(Leader::run_from_replica(leader, address, coords, max_conns, pumps)).await;
+                }
+                _ => {
+                    return Ok(());
+                }
+            }
+        }
     }
 
     /// - boots the ConnectionManager (TCP),
@@ -378,7 +419,7 @@ impl Replica {
             )
             .await;
 
-        // Loop para manejar cambios de rol
+        // para manera cambios de rol
         // Usamos el loop genérico de `Node::run`, igual que el Leader:
         // - own `connection`, `db` y `station`.
         loop {
@@ -387,6 +428,7 @@ impl Replica {
             match role_change {
                 super::node::RoleChange::PromoteToLeader => {
                     println!("[REPLICA] Converting to Leader...");
+                    // con Pin le digo al compilador que el Future se quedara en la misma dirección de memoria y que las referencias internas son validas
                     let leader = replica.into_leader();
                     return Box::pin(Leader::run_from_replica(leader, address, coords, max_conns, pumps)).await;
                 }
