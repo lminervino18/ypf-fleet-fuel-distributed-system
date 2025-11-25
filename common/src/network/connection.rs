@@ -1,10 +1,10 @@
-use super::{acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler, Message};
+use super::{Message, acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler};
 use crate::errors::{AppError, AppResult};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
     sync::{
-        mpsc::{self, Receiver, Sender},
         Mutex,
+        mpsc::{self, Receiver, Sender},
     },
     task::JoinHandle,
 };

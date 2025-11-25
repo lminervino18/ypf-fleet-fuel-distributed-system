@@ -377,15 +377,10 @@ impl Node for Replica {
         connection: &mut Connection,
         database: &mut Database,
         members: Vec<(u64, SocketAddr)>,
-    ) {
-        // Si llega el cluster_view es porque nosotros mandamos el join, así que está ok.
-
-        //inserto bdd nueva
-
+    ) -> AppResult<()> {
         while let Some(op) = self.offline_queue.pop_front() {
             self.handle_request(connection, database, 0, op, self.address)
-                .await
-                .unwrap();
+                .await?
         }
 
         self.cluster.clear();
@@ -393,9 +388,8 @@ impl Node for Replica {
             self.cluster.insert(id, addr);
         }
 
-        // Ensure we are present with the correct address.
-        // self.cluster.insert(self.id, self.address);
         println!("[REPLICA] handled cluster view: {:?}", self.cluster);
+        Ok(())
     }
 }
 
@@ -457,7 +451,7 @@ impl Replica {
     }
     async fn commit_operation(&mut self, db: &mut Database, op_id: u32) -> AppResult<()> {
         let Some(op) = self.operations.remove(&op_id) else {
-            todo!();
+            return Ok(());
         };
 
         // Igual que en Leader: fire-and-forget al actor world, ahora vía `Database`.

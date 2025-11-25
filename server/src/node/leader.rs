@@ -7,7 +7,7 @@ use crate::node::node::RoleChange;
 use crate::{errors::AppResult, node::utils::get_id_given_addr};
 use common::operation::Operation;
 use common::operation_result::{ChargeResult, OperationResult};
-use common::{Connection, Message, NodeToStationMsg, Station};
+use common::{AppError, Connection, Message, NodeToStationMsg, Station};
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
@@ -99,12 +99,25 @@ impl Node for Leader {
         Ok(RoleChange::None)
     }
 
-    async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()> {
-        todo!()
+    async fn handle_disconnect_node(&mut self, connection: &mut Connection) {
+        self.is_offline = true;
+        connection.disconnect().await;
     }
 
-    async fn handle_disconnect_node(&mut self, connection: &mut Connection) {
-        todo!()
+    async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()> {
+        self.is_offline = false;
+        connection.reconnect().await?;
+        for node in self.cluster.values() {
+            if connection
+                .send(Message::Join { addr: self.address }, node)
+                .await
+                .is_err()
+            {
+                continue;
+            }
+        }
+
+        Ok(())
     }
 
     async fn handle_request(
@@ -381,9 +394,8 @@ impl Node for Leader {
         _connection: &mut Connection,
         _database: &mut Database,
         _members: Vec<(u64, SocketAddr)>,
-    ) {
-        // leader shouldn't receive cluster_view messages
-        todo!();
+    ) -> AppResult<()> {
+        Ok(()) // leaders don't receive cluster view
     }
 }
 
