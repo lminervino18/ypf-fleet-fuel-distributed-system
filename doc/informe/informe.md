@@ -434,6 +434,78 @@ Si quien pierde conectividad es un nodo del clúster (líder o réplica), puede 
 Al volver a modo **ONLINE**, el nodo reproduce secuencialmente todas las operaciones encoladas contra la base de datos lógica y las replica al clúster de consenso. Como esas operaciones están etiquetadas como provenientes de una estación offline, se aplican directamente sobre el estado (sin volver a bloquear al cliente) para reconstruir un historial consistente. Si durante la desconexión se eligió un nuevo líder, las actualizaciones pendientes se envían a ese líder vigente, de modo que el clúster converge nuevamente a un único estado acordado.
 
 
+# Cambios respecto a la primera entrega
+
+Durante la implementación del sistema se realizaron cambios significativos respecto al diseño inicial presentado en la primera entrega. Estos cambios surgieron de una mejor comprensión de los requisitos del sistema y de las herramientas de concurrencia distribuida disponibles.
+
+## 1 - Cambio de arquitectura: de clústeres por tarjeta a consenso centralizado
+El cambio fundamental fue pasar de un sistema con **múltiples clústeres descentralizados por tarjeta** a un **clúster de consenso centralizado con log replicado**. Esta decisión simplificó enormemente la implementación, permitió demostrar de forma más clara las herramientas de concurrencia distribuida (elección de líder, consenso) y resultó en un sistema más robusto y fácil de razonar
+
+**Diseño inicial:** El sistema se planteó con tres tipos de clústeres:
+Clúster de surtidores en cada estación, clúster de nodos suscriptores por tarjeta (con líder de tarjeta) y clúster de cuenta que coordinaba líderes de tarjetas
+Esta arquitectura buscaba optimizar la comunicación mediante localidad geográfica, donde cada tarjeta tenía su propio clúster de nodos suscriptores que se replicaban la información, con un mecanismo de TTL (Time-To-Live) para desuscribirse de tarjetas no utilizadas.
+
+**Implementación final:** Se adoptó un modelo de **consenso centralizado** con:
+- Un nodo **líder** único que coordina todas las operaciones
+- Nodos **réplica** que mantienen copias sincronizadas del estado
+- Un **log replicado** inspirado en Raft para garantizar consistencia
+
+**Razones del cambio:**
+1. **Simplicidad:** El modelo de consenso centralizado es más simple de implementar correctamente y razonar sobre su comportamiento.
+2. **Consistencia fuerte:** El log replicado garantiza que todas las operaciones se apliquen en el mismo orden en todos los nodos, evitando inconsistencias complejas. Asi como tecnicas de consenso y tolerancia a fallas
+3. **Scope del prototipo:** Para un sistema académico con 1600 estaciones simuladas, la optimización por localidad geográfica agregaba complejidad innecesaria.
+
+## 2 - Modelo de actores: de actores distribuidos a actores locales
+**Diseño inicial:** Se plantearon tres tipos de actores distribuidos: Actor **Suscriptor**, Actor **Líder Tarjeta** y Actor **Cuenta**
+
+Los actores se comunicaban entre nodos mediante propagación viral de mensajes.
+
+**Implementación final:** Los actores quedaron como entidades **locales** dentro de cada nodo y que además permiten 
+- `ActorRouter`: punto de entrada y coordinador
+- `AccountActor`: maneja el estado de una cuenta (límite y consumo)
+- `CardActor`: maneja el estado de una tarjeta (límite y consumo)
+
+**Razones del cambio:**
+1. **Separación de responsabilidades:** Los actores se enfocan exclusivamente en la lógica de negocio (validar límites, acumular consumos), mientras que el consenso distribuido lo maneja el clúster de nodos.
+2. **Simplicidad del modelo:** Los actores solo se comunican mediante mensajes dentro del mismo proceso, eliminando la complejidad de comunicación inter-nodo a nivel de actores.
+
+## 3 - Eliminación del mecanismo de TTL y suscripciones dinámicas
+
+**Diseño inicial:** Los nodos se suscribían dinámicamente a tarjetas según uso geográfico, con un mecanismo de TTL para desuscribirse automáticamente.
+
+**Implementación final:** Se eliminó completamente este mecanismo. Todos los nodos del clúster replican todo el estado desde el inicio.
+
+## 4 - Protocolo de consenso: log replicado con mayoría de ACKs
+
+**Diseño inicial:** No se especificaba un protocolo formal de consenso entre nodos del clúster.
+
+**Implementación final:** Se implementó un protocolo de log replicado simplificado:
+1. El líder asigna un `op_id` secuencial a cada operación
+2. El líder envía `Log { op_id, operation }` a todas las réplicas
+3. Cada réplica ejecuta la operación **anterior** y responde con `Ack { op_id }`
+4. El líder espera ACKs de la mayoría antes de considerar la operación *committed*
+5. El líder ejecuta la operación en su propio sistema de actores y responde al cliente
+
+## 5 - Manejo de desconexiones: modo OFFLINE con reconciliación
+
+**Diseño inicial:** Se mencionaba que las estaciones sin conexión podían realizar cobros que se encolaban para posterior sincronización.
+
+**Implementación final:** Se formalizó el concepto de **modo OFFLINE**:
+- Cualquier nodo (líder o réplica) puede entrar explícitamente en modo OFFLINE
+- En modo OFFLINE, los cobros se aceptan inmediatamente y se encolan con flag `from_offline_station = true`
+- Al volver a modo ONLINE, se reproducen todas las operaciones encoladas contra el clúster
+- Las operaciones offline se aplican sin re-validar límites (ya fueron consumidas)
+
+## 6 - Protocolo de serialización binario
+
+**Diseño inicial:** Se especificaba un protocolo con 1 byte de tipo de mensaje y campos específicos por tipo.
+
+**Implementación final:** Se mantuvo la idea general pero se refinó:
+- Byte inicial identifica el tipo de `Message` o `Operation`
+- Campos serializados en orden fijo (u32, u64, f32, etc.)
+- Sin compresión ni optimizaciones avanzadas (simplicidad sobre eficiencia)
+
+
 # Conclusiones
 
 El desarrollo de **YPF Ruta** permitió diseñar e implementar un sistema distribuido capaz de centralizar el control de gasto de combustible de una flota, manteniendo al mismo tiempo un nivel alto de disponibilidad en las estaciones. La combinación de un clúster de consenso (líder + réplicas) con un modelo de actores para la base de datos lógica separa con claridad las preocupaciones: por un lado, la replicación y el acuerdo sobre el orden de las operaciones; por otro, la consistencia de las reglas de negocio sobre cuentas y tarjetas.
