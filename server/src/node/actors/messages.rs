@@ -1,5 +1,4 @@
 use actix::prelude::*;
-use std::collections::HashMap;
 
 use crate::errors::VerifyError;
 use common::operation::Operation;
@@ -13,7 +12,9 @@ pub enum ActorEvent {
         op_id: u32,
         operation: Operation,
         result: OperationResult,
+        #[allow(dead_code)]
         success: bool,
+        #[allow(dead_code)]
         error: Option<VerifyError>,
     },
 
@@ -29,6 +30,7 @@ pub enum RouterCmd {
     Execute { op_id: u32, operation: Operation },
 
     /// Debug / introspection of the router.
+    #[allow(dead_code)]
     GetLog,
 }
 
@@ -40,6 +42,7 @@ pub enum AccountMsg {
     ApplyChargeFromCard {
         op_id: u32,
         amount: f32,
+        #[allow(dead_code)]
         card_id: u64,
         from_offline_station: bool,
         reply_to: Recipient<AccountChargeReply>,

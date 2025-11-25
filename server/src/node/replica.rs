@@ -7,19 +7,19 @@ use super::{
 };
 use crate::{
     errors::AppResult,
-    node::{database, node::RoleChange},
+    node::{node::RoleChange},
 };
 use common::{
     operation::Operation,
     operation_result::{ChargeResult, OperationResult},
-    AppError, Connection, Message, NodeToStationMsg, Station, StationToNodeMsg,
+    AppError, Connection, Message, NodeToStationMsg, Station,
 };
 
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Instant},
 };
 use tokio::sync::Mutex;
 
@@ -34,6 +34,7 @@ use tokio::sync::Mutex;
 /// Para las requests que vienen de la estación:
 /// - si está ONLINE, las proxy-a al líder con `Message::Request`,
 /// - si está OFFLINE, las mete en `offline_queue` y contesta OK a la estación.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct StationPendingCharge {
     pump_id: u32,
@@ -42,6 +43,7 @@ struct StationPendingCharge {
     amount: f32,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct OfflineQueuedCharge {
     request_id: u64,
@@ -60,6 +62,7 @@ pub struct Replica {
     operations: HashMap<u32, Operation>,
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
+    #[allow(dead_code)]
     start_time: Instant,
     // NOTE: no `router` field anymore; we talk to the actor system via `Database`.
 }
@@ -234,7 +237,7 @@ impl Node for Replica {
 
     async fn handle_response(
         &mut self,
-        connection: &mut Connection,
+        _connection: &mut Connection,
         station: &mut Station,
         req_id: u32,
         op_result: OperationResult,

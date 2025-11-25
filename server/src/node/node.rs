@@ -189,7 +189,7 @@ pub trait Node {
                 Ok(RoleChange::None)
             }
             StationToNodeMsg::ConnectNode => {
-                self.handle_connect_node(connection).await;
+                self.handle_connect_node(connection).await?;
                 Ok(RoleChange::None)
             }
         }
@@ -256,7 +256,7 @@ pub trait Node {
                 RoleChange::None
             }
             Message::Log { op_id, op } => {
-                self.handle_log(connection, db, op_id, op).await;
+                self.handle_log(connection, db, op_id, op).await?;
                 RoleChange::None
             }
             Message::Ack { op_id } => {
@@ -286,7 +286,7 @@ pub trait Node {
                 RoleChange::None
             }
             Message::ClusterView { members } => {
-                self.handle_cluster_view(connection, db, members).await;
+                self.handle_cluster_view(connection, db, members).await?;
                 RoleChange::None
             }
             Message::ClusterUpdate { new_member } => {

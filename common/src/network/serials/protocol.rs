@@ -29,8 +29,8 @@ pub const OP_TYPE_CHARGE: u8 = 0x00;
 pub const OP_TYPE_LIMIT_CARD: u8 = 0x01;
 pub const OP_TYPE_LIMIT_ACCOUNT: u8 = 0x02;
 pub const OP_TYPE_QUERY_ACCOUNT: u8 = 0x03;
-pub const OP_TYPE_QUERY_CARDS: u8 = 0x04;
-pub const OP_TYPE_QUERY_CARD: u8 = 0x05;
+// pub const OP_TYPE_QUERY_CARDS: u8 = 0x04;
+// pub const OP_TYPE_QUERY_CARD: u8 = 0x05;
 pub const OP_TYPE_BILL: u8 = 0x06;
 
 // operation result types
@@ -42,7 +42,7 @@ pub const ACC_QUERY_RESULT: u8 = 0x04;
 // verify error types
 pub const LIMIT_UPDATE_ERR: u8 = 0x00;
 pub const CHARGE_LIMIT_ERR: u8 = 0x01;
-pub const LIMIT_CHECK_ERR: u8 = 0x01;
+// pub const LIMIT_CHECK_ERR: u8 = 0x01;
 pub const BELOW_CURRENT_USAGE: u8 = 0x00;
 pub const CARD_LIMIT_EXCEEDED: u8 = 0x01;
 pub const ACC_LIMIT_EXCEEDED: u8 = 0x02;
