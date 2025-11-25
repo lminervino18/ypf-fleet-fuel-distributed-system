@@ -338,6 +338,11 @@ impl Node for Leader {
         )
         .await; */
         todo!("leader start_election was called");
+}
+
+    async fn poll_election_timeout(&mut self, _connection: &mut Connection) -> AppResult<RoleChange> {
+        // Leader no hace bully timeout.
+        Ok(RoleChange::None)
     }
 
     /// Called when we receive a `Message::Join` through the generic

@@ -1,5 +1,6 @@
 use common::Message;
 use std::net::SocketAddr;
+use std::time::{SystemTime, Instant};
 
 /// Bully algorithm helper
 pub struct Bully {
@@ -9,6 +10,7 @@ pub struct Bully {
     pub leader_addr: Option<SocketAddr>,
     pub election_in_progress: bool,
     pub received_ok: bool,
+    pub election_deadline: Option<Instant>, // instante límite para la ventana de espera
 }
 
 use common::Connection;
@@ -40,7 +42,6 @@ pub async fn conduct_election(
     // Build peer_ids map from the current membership (excluding self).
     let mut peer_ids = HashMap::new();
     for (peer_id, addr) in &cluster {
-        // TODO: REVISAR ESTA LOGICA, PUEDE QUE NO ESTÉ MAL QUE UN NODO SE ENVIE UN MENSAJE A SI MISMO (revisar loop)
         if *peer_id == id {
             continue;
         }
@@ -65,38 +66,15 @@ pub async fn conduct_election(
         let _ = connection.send(msg.clone(), p).await;
     }
 
-    // wait for responses
-    const WINDOW_MS: u64 = 10000;
-    tokio::time::sleep(std::time::Duration::from_millis(WINDOW_MS)).await;
-
-    let got_ok = {
-        let b = bully.lock().await;
-        b.received_ok
-    };
-    if !got_ok {
-        // become coordinator/leader (no higher process responded)
-        println!("[Bully ID={}] No ElectionOk received, becoming coordinator", id);
+    // Configurar ventana SIN bloquear el loop principal: sólo fijamos deadline
+    const WINDOW_MS: u64 = 1200; // ventana de espera para ElectionOk
+    {
         let mut b = bully.lock().await;
-        b.mark_coordinator();
-
-        // Announce to ALL peers (excluding itself)
-        println!("[Bully ID={}] Announcing coordinator to {:?} peers (except itself)", id, cluster);
-        let coordinator_msg = Message::Coordinator {
-            leader_id: id,
-            leader_addr: address,
-        };
-        for (peer_id, peer_addr) in cluster.iter() {
-            if *peer_id == id {
-                continue; // Skip announcing to ourselves
-            }
-            let _ = connection.send(coordinator_msg.clone(), peer_addr).await;
-        }
-        return true; // We became the coordinator
-    } else {
-        println!("[Bully ID={}] Received ElectionOk, stepping down", id);
+        b.election_deadline = Some(Instant::now() + std::time::Duration::from_millis(WINDOW_MS));
     }
-    
-    false // We did not become the coordinator
+
+    // No decidimos aquí; la promoción se evalúa externamente al vencer el deadline
+    false
 }
 
 impl Bully {
@@ -108,6 +86,7 @@ impl Bully {
             leader_addr: None,
             election_in_progress: false,
             received_ok: false,
+            election_deadline: None,
         }
     }
 
@@ -118,6 +97,7 @@ impl Bully {
         }
         self.election_in_progress = true;
         self.received_ok = false;
+        // NOTA: el deadline se setea en conduct_election
         true
     }
     
@@ -146,6 +126,7 @@ impl Bully {
         self.leader_addr = Some(self.address);
         self.election_in_progress = false;
         self.received_ok = false;
+        self.election_deadline = None;
     }
 
     /// Handle an incoming Coordinator announcement.
@@ -154,6 +135,7 @@ impl Bully {
         self.leader_addr = Some(leader_addr);
         self.election_in_progress = false;
         self.received_ok = false;
+        self.election_deadline = None;
     }
 }
 

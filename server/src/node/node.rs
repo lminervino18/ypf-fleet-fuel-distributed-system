@@ -216,6 +216,9 @@ pub trait Node {
 
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
+    /// Chequea si venció el deadline de bully y aplica el cambio de rol.
+    async fn poll_election_timeout(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
+
     // === Cluster membership hooks (Join / ClusterView) ===
 
     async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr)
@@ -367,6 +370,14 @@ pub trait Node {
                         None => panic!("[FATAL] database went down"),
                     }
                 }
+            }
+            // chequeo de timeout de elección (no bloqueante)
+            match self.poll_election_timeout(&mut connection).await? {
+                RoleChange::PromoteToLeader => return Ok(RoleChange::PromoteToLeader),
+                RoleChange::DemoteToReplica { new_leader_addr } => {
+                    return Ok(RoleChange::DemoteToReplica { new_leader_addr })
+                }
+                RoleChange::None => {}
             }
 
             match result {

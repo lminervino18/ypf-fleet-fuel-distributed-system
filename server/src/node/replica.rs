@@ -83,7 +83,7 @@ impl Node for Replica {
         connection: &mut Connection,
         lost_address: SocketAddr,
     ) -> AppResult<RoleChange> {
-        if lost_address == self.leader_addr || self.cluster.contains_key(&get_id_given_addr(address)) {
+        if lost_address == self.leader_addr || self.cluster.contains_key(&get_id_given_addr(lost_address)) {
             println!(
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
@@ -147,32 +147,50 @@ impl Node for Replica {
     
 
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
-        // Add random jitter to avoid simultaneous elections
-        let jitter_ms = (self.id % 100) as u64; // Use node ID for deterministic but varied jitter
+        // Jitter mínimo para evitar colisiones exactas
+        let jitter_ms = (self.id % 50) as u64;
         tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
         
         println!("[REPLICA {}] starting election", self.id);
+        println!("[REPLICA {}] current cluster members: {:?}", self.id, self.cluster);
 
-        println!(
-            "[REPLICA {}] current cluster members: {:?}",
-            self.id, self.cluster
-        );
-
-        let became_coordinator = crate::node::election::bully::conduct_election(
+        // Inicia la elección no bloqueante (sólo envía mensajes y setea deadline)
+        let _ = crate::node::election::bully::conduct_election(
             &self.bully,
             connection,
             self.cluster.clone(),
             self.id,
             self.address,
-        )
-        .await;
-        
-        if became_coordinator {
-            println!("[REPLICA {}] Election complete: promoting to LEADER", self.id);
-            return Ok(RoleChange::PromoteToLeader);
-        }
+        ).await;
 
-        println!("[REPLICA {}] Election complete: NOT promoting (higher node exists)", self.id);
+        println!("[REPLICA {}] election window started (non-blocking)", self.id);
+        Ok(RoleChange::None) // La promoción se evalúa luego por timeout
+    }
+
+    async fn poll_election_timeout(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
+        let mut b = self.bully.lock().await;
+        if b.election_in_progress {
+            if let Some(deadline) = b.election_deadline {
+                if std::time::Instant::now() >= deadline {
+                    if !b.received_ok {
+                        println!("[Bully ID={}] timeout sin ElectionOk -> becoming coordinator", self.id);
+                        b.mark_coordinator();
+                        drop(b);
+                        let coordinator_msg = Message::Coordinator { leader_id: self.id, leader_addr: self.address };
+                        for (peer_id, addr) in &self.cluster {
+                            if *peer_id == self.id { continue; }
+                            let _ = connection.send(coordinator_msg.clone(), addr).await;
+                        }
+                        println!("[REPLICA {}] Election timeout: promoting to LEADER", self.id);
+            return Ok(RoleChange::PromoteToLeader);
+                    } else {
+                        b.election_in_progress = false;
+                        b.election_deadline = None;
+                        println!("[REPLICA {}] Election timeout with OK received -> not leader", self.id);
+                    }
+                }
+            }
+        }
         Ok(RoleChange::None)
     }
 
