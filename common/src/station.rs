@@ -1,7 +1,7 @@
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-
+use rand::Rng;
 use std::collections::HashMap;
 
 use crate::errors::{AppError, AppResult, VerifyError};
@@ -162,9 +162,6 @@ async fn run_station_simulator(
     // request_id -> PumpRequest
     let mut requests: HashMap<u32, PumpRequest> = HashMap::new();
 
-    // Monotonic counter for request IDs
-    let mut next_request_id: u32 = 1;
-
     loop {
         let line_fut = lines.next_line();
         let event_fut = from_node_rx.recv();
@@ -216,7 +213,6 @@ async fn run_station_simulator(
                             num_pumps,
                             &mut in_flight_by_pump,
                             &mut requests,
-                            &mut next_request_id,
                         ) {
                             Ok(Some(req_id)) => {
                                 // Copy local data so we don't hold a borrow on `requests` during `await`.
@@ -380,7 +376,6 @@ fn handle_user_command(
     num_pumps: usize,
     in_flight_by_pump: &mut [Option<u32>],
     requests: &mut HashMap<u32, PumpRequest>,
-    next_request_id: &mut u32,
 ) -> Result<Option<u32>, String> {
     let parsed = parse_command(line, num_pumps)?;
 
@@ -392,9 +387,18 @@ fn handle_user_command(
         ));
     }
 
-    // Allocate a new request_id.
-    let request_id = *next_request_id;
-    *next_request_id += 1;
+        // Allocate a new random request_id (non-zero, not currently in use)
+    let mut rng = rand::thread_rng();
+    let request_id = loop {
+        let candidate: u32 = rng.r#gen();
+        if candidate != 0
+            && !requests.contains_key(&candidate)
+            && !in_flight_by_pump.iter().any(|&slot| slot == Some(candidate))
+        {
+            break candidate;
+        }
+    };
+
 
     // Register the request.
     requests.insert(

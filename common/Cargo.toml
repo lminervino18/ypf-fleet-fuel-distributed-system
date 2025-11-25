@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 thiserror = "2.0.17"
 tokio = { version = "1", features = ["full", "net"] }
+rand = "0.8"

@@ -2,6 +2,7 @@ target/
 .vscode/
 /scripts
 **/*.sh
+*.log
 
 # Todos los node_modules dentro del simulador YPF map
 simulation/ypf-map/node_modules/

@@ -20,7 +20,7 @@ body {
 
 /* Botón de actualizar: centrado arriba usando la barra de Leaflet */
 .refresh-container {
-  /* Hacemos que este contenedor se "despegue" del borde derecho */
+  /* contenedor del botón */
 }
 
 .leaflet-top.leaflet-right {
@@ -63,4 +63,45 @@ body {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* =====================
+   ICONOS YPF COLOREADOS
+   ===================== */
+
+.ypf-marker {
+  /* el <img> real tiene también clases de Leaflet */
+}
+
+.ypf-marker.leaflet-marker-icon {
+  width: 40px;
+  height: 40px;
+}
+
+/* Ajustá estos filtros según cómo se vea tu logo base */
+.ypf-marker--leader {
+  filter: hue-rotate(0deg) saturate(2); /* rojo-ish */
+}
+
+.ypf-marker--replica {
+  filter: hue-rotate(200deg) saturate(2); /* azul */
+}
+
+.ypf-marker--client {
+  filter: hue-rotate(120deg) saturate(2); /* verde */
+}
+
+.ypf-marker--disconnected {
+  filter: grayscale(1) brightness(0.7);
+}
+
+.ypf-marker--unknown {
+  filter: hue-rotate(50deg) saturate(2); /* dorado/amarillo */
+}
+
+/* Flecha leader → replica */
+.arrow-icon {
+  font-size: 18px;
+  color: #1976d2;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
 }

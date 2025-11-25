@@ -3,11 +3,12 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./App.css";
 import nodesConfig from "../../../nodes.json";
+import ypfLogo from "./assets/ypf-logo.png"; // ajustá si tu estructura es distinta
 
 // =====================
 // TIPOS
 // =====================
-type BackendRole = "leader" | "replica" | "client" | "disconnected";
+type BackendRole = "leader" | "replica" | "client" | "station" | "disconnected";
 type NodeRole = BackendRole | "unknown";
 
 type NodeConfig = {
@@ -23,7 +24,7 @@ type RoleQueryResult = {
   port: number;
   ok: boolean;
   nodeId?: string;
-  role?: unknown;
+  role?: unknown; // puede venir número o string
   error?: string;
 };
 
@@ -35,52 +36,73 @@ type RolesApiResponse = {
 const NODES: NodeConfig[] = nodesConfig as NodeConfig[];
 
 // =====================
-// ICONOS
+// ICONOS (mismo PNG, distinto color por CSS)
 // =====================
+const baseSize: [number, number] = [40, 40];
+const baseAnchor: [number, number] = [20, 40];
+
 const iconLeader = L.icon({
-  iconUrl:
-    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png",
-  iconSize: [38, 55],
-  iconAnchor: [19, 55],
+  iconUrl: ypfLogo,
+  iconSize: baseSize,
+  iconAnchor: baseAnchor,
+  className: "ypf-marker ypf-marker--leader",
 });
 
 const iconReplica = L.icon({
-  iconUrl:
-    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png",
-  iconSize: [30, 45],
-  iconAnchor: [15, 45],
+  iconUrl: ypfLogo,
+  iconSize: baseSize,
+  iconAnchor: baseAnchor,
+  className: "ypf-marker ypf-marker--replica",
 });
 
 const iconClient = L.icon({
-  iconUrl:
-    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png",
-  iconSize: [26, 38],
-  iconAnchor: [13, 38],
+  iconUrl: ypfLogo,
+  iconSize: baseSize,
+  iconAnchor: baseAnchor,
+  className: "ypf-marker ypf-marker--client",
 });
 
 const iconDisconnected = L.icon({
-  iconUrl:
-    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-grey.png",
-  iconSize: [26, 38],
-  iconAnchor: [13, 38],
+  iconUrl: ypfLogo,
+  iconSize: baseSize,
+  iconAnchor: baseAnchor,
+  className: "ypf-marker ypf-marker--disconnected",
 });
 
 const iconUnknown = L.icon({
-  iconUrl:
-    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-gold.png",
-  iconSize: [26, 38],
-  iconAnchor: [13, 38],
+  iconUrl: ypfLogo,
+  iconSize: baseSize,
+  iconAnchor: baseAnchor,
+  className: "ypf-marker ypf-marker--unknown",
 });
 
 // =====================
-// Conversión role number → string
+// Helpers
 // =====================
 function normalizeRole(role: any): NodeRole {
-  if (role === 0) return "leader";
-  if (role === 1) return "replica";
-  if (role === 2) return "client";
-  if (role === "leader" || role === "replica" || role === "client")
-    return role;
+  // Leader
+  if (role === 0 || role === "0" || role === "leader" || role === "Leader") {
+    return "leader";
+  }
+
+  // Replica
+  if (role === 1 || role === "1" || role === "replica" || role === "Replica") {
+    return "replica";
+  }
+
+  // Client / station (aceptamos 2, 3 y strings)
+  if (
+    role === 2 ||
+    role === "2" ||
+    role === 3 ||
+    role === "3" ||
+    role === "client" ||
+    role === "Client" ||
+    role === "station"
+  ) {
+    return "client";
+  }
+
   return "unknown";
 }
 
@@ -142,17 +164,19 @@ function App() {
         ESTADO: CONSULTANDO…
       `);
 
-      // Hover: agrandar
+      // Hover: agrandar manteniendo clases
       marker.on("mouseover", () => {
         const base = baseIconByKey[key];
         const size = base.options.iconSize as [number, number];
         const anchor = base.options.iconAnchor as [number, number];
+        const className = base.options.className as string | undefined;
 
         marker.setIcon(
           L.icon({
             iconUrl: base.options.iconUrl!,
             iconSize: [size[0] * 1.4, size[1] * 1.4],
             iconAnchor: [anchor[0] * 1.4, anchor[1] * 1.4],
+            className,
           })
         );
       });
@@ -205,8 +229,6 @@ function App() {
           }),
         });
 
-        console.log("📨 Raw response:", res);
-
         const json = (await res.json()) as RolesApiResponse;
         console.log("📦 Parsed /api/roles JSON:", json);
 
@@ -218,7 +240,18 @@ function App() {
         arrowsLayer.clearLayers();
 
         // =====================
-        // Actualizar marcadores
+        // 1) Resolver líder "canónico"
+        // =====================
+        const leaders = json.results.filter(
+          (r) => r.ok && normalizeRole(r.role) === "leader"
+        );
+        const canonicalLeader = leaders[0]; // si hay >1, nos quedamos con el primero
+        const canonicalLeaderKey = canonicalLeader
+          ? keyForNode(canonicalLeader)
+          : null;
+
+        // =====================
+        // 2) Actualizar marcadores (forzando un solo líder)
         // =====================
         json.results.forEach((result) => {
           const key = keyForNode(result);
@@ -226,50 +259,69 @@ function App() {
           const cfg = nodeByKey[key];
           if (!marker || !cfg) return;
 
-          const role = !result.ok
-            ? "disconnected"
-            : normalizeRole(result.role);
+          let normalized: NodeRole;
+
+          if (!result.ok) {
+            normalized = "disconnected";
+          } else {
+            const rawRole = normalizeRole(result.role);
+
+            if (rawRole === "leader") {
+              // Si este es el líder canónico → leader
+              // Si es otro que también dice líder → lo degradamos visualmente a replica
+              if (canonicalLeaderKey && key === canonicalLeaderKey) {
+                normalized = "leader";
+              } else {
+                normalized = "replica"; // o "unknown", como prefieras
+              }
+            } else {
+              normalized = rawRole;
+            }
+          }
 
           const nodeIdText = result.nodeId ?? "-";
-
-          const icon = iconForRole(role);
+          const icon = iconForRole(normalized);
           marker.setIcon(icon);
           baseIconByKey[key] = icon;
 
           const name = cfg.name ?? key;
-
           const estado = result.ok ? "ONLINE" : "DISCONNECTED";
 
           marker.bindPopup(`
             <b>${name}</b><br>
             ID: <b>${nodeIdText}</b><br>
-            ROL: <b>${role.toUpperCase()}</b><br>
-            ESTADO: ${estado}${result.error ? `<br><small style="color:red">${result.error}</small>` : ""}
+            ROL: <b>${normalized.toUpperCase()}</b><br>
+            ESTADO: ${estado}${
+            result.error
+              ? `<br><small style="color:red">${result.error}</small>`
+              : ""
+          }
           `);
         });
 
         // =====================
-        // Dibujar flechas leader → replicas
+        // 3) Dibujar flechas leader → replicas
         // =====================
-        const leader = json.results.find(
-          (r) => r.ok && normalizeRole(r.role) === "leader"
-        );
-
-        if (leader) {
-          const leaderCfg = nodeByKey[keyForNode(leader)];
+        if (canonicalLeader && canonicalLeaderKey) {
+          const leaderCfg = nodeByKey[canonicalLeaderKey];
           if (leaderCfg) {
-            const leaderPoint = [
+            const leaderPoint: [number, number] = [
               leaderCfg.lat,
               leaderCfg.lng,
-            ] as [number, number];
+            ];
 
             json.results
-              .filter((r) => r.ok && normalizeRole(r.role) === "replica")
+              .filter(
+                (r) => r.ok && normalizeRole(r.role) === "replica"
+              )
               .forEach((rep) => {
                 const cfg = nodeByKey[keyForNode(rep)];
                 if (!cfg) return;
 
-                const replicaPoint = [cfg.lat, cfg.lng] as [number, number];
+                const replicaPoint: [number, number] = [
+                  cfg.lat,
+                  cfg.lng,
+                ];
 
                 L.polyline([leaderPoint, replicaPoint], {
                   color: "#1976d2",
@@ -301,7 +353,7 @@ function App() {
       }
     }
 
-    // Botón refresh (Leaflet control, pero lo vamos a centrar por CSS)
+    // Botón refresh
     const refreshBtn = new L.Control({ position: "topright" });
     refreshBtn.onAdd = () => {
       const div = L.DomUtil.create("div", "refresh-container");
@@ -320,7 +372,7 @@ function App() {
         ?.addEventListener("click", fetchRolesAndUpdate);
     }, 200);
 
-    // Primer fetch
+    // Primer fetch automático
     fetchRolesAndUpdate();
 
     return () => {
