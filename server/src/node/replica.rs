@@ -12,7 +12,7 @@ use crate::{
 use common::{
     operation::Operation,
     operation_result::{ChargeResult, OperationResult},
-    Connection, Message, NodeToStationMsg, Station, StationToNodeMsg,
+    AppError, Connection, Message, NodeToStationMsg, Station, StationToNodeMsg,
 };
 
 use std::{
@@ -90,31 +90,39 @@ impl Node for Replica {
                 self.id
             );
             //return self.start_election(connection).await;
-
         }
 
         Ok(RoleChange::None)
     }
 
-    async fn handle_disconnect_node(&mut self, connection: &mut Connection){
+    async fn handle_disconnect_node(&mut self, connection: &mut Connection) {
         self.is_offline = true;
         connection.disconnect().await;
-     }
+    }
 
-     async fn handle_connect_node(&mut self, connection: &mut Connection){
+    async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()> {
         self.is_offline = false;
-        connection.reconnect().await.unwrap();
-        println!("[REPLICA {}] Reconnected to the network, sending Join to leader", self.id);
-        let _ = connection
-            .send(
-                Message::Join {
-                    addr: self.address,
-                },
-                &self.leader_addr,
-            )
-            .await;
-        
-     }
+        connection.reconnect().await?;
+        println!(
+            "[REPLICA {}] Reconnected to the network, sending Join to leader",
+            self.id
+        );
+        match connection
+            .send(Message::Join { addr: self.address }, &self.leader_addr)
+            .await
+        {
+            Err(AppError::ConnectionLostWith {
+                address: _leader_addr,
+            }) => {
+                connection
+                    .send(Message::Join { addr: self.address }, &self.leader_addr)
+                    .await?
+            }
+            x => x?,
+        }
+
+        Ok(())
+    }
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         println!("[REPLICA {}] announcing myself as coordinator", self.id);
         for node in self.cluster.values() {
@@ -206,34 +214,31 @@ impl Node for Replica {
         Ok(())
     }
 
-
-     async fn handle_response(
-    &mut self,
-    connection: &mut Connection,
-    station: &mut Station,
-    req_id: u32,
-    op_result: OperationResult,
-) -> AppResult<()> {
-    if req_id == 0 {
+    async fn handle_response(
+        &mut self,
+        connection: &mut Connection,
+        station: &mut Station,
+        req_id: u32,
+        op_result: OperationResult,
+    ) -> AppResult<()> {
+        if req_id == 0 {
             return Ok(());
         }
-    match op_result {
-        
-        OperationResult::Charge(cr) => {
-            let (allowed, error) = match cr {
-                ChargeResult::Ok => (true, None),
-                ChargeResult::Failed(err) => (false, Some(err)),
-            };
+        match op_result {
+            OperationResult::Charge(cr) => {
+                let (allowed, error) = match cr {
+                    ChargeResult::Ok => (true, None),
+                    ChargeResult::Failed(err) => (false, Some(err)),
+                };
 
-            
-            station
-                .send(NodeToStationMsg::ChargeResult {
-                    request_id: req_id,
-                    allowed,
-                    error,
-                })
-                .await?;
-        }
+                station
+                    .send(NodeToStationMsg::ChargeResult {
+                        request_id: req_id,
+                        allowed,
+                        error,
+                    })
+                    .await?;
+            }
 
             // Por ahora ignoramos otros resultados (Limit*, AccountQuery, etc.)
             // Podés loguearlos o manejarlos según lo vayas necesitando.
@@ -367,14 +372,21 @@ impl Node for Replica {
         println!("[REPLICA] current members: {:?}", self.cluster.len());
     }
 
-    async fn handle_cluster_view(&mut self, connection: &mut Connection, database: &mut Database, members: Vec<(u64, SocketAddr)>) {
+    async fn handle_cluster_view(
+        &mut self,
+        connection: &mut Connection,
+        database: &mut Database,
+        members: Vec<(u64, SocketAddr)>,
+    ) {
         // Si llega el cluster_view es porque nosotros mandamos el join, así que está ok.
 
         //inserto bdd nueva
-        
+
         while let Some(op) = self.offline_queue.pop_front() {
-             self.handle_request(connection, database, 0, op, self.address).await.unwrap();
-         }
+            self.handle_request(connection, database, 0, op, self.address)
+                .await
+                .unwrap();
+        }
 
         self.cluster.clear();
         for (id, addr) in members {

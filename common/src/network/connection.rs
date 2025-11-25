@@ -1,10 +1,10 @@
-use super::{Message, acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler};
+use super::{acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler, Message};
 use crate::errors::{AppError, AppResult};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
     sync::{
-        Mutex,
         mpsc::{self, Receiver, Sender},
+        Mutex,
     },
     task::JoinHandle,
 };
@@ -61,7 +61,14 @@ impl Connection {
         }
 
         println!("[CONNECTION] tengo {} handlers", guard.len());
-        guard.get_mut(address).unwrap().send(msg).await
+        match guard.get_mut(address).unwrap().send(msg).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                println!("[CONNECTION] handler {} errored, removing it", address);
+                guard.remove(address);
+                Err(e)
+            }
+        }
     }
 
     pub async fn recv(&mut self) -> AppResult<Message> {

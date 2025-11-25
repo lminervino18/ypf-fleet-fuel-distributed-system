@@ -157,7 +157,7 @@ pub trait Node {
     /// - flip their `is_offline` flag,
     /// - replay queued offline operations into the actor layer,
     /// - notify the Station via debug messages.
-    async fn handle_connect_node(&mut self, connection: &mut Connection);
+    async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()>;
 
     /// Default handler for high-level Station messages.
     ///
@@ -221,7 +221,12 @@ pub trait Node {
     async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr)
         -> AppResult<()>;
 
-    async fn handle_cluster_view(&mut self, connection: &mut Connection, database: &mut Database, members: Vec<(u64, SocketAddr)>);
+    async fn handle_cluster_view(
+        &mut self,
+        connection: &mut Connection,
+        database: &mut Database,
+        members: Vec<(u64, SocketAddr)>,
+    );
 
     async fn handle_cluster_update(
         &mut self,

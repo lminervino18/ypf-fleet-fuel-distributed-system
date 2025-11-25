@@ -1,8 +1,8 @@
 use super::{receiver::StreamReceiver, sender::StreamSender};
 use crate::{
-    Message,
     errors::{AppError, AppResult},
     network::serials::{read_handler_first_message, send_handler_first_message},
+    Message,
 };
 use std::{
     net::SocketAddr,
@@ -25,8 +25,8 @@ pub enum MessageKind {
 
 use MessageKind::*;
 
-const HEARTBEAT_FREQUENCY: Duration = Duration::from_secs(2);
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(20);
+const HEARTBEAT_FREQUENCY: Duration = Duration::from_millis(500);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 const MSG_BUFF_SIZE: usize = 512;
 
 #[derive(Debug)]
@@ -106,11 +106,19 @@ impl Handler {
         sender: &mut StreamSender<Message>,
         received: AppResult<MessageKind>,
         last_seen: &mut Instant,
+        address: SocketAddr, // sólo para printear debug
     ) -> AppResult<()> {
         match received {
             Ok(msg_kind) => match msg_kind {
-                HeartbeatRequest => Ok(sender.send_heartbeat_reply().await?),
+                HeartbeatRequest => {
+                    println!(
+                        "[HANDLER] received heartbeat request from {}, replying",
+                        address
+                    );
+                    Ok(sender.send_heartbeat_reply().await?)
+                }
                 HeartbeatReply => {
+                    println!("[HANDLER] received heartbeat reply from {}", address);
                     *last_seen = Instant::now();
                     Ok(())
                 }
@@ -124,7 +132,7 @@ impl Handler {
     fn run(
         mut sender: StreamSender<Message>,
         mut receiver: StreamReceiver<Message>,
-        _address: SocketAddr, // TODO
+        address: SocketAddr, // sólo para printear debugs
     ) -> JoinHandle<AppResult<()>> {
         task::spawn(async move {
             let mut last_seen = Instant::now();
@@ -135,9 +143,10 @@ impl Handler {
                         sent = sender.send() => result = sent,
                         // leo por recv stream y escribo en el mpsc que tiene Connection
                         received = receiver.recv() =>
-                            result = Self::handle_recv_result(&mut sender, received, &mut last_seen).await,
+                            result = Self::handle_recv_result(&mut sender, received, &mut last_seen, address).await,
                         // si se cumplió esta duration entonces mando hearbeat
                         _ = sleep(HEARTBEAT_FREQUENCY) => {
+                            println!("[HANDLER] sending hearbeat request to {}", address);
                             sender.send_heartbeat_request().await?;
                         }
                 }
@@ -145,7 +154,8 @@ impl Handler {
                 match result {
                     Ok(()) => {}
                     Err(AppError::ChannelClosed) => break,
-                    Err(AppError::ConnectionLostWith { address: _ }) => {
+                    Err(AppError::ConnectionLostWith { address }) => {
+                        println!("[HANDLER] connection lost with: {}", address);
                         receiver.write_connection_lost().await?;
                         break;
                         // return Err(AppError::ConnectionLostWith { address });
@@ -155,6 +165,7 @@ impl Handler {
                 // cada vez que hice alguna de las tres cosas anteriores me fijo si hay timeout del
                 // heartbeat
                 if Instant::now() - last_seen > HEARTBEAT_TIMEOUT {
+                    println!("[HANDLER] heartbeat timeout, writting connection lost");
                     receiver.write_connection_lost().await?;
                     break;
                     // return Err(AppError::ConnectionLostWith { address });

@@ -99,15 +99,12 @@ impl Node for Leader {
         Ok(RoleChange::None)
     }
 
-
-    async fn handle_connect_node(&mut self, connection: &mut Connection){
+    async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()> {
         todo!()
-
     }
 
-    async fn handle_disconnect_node(&mut self, connection: &mut Connection){
+    async fn handle_disconnect_node(&mut self, connection: &mut Connection) {
         todo!()
-        
     }
 
     async fn handle_request(
@@ -379,7 +376,12 @@ impl Node for Leader {
 
     /// Called when we receive a `Message::ClusterView` through the
     /// generic Node dispatcher.
-    async fn handle_cluster_view(&mut self, _connection: &mut Connection, _database: &mut Database, _members: Vec<(u64, SocketAddr)>) {
+    async fn handle_cluster_view(
+        &mut self,
+        _connection: &mut Connection,
+        _database: &mut Database,
+        _members: Vec<(u64, SocketAddr)>,
+    ) {
         // leader shouldn't receive cluster_view messages
         todo!();
     }
