@@ -392,6 +392,10 @@ pub trait Node {
                 Err(AppError::ConnectionLost) => {
                     continue;
                 }
+                Err(AppError::ConnectionRefused { address }) => {
+                    println!("[NODE] connection refused: {}", address);
+                    continue;
+                }
                 x => {
                     println!("[NODE] stopping run beacause of: {x:?}");
                     return x;

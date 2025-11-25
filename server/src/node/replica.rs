@@ -83,7 +83,7 @@ impl Node for Replica {
         connection: &mut Connection,
         lost_address: SocketAddr,
     ) -> AppResult<RoleChange> {
-        if lost_address == self.leader_addr {
+        if lost_address == self.leader_addr || self.cluster.contains_key(&get_id_given_addr(address)) {
             println!(
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
@@ -297,6 +297,7 @@ impl Node for Replica {
         candidate_id: u64,
         candidate_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
+        self.cluster.remove(&get_id_given_addr(self.leader_addr));
         println!(
             "[REPLICA {}] received election message from {}",
             self.id, candidate_addr
@@ -341,7 +342,7 @@ impl Node for Replica {
         leader_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
         println!(
-            "[REPLICA {}] AAAAAAAAAAAA received coordinator message from {}",
+            "[REPLICA {}] received coordinator message from {}",
             self.id, leader_addr
         );
         let mut b = self.bully.lock().await;
