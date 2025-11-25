@@ -386,9 +386,13 @@ pub trait Node {
                             let role_change = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await?;
                             match role_change {
                                 RoleChange::None => {},
-                                change => {
-                                    println!("[NODE] Role change detected: {:?}", change);
-                                    return Ok(change);
+                                RoleChange::PromoteToLeader => {
+                                    println!("[NODE] Role change detected: {:?}", role_change);
+                                    return Ok(role_change);
+                                }
+                                RoleChange::DemoteToReplica { new_leader_addr } => {
+                                    println!("[NODE] Role change detected: {:?}", role_change);
+                                    return Ok(role_change);
                                 }
                             }
                         }

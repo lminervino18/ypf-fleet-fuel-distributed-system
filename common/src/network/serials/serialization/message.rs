@@ -20,9 +20,43 @@ impl From<Message> for Vec<u8> {
             Response { req_id, op_result } => serialize_response_message(req_id, op_result),
             RoleQuery { addr } => serialize_role_query_message(addr),
             RoleResponse { node_id, role } => serialize_role_response_message(node_id, role),
+            Coordinator { leader_id, leader_addr } => serialize_coordinator_message(leader_id, leader_addr),
+            Election { candidate_id, candidate_addr } => serialize_election_message(candidate_id, candidate_addr),
+            ElectionOk { responder_id } => serialize_election_ok_message(responder_id),
             _ => todo!(),
         }
     }
+}
+
+fn serialize_coordinator_message(leader_id: u64, leader_addr: SocketAddr) -> Vec<u8> {
+    let type_srl = MSG_TYPE_COORDINATOR;
+    let leader_id_srl = leader_id.to_be_bytes();
+    let leader_addr_srl = serialize_socket_address(leader_addr);
+    let mut srl = vec![];
+    srl.push(type_srl);
+    srl.extend(leader_id_srl);
+    srl.extend(leader_addr_srl);
+    srl
+}
+
+fn serialize_election_message(candidate_id: u64, candidate_addr: SocketAddr) -> Vec<u8> {
+    let type_srl = MSG_TYPE_ELECTION;
+    let candidate_id_srl = candidate_id.to_be_bytes();
+    let candidate_addr_srl = serialize_socket_address(candidate_addr);
+    let mut srl = vec![];
+    srl.push(type_srl);
+    srl.extend(candidate_id_srl);
+    srl.extend(candidate_addr_srl);
+    srl
+}
+
+fn serialize_election_ok_message(responder_id: u64) -> Vec<u8> {
+    let type_srl = MSG_TYPE_ELECTION_OK;
+    let responder_id_srl = responder_id.to_be_bytes();
+    let mut srl = vec![];
+    srl.push(type_srl);
+    srl.extend(responder_id_srl);
+    srl
 }
 
 fn serialize_role_response_message(node_id: u64, role: NodeRole) -> Vec<u8> {

@@ -97,7 +97,7 @@ mod bully_election_test {
             b.mark_coordinator(); // Mark as current coordinator
         }
 
-        let leader = Leader::from_existing(
+        let mut leader = Leader::from_existing(
             current_leader_id,
             5, // current_op_id
             (30.0, 40.0),
@@ -237,9 +237,9 @@ mod bully_election_test {
             let b = bully.lock().await;
             assert_eq!(b.leader_id, Some(replica_id), "[TEST] Bully should recognize itself as leader");
             assert_eq!(b.leader_addr, Some(replica_addr), "[TEST] Bully should have correct leader address");
-            assert!(!b.election_in_progress, "[TEST] Election should be finished");
+            assert!(!b.is_election_in_progress(), "[TEST] Election should be finished");
             println!("[TEST] Bully state correctly updated (leader_id={:?}, election_in_progress={})", 
-                     b.leader_id, b.election_in_progress);
+                     b.leader_id, b.is_election_in_progress());
         }
 
         // === PHASE 2: Receive Coordinator from DIFFERENT node (should NOT promote) ===
@@ -356,9 +356,9 @@ mod bully_election_test {
             let b = bully.lock().await;
             assert_eq!(b.leader_id, Some(new_leader_id), "[TEST] Bully should recognize new leader");
             assert_eq!(b.leader_addr, Some(new_leader_addr), "[TEST] Bully should have new leader address");
-            assert!(!b.election_in_progress, "[TEST] Election should be finished");
+            assert!(!b.is_election_in_progress(), "[TEST] Election should be finished");
             println!("[TEST] Bully state correctly updated (leader_id={:?}, election_in_progress={})", 
-                     b.leader_id, b.election_in_progress);
+                     b.leader_id, b.is_election_in_progress());
         }
 
         // === PHASE 2: Receive Coordinator with OWN ID (should NOT demote) ===
@@ -410,176 +410,179 @@ mod bully_election_test {
         println!("\n[TEST] === All handle_coordinator assertions passed ===");
     }
 
-    /// Original test - kept for compatibility
+    /// Integration test: Full Bully election with multiple replicas.
+    /// Tests the complete election flow including message passing, state updates,
+    /// and coordinator announcement.
     #[tokio::test]
-    async fn test_bully_election_with_leader_and_three_replicas() {
-        // Setup: 1 leader + 3 replicas with IDs derived from addresses
-        let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 13000);
+    async fn test_full_bully_election_with_leader_and_three_replicas() {
+        println!("\n[TEST] === Full Bully Election Integration Test (Leader/Replica role transitions) ===");
+
+        // Addresses (choose ports so leader likely not highest ID)
+        let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12000);
+        let replica1_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 15001);
+        let replica2_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 15002);
+        let replica3_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 15003);
+
+        // Derive IDs
         let leader_id = get_id_given_addr(leader_addr);
-
-        let replica1_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 13001);
         let replica1_id = get_id_given_addr(replica1_addr);
-
-        let replica2_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 13002);
         let replica2_id = get_id_given_addr(replica2_addr);
-
-        let replica3_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 13003);
         let replica3_id = get_id_given_addr(replica3_addr);
 
-        // Determine which has the highest ID for assertions
+        println!("[TEST] Initial IDs: leader={leader_id}, r1={replica1_id}, r2={replica2_id}, r3={replica3_id}");
+
+        // Highest ID should win election
         let highest_id = [leader_id, replica1_id, replica2_id, replica3_id]
             .iter()
             .max()
             .copied()
             .unwrap();
 
-        println!(
-            "IDs: leader={leader_id}, r1={replica1_id}, r2={replica2_id}, r3={replica3_id}, highest={highest_id}"
-        );
+        // Precondition: leader should not already be highest for role change scenario
+        assert!(leader_id != highest_id, "[TEST] Precondición fallida: el líder inicial tiene el ID más alto, no habrá cambio de rol");
 
-        // Create connections for each node
-        let _leader_conn = Connection::start(leader_addr, 10)
-            .await
-            .expect("leader connection");
-        let mut replica1_conn = Connection::start(replica1_addr, 10)
-            .await
-            .expect("replica1 connection");
-        let mut replica2_conn = Connection::start(replica2_addr, 10)
-            .await
-            .expect("replica2 connection");
-        let mut replica3_conn = Connection::start(replica3_addr, 10)
-            .await
-            .expect("replica3 connection");
+        // Shared membership map
+        let mut members = HashMap::new();
+        members.insert(leader_id, leader_addr);
+        members.insert(replica1_id, replica1_addr);
+        members.insert(replica2_id, replica2_addr);
+        members.insert(replica3_id, replica3_addr);
 
-        // Create Bully instances
-        let _leader_bully = Arc::new(Mutex::new(Bully::new(leader_id, leader_addr)));
+        // Bully instances
+        let leader_bully = Arc::new(Mutex::new(Bully::new(leader_id, leader_addr)));
         let replica1_bully = Arc::new(Mutex::new(Bully::new(replica1_id, replica1_addr)));
         let replica2_bully = Arc::new(Mutex::new(Bully::new(replica2_id, replica2_addr)));
         let replica3_bully = Arc::new(Mutex::new(Bully::new(replica3_id, replica3_addr)));
 
-        // Wait for connections to be ready
-        sleep(Duration::from_millis(100)).await;
+        // Construct Leader and Replicas
+        let mut leader = Leader::from_existing(
+            leader_id,
+            0,
+            (0.0, 0.0),
+            leader_addr,
+            members.clone(),
+            leader_bully.clone(),
+            HashMap::new(),
+            false,
+            VecDeque::new(),
+        );
+        let mut replica1 = Replica::from_existing(
+            replica1_id,
+            (0.0, 0.0),
+            replica1_addr,
+            leader_addr,
+            members.clone(),
+            replica1_bully.clone(),
+            HashMap::new(),
+            false,
+            VecDeque::new(),
+        );
+        let mut replica2 = Replica::from_existing(
+            replica2_id,
+            (0.0, 0.0),
+            replica2_addr,
+            leader_addr,
+            members.clone(),
+            replica2_bully.clone(),
+            HashMap::new(),
+            false,
+            VecDeque::new(),
+        );
+        let mut replica3 = Replica::from_existing(
+            replica3_id,
+            (0.0, 0.0),
+            replica3_addr,
+            leader_addr,
+            members.clone(),
+            replica3_bully.clone(),
+            HashMap::new(),
+            false,
+            VecDeque::new(),
+        );
 
-        // Build peer_ids for elections
-        let mut all_peer_ids = HashMap::new();
-        all_peer_ids.insert(leader_id, leader_addr);
-        all_peer_ids.insert(replica1_id, replica1_addr);
-        all_peer_ids.insert(replica2_id, replica2_addr);
-        all_peer_ids.insert(replica3_id, replica3_addr);
+        // Connections for nodes (only needed for election + coordinator handling)
+        let mut replica1_conn = Connection::start(replica1_addr, 10).await.expect("replica1 conn");
+        let mut replica2_conn = Connection::start(replica2_addr, 10).await.expect("replica2 conn");
+        let mut replica3_conn = Connection::start(replica3_addr, 10).await.expect("replica3 conn");
+        let mut leader_conn = Connection::start(leader_addr, 10).await.expect("leader conn");
 
-        // Determine which replica should start first (lowest ID triggers cascade)
-        let mut replica_ids = [
-            (replica1_id, replica1_addr),
-            (replica2_id, replica2_addr),
-            (replica3_id, replica3_addr),
+        // Pick winner replica (highest id among replicas)
+        let mut replicas_info = vec![
+            (replica1_id, replica1_addr, 1u8),
+            (replica2_id, replica2_addr, 2u8),
+            (replica3_id, replica3_addr, 3u8),
         ];
-        replica_ids.sort_by_key(|(id, _)| *id);
+        replicas_info.sort_by_key(|(id, _, _)| *id);
+        let (winner_id, winner_addr, winner_tag) = *replicas_info.last().unwrap();
+        assert_eq!(winner_id, highest_id, "[TEST] El mayor ID debe ganar la elección");
+        println!("[TEST] Winner candidate replica should be tag={winner_tag} id={winner_id}");
 
-        // Start election from lowest-ID replica
-        // to simulate complete election process
-        let (lowest_id, lowest_addr) = replica_ids[0];
-        println!("Starting election from replica with ID: {lowest_id}");
+        // Start election from winner replica using its start_election
+        match winner_tag {
+            1 => replica1.start_election(&mut replica1_conn).await,
+            2 => replica2.start_election(&mut replica2_conn).await,
+            3 => replica3.start_election(&mut replica3_conn).await,
+            _ => unreachable!(),
+        }
+        sleep(Duration::from_millis(300)).await; // wait election window
 
-        let (conn, bully) = if lowest_id == replica1_id {
-            (&mut replica1_conn, &replica1_bully)
-        } else if lowest_id == replica2_id {
-            (&mut replica2_conn, &replica2_bully)
-        } else {
-            (&mut replica3_conn, &replica3_bully)
+        // Manual propagation of Coordinator message into handlers (simulate network dispatch)
+        // Winner replica processes its own Coordinator (promotion)
+        let promote_change = match winner_tag {
+            1 => replica1.handle_coordinator(&mut replica1_conn, winner_id, winner_addr).await,
+            2 => replica2.handle_coordinator(&mut replica2_conn, winner_id, winner_addr).await,
+            3 => replica3.handle_coordinator(&mut replica3_conn, winner_id, winner_addr).await,
+            _ => unreachable!(),
+        };
+        println!("[TEST] promote_change={promote_change:?}, corresponding to winner tag={}", winner_tag);
+        assert!(matches!(promote_change, crate::node::node::RoleChange::PromoteToLeader));
+        
+        // Old leader processes Coordinator (demotion)
+        let demote_change = leader.handle_coordinator(&mut leader_conn, winner_id, winner_addr).await;
+        println!("[TEST] demote_change={demote_change:?}");
+        assert!(matches!(demote_change, crate::node::node::RoleChange::DemoteToReplica { .. }));
+
+        // Other replicas process Coordinator (no role change)
+        let rc_non_winner_1 = if winner_tag != 1 { replica1.handle_coordinator(&mut replica1_conn, winner_id, winner_addr).await } else { crate::node::node::RoleChange::None };
+        let rc_non_winner_2 = if winner_tag != 2 { replica2.handle_coordinator(&mut replica2_conn, winner_id, winner_addr).await } else { crate::node::node::RoleChange::None };
+        let rc_non_winner_3 = if winner_tag != 3 { replica3.handle_coordinator(&mut replica3_conn, winner_id, winner_addr).await } else { crate::node::node::RoleChange::None };
+
+        // Ensure other replicas reported no role change (non-winner replicas)
+        assert!(matches!(rc_non_winner_1, crate::node::node::RoleChange::None));
+        assert!(matches!(rc_non_winner_2, crate::node::node::RoleChange::None));
+        assert!(matches!(rc_non_winner_3, crate::node::node::RoleChange::None));
+
+        // El ganador aún es Replica aquí; su `leader_addr` no se actualiza hasta la conversión.
+        // Solo verificamos que las réplicas no ganadoras apuntan al nuevo líder.
+        if winner_tag != 1 { assert_eq!(replica1.test_get_leader_id(), winner_id, "[TEST] Replica1 referencia líder correcto"); }
+        if winner_tag != 2 { assert_eq!(replica2.test_get_leader_id(), winner_id, "[TEST] Replica2 referencia líder correcto"); }
+        if winner_tag != 3 { assert_eq!(replica3.test_get_leader_id(), winner_id, "[TEST] Replica3 referencia líder correcto"); }
+
+        // Convert winner replica to Leader (consume winner)
+        let new_leader = match promote_change {
+            crate::node::node::RoleChange::PromoteToLeader => {
+                match winner_tag {
+                    1 => replica1.into_leader(),
+                    2 => replica2.into_leader(),
+                    3 => replica3.into_leader(),
+                    _ => unreachable!(),
+                }
+            }
+            other => panic!("[TEST] Esperaba PromoteToLeader, obtuve {:?}", other),
         };
 
-        // ==== Start election ====
-        crate::node::election::bully::conduct_election(
-            bully,
-            conn,
-            all_peer_ids.clone(),
-            lowest_id,
-            lowest_addr,
-        )
-        .await;
-
-        // Wait for election to complete
-        sleep(Duration::from_millis(500)).await;
-
-        {
-            // Verify that the highest-ID replica became coordinator
-            // Check each replica to see which one thinks it's the leader
-            let r1_state = replica1_bully.lock().await;
-            let r2_state = replica2_bully.lock().await;
-            let r3_state = replica3_bully.lock().await;
-
-            println!(
-                "Replica1 (ID={}): leader_id={:?}",
-                replica1_id, r1_state.leader_id
-            );
-            println!(
-                "Replica2 (ID={}): leader_id={:?}",
-                replica2_id, r2_state.leader_id
-            );
-            println!(
-                "Replica3 (ID={}): leader_id={:?}",
-                replica3_id, r3_state.leader_id
-            );
-
-            // The node that ran the election should have marked itself as coordinator
-            // (since no real message passing happens yet, only the initiator will have a leader set)
-            if lowest_id == replica1_id {
-                assert_eq!(
-                    r1_state.leader_id,
-                    Some(lowest_id),
-                    "Replica1 should have set itself as leader after election"
-                );
-                assert!(
-                    !r1_state.election_in_progress,
-                    "Election should be finished"
-                );
-            } else if lowest_id == replica2_id {
-                assert_eq!(
-                    r2_state.leader_id,
-                    Some(lowest_id),
-                    "Replica2 should have set itself as leader after election"
-                );
-                assert!(
-                    !r2_state.election_in_progress,
-                    "Election should be finished"
-                );
-            } else {
-                assert_eq!(
-                    r3_state.leader_id,
-                    Some(lowest_id),
-                    "Replica3 should have set itself as leader after election"
-                );
-                assert!(
-                    !r3_state.election_in_progress,
-                    "Election should be finished"
-                );
+        // Convert old leader to replica
+        let demoted_leader_replica = match demote_change {
+            crate::node::node::RoleChange::DemoteToReplica { new_leader_addr } => {
+                assert_eq!(new_leader_addr, winner_addr, "[TEST] Dirección del nuevo líder incorrecta");
+                leader.into_replica(winner_addr)
             }
+            other => panic!("[TEST] Esperaba DemoteToReplica, obtuve {:?}", other),
+        };
 
-            // Once full message passing is implemented, verify all replicas know the highest-ID node won:
-            // This assertion will fail until the protocol is fully implemented
-            // assert_eq!(r1_state.leader_id, Some(highest_id), "Replica1 should know highest-ID won");
-            // assert_eq!(r2_state.leader_id, Some(highest_id), "Replica2 should know highest-ID won");
-            // assert_eq!(r3_state.leader_id, Some(highest_id), "Replica3 should know highest-ID won");
-
-            println!("Test completed. Current winner: ID={lowest_id}");
-            println!("Expected winner (when protocol is complete): ID={highest_id}");
-            println!("\nNote: This test will work correctly once message passing between");
-            println!("      replicas is implemented. Currently only the initiating replica");
-            println!("      updates its state. When complete, all replicas should recognize");
-            println!("      the highest-ID node ({highest_id}) as the coordinator.");
-        }
-
-        // Verify Bully structs are accessible and contain leader information
-        let final_r1 = replica1_bully.lock().await;
-        let final_r2 = replica2_bully.lock().await;
-        let final_r3 = replica3_bully.lock().await;
-
-        // At least one replica should have a leader set
-        assert!(
-            final_r1.leader_id.is_some()
-                || final_r2.leader_id.is_some()
-                || final_r3.leader_id.is_some(),
-            "At least one replica should have a leader after election"
-        );
+        println!("[TEST] Verificando IDs y liderazgo tras conversion de roles...");
+        assert_eq!(new_leader.test_get_id(), winner_id, "[TEST] Nuevo líder conserva ID ganador");
+        assert_eq!(demoted_leader_replica.test_get_leader_id(), winner_id, "[TEST] Ex-líder ahora replica referencia nuevo líder");
+        assert_eq!(demoted_leader_replica.test_get_id(), leader_id, "[TEST] Ex-líder mantiene su ID propio");
     }
 }

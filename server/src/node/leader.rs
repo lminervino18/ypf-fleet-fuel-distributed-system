@@ -266,13 +266,11 @@ impl Node for Leader {
             b.should_reply_ok(candidate_id)
         };
         if should_reply {
+            // if i'm higher, reply OK
             let reply = Message::ElectionOk {
                 responder_id: self.id,
             };
             let _ = connection.send(reply, &candidate_addr).await;
-
-            // Start own election immediately.
-            self.start_election(connection).await;
         }
     }
 

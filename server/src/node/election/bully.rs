@@ -70,6 +70,7 @@ pub async fn conduct_election(
             leader_addr: address,
         };
         for p in &all_peers {
+            
             let _ = connection.send(coordinator_msg.clone(), p).await;
         }
     } else {
@@ -97,6 +98,11 @@ impl Bully {
         self.election_in_progress = true;
         self.received_ok = false;
         true
+    }
+    
+    pub fn is_election_in_progress(&self) -> bool {
+        // NOTE: Ahora mismo si ya hay una elecciòn en proceso y se llamò a Election se ignora
+        self.election_in_progress
     }
 
     /// Handle an incoming Election message from a candidate.
@@ -142,7 +148,7 @@ mod tests {
         let b = Bully::new(42, addr);
         assert_eq!(b.id, 42);
         assert_eq!(b.address, addr);
-        assert!(!b.election_in_progress);
+        assert!(!b.is_election_in_progress());
         assert!(!b.received_ok);
         assert!(b.leader_id.is_none());
     }
@@ -155,7 +161,7 @@ mod tests {
         b.on_coordinator(99, leader_addr);
         assert_eq!(b.leader_id, Some(99));
         assert_eq!(b.leader_addr, Some(leader_addr));
-        assert!(!b.election_in_progress);
+        assert!(!b.is_election_in_progress());
     }
 
     // This test only checks that start_election flips internal flags when called
@@ -169,7 +175,7 @@ mod tests {
 
         // Call mark_start_election with empty peer list: should set election_in_progress
         b.mark_start_election();
-        assert!(b.election_in_progress);
+        assert!(b.is_election_in_progress());
         assert!(!b.received_ok);
     }
 }
