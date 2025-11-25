@@ -241,6 +241,7 @@ impl Node for Replica {
             connection
                 .send(Message::Ack { op_id: 0 }, &self.leader_addr)
                 .await
+                .map_err(|e| println!("{e:?}"))
                 .unwrap();
             return; // si es la primera no hay op previamente loggeada
         }
@@ -338,7 +339,7 @@ impl Node for Replica {
         }
 
         // Ensure we are present with the correct address.
-        self.cluster.insert(self.id, self.address);
+        // self.cluster.insert(self.id, self.address);
         println!("[REPLICA] updated cluster view: {:?}", self.cluster);
     }
 }
@@ -473,7 +474,7 @@ impl Replica {
         // Seed membership: self + leader.
         let id = get_id_given_addr(address);
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
-        members.insert(id, address);
+        // members.insert(id, address);
 
         let leader_id = get_id_given_addr(leader_addr);
         members.insert(leader_id, leader_addr);

@@ -128,7 +128,6 @@ impl Node for Leader {
             self.current_op_id,
             PendingOperation::new(op.clone(), client_addr, req_id),
         );
-
         if self.cluster.len() == 1 {
             println!("[LEADER] Only member in cluster, executing operation directly.");
             db.send(DatabaseCmd::Execute {
@@ -137,36 +136,28 @@ impl Node for Leader {
             });
             return Ok(());
         }
-
-        // Build the log message to replicate.
-        // Broadcast the log to all known members except self.
         for (node_id, addr) in &self.cluster {
             if *node_id == self.id {
                 continue;
             }
 
-            connection
-                .send(
-                    Message::Log {
-                        op_id: self.current_op_id,
-                        op: op.clone(),
-                    },
-                    addr,
-                )
-                .await?;
+            let msg = Message::Log {
+                op_id: self.current_op_id,
+                op: op.clone(),
+            };
+            connection.send(msg, addr).await?;
         }
 
         self.current_op_id += 1;
-
         Ok(())
     }
 
     async fn handle_response(
         &mut self,
-        connection: &mut Connection,
-        station: &mut Station,
-        req_id: u32,
-        op_result: OperationResult,
+        _connection: &mut Connection,
+        _station: &mut Station,
+        _req_id: u32,
+        _op_result: OperationResult,
     ) -> AppResult<()> {
         todo!()
     }
@@ -357,6 +348,7 @@ impl Node for Leader {
         };
         // le mandamos el clúster view al que entró
         connection.send(view_msg, &addr).await?;
+        // le mandamos el update a las réplicas
         for replica_addr in self.cluster.values() {
             if *replica_addr == self.address || *replica_addr == addr {
                 continue;
