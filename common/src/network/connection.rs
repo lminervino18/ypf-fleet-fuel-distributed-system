@@ -1,10 +1,10 @@
-use super::{acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler, Message};
+use super::{Message, acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler};
 use crate::errors::{AppError, AppResult};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
     sync::{
-        mpsc::{self, Receiver, Sender},
         Mutex,
+        mpsc::{self, Receiver, Sender},
     },
     task::JoinHandle,
 };
@@ -17,6 +17,9 @@ pub struct Connection {
     messages_tx: Arc<Sender<AppResult<Message>>>, // sólo para pasarle a quienes me mandan (Receiver)
     messages_rx: Receiver<AppResult<Message>>,
     max_conns: usize,
+    // estas tres cosas son sólo para simular bajas de conexión
+    address: SocketAddr,
+    connected: bool,
 }
 
 // TODO: tanto send como recv tienen que retornar un Result que pueda contener el error
@@ -36,10 +39,17 @@ impl Connection {
             messages_tx,
             messages_rx,
             max_conns,
+            address,
+            connected: false,
         })
     }
 
     pub async fn send(&mut self, msg: Message, address: &SocketAddr) -> AppResult<()> {
+        if !self.connected {
+            // simular caída
+            return Err(AppError::ConnectionLost);
+        }
+
         let mut guard = self.active.lock().await;
         if !guard.contains_key(address) {
             let handler = Handler::start(*address, self.messages_tx.clone()).await?;
@@ -51,6 +61,11 @@ impl Connection {
     }
 
     pub async fn recv(&mut self) -> AppResult<Message> {
+        if !self.connected {
+            // simular caída
+            return Err(AppError::ConnectionLost);
+        }
+
         // NOTE: acá si todos los handlers están abajo tiro ConnectionLost, o sea
         // asumimos que perdimos la conexión **nosotros** pero el tema es que no
         // deberíamos hacer entonces nunca un recv sin antes haber instanciado alguna
@@ -60,6 +75,30 @@ impl Connection {
             .recv()
             .await
             .ok_or(AppError::ConnectionLost)?
+    }
+
+    // estos dos métodos son sólop para simular caídas
+    pub async fn disconnect(&mut self) {
+        self.connected = false;
+        let mut guard = self.active.lock().await;
+        for handle in guard.values_mut() {
+            handle.stop();
+        }
+
+        self.acceptor_handle.abort();
+    }
+
+    pub async fn reconnect(&mut self) -> AppResult<()> {
+        self.connected = true;
+        self.acceptor_handle = Acceptor::start(
+            self.address,
+            self.active.clone(),
+            self.messages_tx.clone(),
+            self.max_conns,
+        )
+        .await?;
+
+        Ok(())
     }
 }
 
