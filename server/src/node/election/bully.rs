@@ -1,5 +1,6 @@
 use common::Message;
 use std::net::SocketAddr;
+use std::time::{SystemTime, Instant};
 
 /// Bully algorithm helper
 pub struct Bully {
@@ -9,6 +10,7 @@ pub struct Bully {
     pub leader_addr: Option<SocketAddr>,
     pub election_in_progress: bool,
     pub received_ok: bool,
+    pub election_deadline: Option<Instant>, // instante límite para la ventana de espera
 }
 
 use common::Connection;
@@ -18,23 +20,38 @@ use tokio::sync::Mutex;
 
 /// Conduct a Bully election: sends Election to higher-ID peers,
 /// waits for replies, and promotes to coordinator if no ElectionOk received.
+/// Returns true if this node became the coordinator.
 /// peer_ids: map of peer_id -> SocketAddr for all other nodes
 pub async fn conduct_election(
     bully: &Arc<Mutex<Bully>>,
     connection: &mut Connection,
-    peer_ids: HashMap<u64, SocketAddr>,
+    cluster: HashMap<u64, SocketAddr>,
     id: u64,
     address: SocketAddr,
-) {
+) -> bool {
     // attempt to start election; return early if another election is active
     if !bully.lock().await.mark_start_election() {
-        return;
+        println!("[Bully ID={}] Election already in progress, not starting another", id);
+        return false;
     }
 
     let msg = Message::Election {
         candidate_id: id,
         candidate_addr: address,
     };
+    // Build peer_ids map from the current membership (excluding self).
+    let mut peer_ids = HashMap::new();
+    for (peer_id, addr) in &cluster {
+        if *peer_id == id {
+            continue;
+        }
+
+        peer_ids.insert(*peer_id, *addr);
+    }
+    println!(
+        "[REPLICA {}] election peer_ids: {:?}",
+        id, peer_ids
+    );
 
     // Send Election ONLY to nodes with higher ID (Bully algorithm rule)
     let higher_peers: Vec<SocketAddr> = peer_ids
@@ -43,39 +60,21 @@ pub async fn conduct_election(
         .map(|(_, addr)| *addr)
         .collect();
 
-    // println!("[Bully ID={}] Starting election, sending to {} higher peers", id, higher_peers.len());
-    // println!("Higher peers: {:?}", higher_peers);
+    println!("[Bully ID={}] Starting election, sending to {} higher peers", id, higher_peers.len());
+    println!("Higher peers: {:?}", higher_peers);
     for p in &higher_peers {
         let _ = connection.send(msg.clone(), p).await;
     }
 
-    // wait for responses
-    const WINDOW_MS: u64 = 200;
-    tokio::time::sleep(std::time::Duration::from_millis(WINDOW_MS)).await;
-
-    let got_ok = {
-        let b = bully.lock().await;
-        b.received_ok
-    };
-    if !got_ok {
-        // become coordinator/leader (no higher process responded)
-        // println!("[Bully ID={}] No ElectionOk received, becoming coordinator", id);
+    // Configurar ventana SIN bloquear el loop principal
+    const WINDOW_MS: u64 = 1200;
+    {
         let mut b = bully.lock().await;
-        b.mark_coordinator();
-
-        // Announce to ALL peers
-        let all_peers: Vec<SocketAddr> = peer_ids.values().copied().collect();
-        let coordinator_msg = Message::Coordinator {
-            leader_id: id,
-            leader_addr: address,
-        };
-        for p in &all_peers {
-            
-            let _ = connection.send(coordinator_msg.clone(), p).await;
-        }
-    } else {
-        // println!("[Bully ID={}] Received ElectionOk, stepping down", id);
+        b.election_deadline = Some(Instant::now() + std::time::Duration::from_millis(WINDOW_MS));
     }
+
+    // No decidimos aquí; la promoción se evalúa externamente al vencer el deadline
+    false
 }
 
 impl Bully {
@@ -87,6 +86,7 @@ impl Bully {
             leader_addr: None,
             election_in_progress: false,
             received_ok: false,
+            election_deadline: None,
         }
     }
 
@@ -97,6 +97,7 @@ impl Bully {
         }
         self.election_in_progress = true;
         self.received_ok = false;
+        // NOTA: el deadline se setea en conduct_election
         true
     }
     
@@ -125,6 +126,7 @@ impl Bully {
         self.leader_addr = Some(self.address);
         self.election_in_progress = false;
         self.received_ok = false;
+        self.election_deadline = None;
     }
 
     /// Handle an incoming Coordinator announcement.
@@ -133,6 +135,7 @@ impl Bully {
         self.leader_addr = Some(leader_addr);
         self.election_in_progress = false;
         self.received_ok = false;
+        self.election_deadline = None;
     }
 }
 

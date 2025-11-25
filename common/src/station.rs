@@ -151,7 +151,7 @@ async fn run_station_simulator(
         num_pumps,
         num_pumps - 1
     );
-    print_help();
+    // print_help();
 
     let stdin = BufReader::new(io::stdin());
     let mut lines = stdin.lines();

@@ -19,6 +19,7 @@ use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::Arc,
+    time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
 
@@ -59,6 +60,7 @@ pub struct Replica {
     operations: HashMap<u32, Operation>,
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
+    start_time: Instant,
     // NOTE: no `router` field anymore; we talk to the actor system via `Database`.
 }
 
@@ -75,21 +77,18 @@ impl Node for Replica {
         self.address
     }
 
+    /// Handle a lost connection to a peer.
     async fn handle_connection_lost_with(
         &mut self,
         connection: &mut Connection,
-        address: SocketAddr,
+        lost_address: SocketAddr,
     ) -> AppResult<RoleChange> {
-        /* let Some(_dead_node) = self.cluster.remove(&get_id_given_addr(address)) else {
-            return Ok(RoleChange::None); // me voy sin preguntar
-        }; */
-
-        if address == self.leader_addr {
+        if lost_address == self.leader_addr || self.cluster.contains_key(&get_id_given_addr(lost_address)) {
             println!(
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
             );
-            //return self.start_election(connection).await;
+            return self.start_election(connection).await;
         }
 
         Ok(RoleChange::None)
@@ -123,57 +122,76 @@ impl Node for Replica {
 
         Ok(())
     }
+
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         println!("[REPLICA {}] announcing myself as coordinator", self.id);
-        for node in self.cluster.values() {
-            if node == &self.address {
-                continue;
+        for (node, addr) in &self.cluster {
+            if *node == self.id {
+                continue; // Skip announcing to ourselves
             }
-
             connection
                 .send(
                     Message::Coordinator {
                         leader_id: self.id,
                         leader_addr: self.address,
                     },
-                    node,
+                    addr,
                 )
                 .await?;
         }
 
-        self.handle_coordinator(connection, self.id, self.address)
-            .await
+        // Handle our own promotion to leader
+        self.handle_coordinator(connection, self.id, self.address).await
     }
 
+    
+
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
+        // Jitter mínimo para evitar colisiones exactas
+        let jitter_ms = (self.id % 50) as u64;
+        tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
+
         println!("[REPLICA {}] starting election", self.id);
-        let mut greater_ids = 0;
-        for (id, addr) in &self.cluster {
-            if *id > self.id
-                && connection
-                    .send(
-                        Message::Election {
-                            candidate_id: self.id,
-                            candidate_addr: self.address,
-                        },
-                        addr,
-                    )
-                    .await
-                    .is_ok()
-            {
-                println!(
-                    "[REPLICA {}] could send election to a higher role: {}",
-                    self.id, id
-                );
-                greater_ids += 1;
+        println!("[REPLICA {}] current cluster members: {:?}", self.id, self.cluster);
+
+        // Inicia la elección no bloqueante (sólo envía mensajes y setea deadline)
+        let _ = crate::node::election::bully::conduct_election(
+            &self.bully,
+            connection,
+            self.cluster.clone(),
+            self.id,
+            self.address,
+        ).await;
+
+        println!("[REPLICA {}] election window started (non-blocking)", self.id);
+        Ok(RoleChange::None) // La promoción se evalúa luego por timeout
+    }
+
+    async fn poll_election_timeout(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
+        let mut b = self.bully.lock().await;
+        if b.election_in_progress {
+            if let Some(deadline) = b.election_deadline {
+                if std::time::Instant::now() >= deadline {
+                    if !b.received_ok {
+                        println!("[Bully ID={}] timeout sin ElectionOk -> becoming coordinator", self.id);
+                        b.mark_coordinator();
+                        drop(b);
+                        let coordinator_msg = Message::Coordinator { leader_id: self.id, leader_addr: self.address };
+                        for (peer_id, addr) in &self.cluster {
+                            if *peer_id == self.id { continue; }
+                            let _ = connection.send(coordinator_msg.clone(), addr).await;
+                        }
+                        println!("[REPLICA {}] Election timeout: promoting to LEADER", self.id);
+                        return Ok(RoleChange::PromoteToLeader);
+                    } else {
+                        b.election_in_progress = false;
+                        b.election_deadline = None;
+                        println!("[REPLICA {}] Election timeout with OK received -> not leader", self.id);
+                    }
+                }
             }
         }
-
-        if greater_ids > 0 {
-            return Ok(RoleChange::None);
-        }
-
-        self.anounce_coordinator(connection).await
+        Ok(RoleChange::None)
     }
 
     async fn handle_operation_result(
@@ -301,20 +319,33 @@ impl Node for Replica {
             "[REPLICA {}] received election message from {}",
             self.id, candidate_addr
         );
-        if candidate_id > self.id {
-            todo!("election message should never come from a greater id");
+        
+        // Check if should reply (release lock immediately)
+        let should_reply = {
+            let b = self.bully.lock().await;
+            b.should_reply_ok(candidate_id)
+        };
+
+        if should_reply {
+            // if i'm higher, reply OK
+            let reply = Message::ElectionOk {
+                responder_id: self.id,
+            };
+            connection.send(reply, &candidate_addr).await?;
+            
+            // Start my own election ONLY if not already in progress
+            let already_electing = {
+                let b = self.bully.lock().await;
+                b.election_in_progress
+            };
+            
+            if !already_electing {
+                return self.start_election(connection).await;
+            }
         }
-
-        connection
-            .send(
-                Message::ElectionOk {
-                    responder_id: self.id,
-                },
-                &candidate_addr,
-            )
-            .await?;
-
-        self.start_election(connection).await
+        
+        // otherwise, do not reply
+        Ok(RoleChange::None)
     }
 
     async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
@@ -322,6 +353,10 @@ impl Node for Replica {
         // no hago nada porque en realidad si no me "iba a llegar" ya crasheé antes, el tema es si
         // el otro nodo crashea justo después de recibir mi mensaje de election (no va a pasar en
         // nuestra demo ;)   )
+        
+        // => aún asi debo poner un "listo, terminé la elección y hay un líder. no hacer nada más"
+        let mut b = self.bully.lock().await;
+        b.on_election_ok(responder_id);
     }
 
     async fn handle_coordinator(
@@ -334,20 +369,24 @@ impl Node for Replica {
             "[REPLICA {}] AAAAAAAAAAAA received coordinator message from {}",
             self.id, leader_addr
         );
+        let mut b = self.bully.lock().await;
+        b.on_coordinator(leader_id, leader_addr);
+        drop(b); // release lock
+
+        // Check if we should promote to leader
         if leader_id == self.id {
-            println!(
-                "[REPLICA {}] coordinator msg id is self.id, address: {}",
-                self.id, leader_addr
-            );
+            println!("[REPLICA {}] Election complete: promoting to LEADER", self.id);
             return Ok(RoleChange::PromoteToLeader);
-        }
+        } 
 
         // TODO: por ahí ya q somos réplica confiamos en el algoritmo e ignoramos el caso de q el
         // id sea menor al nuestro
         if leader_id < self.id {
-            todo!("leader_id should not be less than self");
+            panic!("leader_id should not be less than self");
+            
         }
 
+        // Update our local "current leader" pointer
         self.leader_addr = leader_addr;
         Ok(RoleChange::None)
     }
@@ -369,7 +408,7 @@ impl Node for Replica {
     ) {
         self.cluster.insert(new_member.0, new_member.1);
         println!("[REPLICA] handle cluster update: {new_member:?}");
-        println!("[REPLICA] current members: {:?}", self.cluster.len());
+        println!("[REPLICA] ============ current members {:?}: {:?}", self.cluster.len(), self.cluster);
     }
 
     async fn handle_cluster_view(
@@ -447,6 +486,7 @@ impl Replica {
             operations,
             is_offline,
             offline_queue,
+            start_time: Instant::now(),
         }
     }
     async fn commit_operation(&mut self, db: &mut Database, op_id: u32) -> AppResult<()> {
@@ -520,8 +560,14 @@ impl Replica {
         // Start network connection.
         let mut connection = Connection::start(address, max_conns).await?;
 
+
         // Seed membership: self + leader.
         let id = get_id_given_addr(address);
+
+        println!(
+            "[REPLICA {}] Started at {}, leader at {}",
+            id, address, leader_addr
+        );
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
         // members.insert(id, address);
 
@@ -538,6 +584,7 @@ impl Replica {
             operations: HashMap::new(),
             is_offline: false,
             offline_queue: VecDeque::new(),
+            start_time: Instant::now(),
         };
 
         // Join inicial contra el líder para que rebroadcastée el ClusterView.
