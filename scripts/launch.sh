@@ -103,9 +103,6 @@ for i in $(seq 1 $N_REPLICAS); do
   
   echo "[BOOT] Lanzando réplica $i en $REPLICA_ADDR"
   open_term "$CMD" "Réplica $i ($PORT)"
-  
-  # Pequeña pausa entre réplicas para evitar race conditions
-  sleep 0.5
 done
 
 echo ""

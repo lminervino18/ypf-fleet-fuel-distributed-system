@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 pub async fn conduct_election(
     bully: &Arc<Mutex<Bully>>,
     connection: &mut Connection,
-    peer_ids: HashMap<u64, SocketAddr>,
+    cluster: HashMap<u64, SocketAddr>,
     id: u64,
     address: SocketAddr,
 ) {
@@ -35,6 +35,20 @@ pub async fn conduct_election(
         candidate_id: id,
         candidate_addr: address,
     };
+    // Build peer_ids map from the current membership (excluding self).
+    let mut peer_ids = HashMap::new();
+    for (peer_id, addr) in &cluster {
+        // TODO: REVISAR ESTA LOGICA, PUEDE QUE NO ESTÉ MAL QUE UN NODO SE ENVIE UN MENSAJE A SI MISMO (revisar loop)
+        if *peer_id == id {
+            continue;
+        }
+
+        peer_ids.insert(*peer_id, *addr);
+    }
+    println!(
+        "[REPLICA {}] election peer_ids: {:?}",
+        id, peer_ids
+    );
 
     // Send Election ONLY to nodes with higher ID (Bully algorithm rule)
     let higher_peers: Vec<SocketAddr> = peer_ids
@@ -43,14 +57,14 @@ pub async fn conduct_election(
         .map(|(_, addr)| *addr)
         .collect();
 
-    // println!("[Bully ID={}] Starting election, sending to {} higher peers", id, higher_peers.len());
-    // println!("Higher peers: {:?}", higher_peers);
+    println!("[Bully ID={}] Starting election, sending to {} higher peers", id, higher_peers.len());
+    println!("Higher peers: {:?}", higher_peers);
     for p in &higher_peers {
         let _ = connection.send(msg.clone(), p).await;
     }
 
     // wait for responses
-    const WINDOW_MS: u64 = 200;
+    const WINDOW_MS: u64 = 10000;
     tokio::time::sleep(std::time::Duration::from_millis(WINDOW_MS)).await;
 
     let got_ok = {
@@ -59,22 +73,23 @@ pub async fn conduct_election(
     };
     if !got_ok {
         // become coordinator/leader (no higher process responded)
-        // println!("[Bully ID={}] No ElectionOk received, becoming coordinator", id);
+        println!("[Bully ID={}] No ElectionOk received, becoming coordinator", id);
         let mut b = bully.lock().await;
         b.mark_coordinator();
 
-        // Announce to ALL peers
-        let all_peers: Vec<SocketAddr> = peer_ids.values().copied().collect();
+        // Announce to ALL peers (including itself, so that way we are marked as Leader)
+        // let all_peers: Vec<SocketAddr> = peer_ids.values().copied().collect();
+        println!("[Bully ID={}] Announcing coordinator to {:?} peers", id, cluster);
         let coordinator_msg = Message::Coordinator {
             leader_id: id,
             leader_addr: address,
         };
-        for p in &all_peers {
+        for p in cluster.values() {
             
             let _ = connection.send(coordinator_msg.clone(), p).await;
         }
     } else {
-        // println!("[Bully ID={}] Received ElectionOk, stepping down", id);
+        println!("[Bully ID={}] Received ElectionOk, stepping down", id);
     }
 }
 

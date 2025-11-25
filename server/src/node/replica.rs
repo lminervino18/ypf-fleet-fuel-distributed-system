@@ -86,7 +86,7 @@ impl Node for Replica {
         if address == self.leader_addr {
             // Ignorar falsos positivos durante los primeros 5 segundos después del inicio.
             let elapsed = Instant::now().duration_since(self.start_time);
-            if elapsed < Duration::from_secs(5) {
+            if elapsed < Duration::from_secs(2) {
                 println!(
                     "[REPLICA {}] Ignorando ConnectionLostWith temporal del líder ({}s desde inicio)",
                     self.id,
@@ -130,30 +130,20 @@ impl Node for Replica {
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         println!("[REPLICA {}] starting election", self.id);
 
-        // Build peer_ids map from the current membership (excluding self).
-        let mut peer_ids = HashMap::new();
-        for (peer_id, addr) in &self.cluster {
-            // TODO: REVISAR ESTA LOGICA, PUEDE QUE NO ESTÉ MAL QUE UN NODO SE ENVIE UN MENSAJE A SI MISMO (revisar loop)
-            if *peer_id == self.id {
-                continue;
-            }
-
-            peer_ids.insert(*peer_id, *addr);
-        }
         println!(
-            "[REPLICA {}] election peer_ids: {:?}",
-            self.id, peer_ids
+            "[REPLICA {}] current cluster members: {:?}",
+            self.id, self.cluster
         );
 
         crate::node::election::bully::conduct_election(
             &self.bully,
             connection,
-            peer_ids,
+            self.cluster.clone(),
             self.id,
             self.address,
         )
         .await;
-
+        
         Ok(RoleChange::None)
     }
 
@@ -317,17 +307,24 @@ impl Node for Replica {
             "[REPLICA {}] received coordinator message from {}",
             self.id, leader_addr
         );
+        let mut b = self.bully.lock().await;
+        b.on_coordinator(leader_id, leader_addr);
+        drop(b); // release lock
 
+        // Check if we should promote to leader
         if leader_id == self.id {
+            println!("[REPLICA {}] Promoting to LEADER", self.id);
             return RoleChange::PromoteToLeader;
-        }
+        } 
 
         // TODO: por ahí ya q somos réplica confiamos en el algoritmo e ignoramos el caso de q el
         // id sea menor al nuestro
         if leader_id < self.id {
             panic!("leader_id should not be less than self");
+            
         }
 
+        // Update our local "current leader" pointer
         self.leader_addr = leader_addr;
         RoleChange::None
     }

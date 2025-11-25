@@ -315,19 +315,15 @@ impl Node for Leader {
         leader_id: u64,
         leader_addr: SocketAddr,
     ) -> RoleChange {
-        if leader_id > self.id {
-            return RoleChange::DemoteToReplica {
-                new_leader_addr: leader_addr,
-            };
-        }
+        let mut b = self.bully.lock().await;
+        b.on_coordinator(leader_id, leader_addr);
+        drop(b); // release lock
 
-        connection.send(
-            Message::Coordinator {
-                leader_id: self.id,
-                leader_addr: self.address,
-            },
-            &leader_addr,
-        );
+        // Check if we should demote to replica (another node became leader)
+        if leader_id > self.id {
+            println!("[LEADER {}] Demoting to REPLICA, new leader is {}", self.id, leader_id);
+            return super::node::RoleChange::DemoteToReplica { new_leader_addr: leader_addr };
+        }
         RoleChange::None
     }
 
