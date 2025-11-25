@@ -40,7 +40,7 @@ impl Connection {
             messages_rx,
             max_conns,
             address,
-            connected: false,
+            connected: true,
         })
     }
 
