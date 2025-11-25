@@ -1,8 +1,9 @@
+use super::deserialize_socket_address_srl;
+use crate::Message;
+use crate::Message::*;
 use crate::errors::AppError;
 use crate::errors::AppResult;
 use crate::network::serials::protocol::*;
-use crate::Message;
-use crate::Message::*;
 use std::net::SocketAddr;
 
 impl TryFrom<Vec<u8>> for Message {
@@ -178,33 +179,11 @@ fn deserialize_op_id(payload: &[u8]) -> AppResult<u32> {
     )?))
 }
 
-fn deserialize_socket_address_srl(payload: &[u8]) -> AppResult<SocketAddr> {
-    if payload.len() < SOCKET_ADDR_LEN {
-        return Err(AppError::InvalidProtocol {
-            details: "not enough bytes to deserialize socket_address_srl".to_string(),
-        });
-    }
-
-    let ip: [u8; 4] = payload[0..4]
-        .try_into()
-        .map_err(|e| AppError::InvalidProtocol {
-            details: format!("failed to read address ip bytes in request message: {e}"),
-        })?;
-    let port =
-        u16::from_be_bytes(
-            payload[4..6]
-                .try_into()
-                .map_err(|e| AppError::InvalidProtocol {
-                    details: format!("failed to read address port bytes in request message: {e}"),
-                })?,
-        );
-    Ok(SocketAddr::from((ip, port)))
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::{
+        network::serials::deserialization::helpers::deserialize_socket_address_srl,
         operation::Operation,
         operation_result::{ChargeResult, OperationResult},
     };
