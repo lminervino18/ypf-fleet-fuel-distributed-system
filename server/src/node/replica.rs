@@ -5,15 +5,14 @@ use super::{
     node::Node,
     utils::get_id_given_addr,
 };
-use crate::{errors::AppResult, node::database};
+use crate::{
+    errors::AppResult,
+    node::{database, node::RoleChange},
+};
 use common::{
     operation::Operation,
-    operation_result::{OperationResult, ChargeResult},
-    Connection,
-    Message,
-    NodeToStationMsg,
-    Station,
-    StationToNodeMsg,
+    operation_result::{ChargeResult, OperationResult},
+    Connection, Message, NodeToStationMsg, Station, StationToNodeMsg,
 };
 
 use std::{
@@ -55,7 +54,7 @@ pub struct Replica {
     coords: (f64, f64),
     address: SocketAddr,
     leader_addr: SocketAddr,
-    members: HashMap<u64, SocketAddr>,
+    cluster: HashMap<u64, SocketAddr>,
     bully: Arc<Mutex<Bully>>,
     operations: HashMap<u32, Operation>,
     is_offline: bool,
@@ -76,25 +75,76 @@ impl Node for Replica {
         self.address
     }
 
-    async fn start_election(&mut self, connection: &mut Connection) {
-        // Build peer_ids map from the current membership (excluding self).
-        let mut peer_ids = HashMap::new();
-        for (peer_id, addr) in &self.members {
-            if *peer_id == self.id {
+    async fn handle_connection_lost_with(
+        &mut self,
+        connection: &mut Connection,
+        address: SocketAddr,
+    ) -> AppResult<RoleChange> {
+        let Some(_dead_node) = self.cluster.remove(&get_id_given_addr(address)) else {
+            return Ok(RoleChange::None); // me voy sin preguntar
+        };
+
+        if address == self.leader_addr {
+            println!(
+                "[REPLICA {}] Se cayó el líder, arranco leader election",
+                self.id
+            );
+            return self.start_election(connection).await;
+        }
+
+        Ok(RoleChange::None)
+    }
+
+    async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
+        for node in self.cluster.values() {
+            if node == &self.address {
                 continue;
             }
 
-            peer_ids.insert(*peer_id, *addr);
+            connection
+                .send(
+                    Message::Coordinator {
+                        leader_id: self.id,
+                        leader_addr: self.address,
+                    },
+                    node,
+                )
+                .await?;
         }
 
-        crate::node::election::bully::conduct_election(
-            &self.bully,
-            connection,
-            peer_ids,
-            self.id,
-            self.address,
-        )
-        .await;
+        self.handle_coordinator(connection, self.id, self.address)
+            .await
+    }
+
+    async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
+        println!("[REPLICA {}] starting election", self.id);
+        let mut greater_ids = 0;
+        for (id, addr) in &self.cluster {
+            if *id > self.id
+                && connection
+                    .send(
+                        Message::Election {
+                            candidate_id: self.id,
+                            candidate_addr: self.address,
+                        },
+                        addr,
+                    )
+                    .await
+                    .is_ok()
+            {
+                println!(
+                    "[REPLICA {}] could send election to a higher role: {}",
+                    self.id, id
+                );
+                greater_ids += 1;
+            }
+        }
+
+        if greater_ids > 0 {
+            return Ok(RoleChange::None);
+        }
+
+        self.anounce_coordinator(connection).await
     }
 
     async fn handle_operation_result(
@@ -104,13 +154,12 @@ impl Node for Replica {
         op_id: u32,
         _operation: Operation,
         _result: OperationResult,
-    ) {
+    ) -> AppResult<()> {
         // Igual que antes: cuando termina la operación en la réplica,
         // mandamos un Ack al líder.
         connection
             .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
             .await
-            .unwrap();
     }
 
     async fn handle_request(
@@ -182,16 +231,16 @@ impl Node for Replica {
                 .await?;
         }
 
-        // Por ahora ignoramos otros resultados (Limit*, AccountQuery, etc.)
-        // Podés loguearlos o manejarlos según lo vayas necesitando.
-        other => {
-            // Ejemplo de log (si querés dejar algo):
-            // eprintln!("[Node] handle_response: OperationResult inesperado: {:?}", other);
+            // Por ahora ignoramos otros resultados (Limit*, AccountQuery, etc.)
+            // Podés loguearlos o manejarlos según lo vayas necesitando.
+            other => {
+                // Ejemplo de log (si querés dejar algo):
+                // eprintln!("[Node] handle_response: OperationResult inesperado: {:?}", other);
+            }
         }
-    }
 
-    Ok(())
-}
+        Ok(())
+    }
 
     async fn handle_role_query(
         &mut self,
@@ -213,18 +262,19 @@ impl Node for Replica {
         db: &mut Database,
         op_id: u32,
         new_op: Operation,
-    ) {
+    ) -> AppResult<()> {
         println!("[REPLICA] Received Log for op_id={op_id}: {new_op:?}");
         // Guardamos el log y commiteamos la operación anterior.
         self.operations.insert(op_id, new_op);
         if op_id == 0 {
-            connection.send(Message::Ack { op_id: 0 }, &self.leader_addr).await.unwrap();
-            return; // si es la primera no hay op previamente loggeada
+            return connection
+                .send(Message::Ack { op_id: 0 }, &self.leader_addr)
+                .await;
         }
 
         // Igual que antes, pero ahora via `Database` en vez de `router`.
         // Ignoramos el Result como ya hacíamos antes.
-        self.commit_operation(db, op_id - 1).await.unwrap();
+        self.commit_operation(db, op_id - 1).await
     }
 
     async fn handle_ack(&mut self, _connection: &mut Connection, _db: &mut Database, _id: u32) {
@@ -237,26 +287,32 @@ impl Node for Replica {
         connection: &mut Connection,
         candidate_id: u64,
         candidate_addr: SocketAddr,
-    ) {
-        // If we have higher id, reply ElectionOk and start our own election.
-        let should_reply = {
-            let b = self.bully.lock().await;
-            b.should_reply_ok(candidate_id)
-        };
-        if should_reply {
-            let reply = Message::ElectionOk {
-                responder_id: self.id,
-            };
-            let _ = connection.send(reply, &candidate_addr).await;
-
-            // Start own election immediately.
-            self.start_election(connection).await;
+    ) -> AppResult<RoleChange> {
+        println!(
+            "[REPLICA {}] received election message from {}",
+            self.id, candidate_addr
+        );
+        if candidate_id > self.id {
+            todo!("election message should never come from a greater id");
         }
+
+        connection
+            .send(
+                Message::ElectionOk {
+                    responder_id: self.id,
+                },
+                &candidate_addr,
+            )
+            .await?;
+
+        self.start_election(connection).await
     }
 
     async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
-        let mut b = self.bully.lock().await;
-        b.on_election_ok(responder_id);
+        println!("[REPLICA {}] received election OK message", self.id);
+        // no hago nada porque en realidad si no me "iba a llegar" ya crasheé antes, el tema es si
+        // el otro nodo crashea justo después de recibir mi mensaje de election (no va a pasar en
+        // nuestra demo ;)   )
     }
 
     async fn handle_coordinator(
@@ -264,24 +320,38 @@ impl Node for Replica {
         _connection: &mut Connection,
         leader_id: u64,
         leader_addr: SocketAddr,
-    ) -> super::node::RoleChange {
-        let mut b = self.bully.lock().await;
-        b.on_coordinator(leader_id, leader_addr);
-        drop(b); // release lock
+    ) -> AppResult<RoleChange> {
+        println!(
+            "[REPLICA {}] received coordinator message from {}",
+            self.id, leader_addr
+        );
 
-        // Check if we should promote to leader
         if leader_id == self.id {
-            println!("[REPLICA {}] Promoting to LEADER", self.id);
-            return super::node::RoleChange::PromoteToLeader;
-        } else {
-            // Update our local "current leader" pointer
-            self.leader_addr = leader_addr;
-            super::node::RoleChange::None
+            println!(
+                "[REPLICA {}] coordinator msg id is self.id, address: {}",
+                self.id, leader_addr
+            );
+            return Ok(RoleChange::PromoteToLeader);
         }
+
+        // TODO: por ahí ya q somos réplica confiamos en el algoritmo e ignoramos el caso de q el
+        // id sea menor al nuestro
+        if leader_id < self.id {
+            todo!("leader_id should not be less than self");
+        }
+
+        self.leader_addr = leader_addr;
+        Ok(RoleChange::None)
     }
 
-    async fn handle_join(&mut self, _connection: &mut Connection, _addr: SocketAddr) {
-        // No-op for replicas.
+    async fn handle_join(
+        &mut self,
+        connection: &mut Connection,
+        addr: SocketAddr,
+    ) -> AppResult<()> {
+        connection
+            .send(Message::Join { addr }, &self.leader_addr)
+            .await
     }
 
     async fn handle_cluster_update(
@@ -289,9 +359,9 @@ impl Node for Replica {
         _connection: &mut Connection,
         new_member: (u64, SocketAddr),
     ) {
-        self.members.insert(new_member.0, new_member.1);
-        println!("[REPLICA] new cluster member added: {new_member:?}");
-        println!("[REPLICA] current members: {:?}", self.members.len());
+        self.cluster.insert(new_member.0, new_member.1);
+        println!("[REPLICA] handle cluster update: {new_member:?}");
+        println!("[REPLICA] current members: {:?}", self.cluster.len());
     }
 
     async fn handle_cluster_view(&mut self, connection: &mut Connection, database: &mut Database, members: Vec<(u64, SocketAddr)>) {
@@ -305,12 +375,12 @@ impl Node for Replica {
 
         self.members.clear();
         for (id, addr) in members {
-            self.members.insert(id, addr);
+            self.cluster.insert(id, addr);
         }
 
         // Ensure we are present with the correct address.
-        self.members.insert(self.id, self.address);
-        println!("[REPLICA] updated cluster view: {:?}", self.members);
+        // self.cluster.insert(self.id, self.address);
+        println!("[REPLICA] handled cluster view: {:?}", self.cluster);
     }
 }
 
@@ -321,12 +391,7 @@ impl Replica {
         use super::leader::Leader;
 
         // When promoting, we use the replica's last op_id as current_op_id
-        let current_op_id = self
-            .operations
-            .keys()
-            .max()
-            .map(|k| *k)
-            .unwrap_or(0);
+        let current_op_id = self.operations.keys().max().copied().unwrap_or(0);
         // let only_last_op = self
         //     .operations
         //     .get(&current_op_id)
@@ -343,7 +408,7 @@ impl Replica {
             current_op_id,
             self.coords,
             self.address,
-            self.members,
+            self.cluster,
             self.bully,
             self.operations,
             self.is_offline,
@@ -368,7 +433,7 @@ impl Replica {
             coords,
             address,
             leader_addr,
-            members,
+            cluster: members,
             bully,
             operations,
             is_offline,
@@ -406,14 +471,17 @@ impl Replica {
         // Loop para manejar cambios de rol
         loop {
             let role_change = replica.run(connection, db, station).await?;
-            
+            println!("[REPLICA] run stopped, changing role");
             match role_change {
-                super::node::RoleChange::PromoteToLeader => {
-                    println!("[REPLICA] Converting to Leader...");
+                RoleChange::PromoteToLeader => {
                     let leader = replica.into_leader();
-                    return Box::pin(Leader::run_from_replica(leader, address, coords, max_conns, pumps)).await;
+                    return Box::pin(Leader::run_from_replica(
+                        leader, address, coords, max_conns, pumps,
+                    ))
+                    .await;
                 }
-                _ => {
+                x => {
+                    println!("unknown result: {x:?}");
                     return Ok(());
                 }
             }
@@ -446,7 +514,7 @@ impl Replica {
         // Seed membership: self + leader.
         let id = get_id_given_addr(address);
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
-        members.insert(id, address);
+        // members.insert(id, address);
 
         let leader_id = get_id_given_addr(leader_addr);
         members.insert(leader_id, leader_addr);
@@ -456,7 +524,7 @@ impl Replica {
             coords,
             address,
             leader_addr,
-            members,
+            cluster: members,
             bully: Arc::new(Mutex::new(Bully::new(id, address))),
             operations: HashMap::new(),
             is_offline: false,
@@ -478,13 +546,16 @@ impl Replica {
         // - own `connection`, `db` y `station`.
         loop {
             let role_change = replica.run(connection, db, station).await?;
-            
+
             match role_change {
                 super::node::RoleChange::PromoteToLeader => {
                     println!("[REPLICA] Converting to Leader...");
                     // con Pin le digo al compilador que el Future se quedara en la misma dirección de memoria y que las referencias internas son validas
                     let leader = replica.into_leader();
-                    return Box::pin(Leader::run_from_replica(leader, address, coords, max_conns, pumps)).await;
+                    return Box::pin(Leader::run_from_replica(
+                        leader, address, coords, max_conns, pumps,
+                    ))
+                    .await;
                 }
                 _ => {
                     // if there's no role change, it means run() ended for another reason
@@ -493,7 +564,6 @@ impl Replica {
             }
         }
     }
-
 
     /// Test helpers to access private fields.
     #[cfg(test)]
@@ -506,7 +576,7 @@ impl Replica {
     }
     #[cfg(test)]
     pub fn test_get_members(&self) -> HashMap<u64, SocketAddr> {
-        self.members.clone()
+        self.cluster.clone()
     }
     #[cfg(test)]
     pub fn test_get_operations(&self) -> HashMap<u32, Operation> {

@@ -15,7 +15,6 @@ fn pick_free_port() -> u16 {
     port
 }
 
-
 /// Wait until a TCP port is accepting connections, or timeout.
 fn wait_for_port(addr: &str, timeout: Duration) -> bool {
     let start = Instant::now();
@@ -87,10 +86,10 @@ fn cluster_smoke_node_client_single_charge() {
             "--bin",
             "node_client",
             "--",
-            &nc_bind_addr,   // bind_addr
-            "16",            // max_connections
-            "4",             // num_pumps
-            LEADER_ADDR,     // known_node_1
+            &nc_bind_addr, // bind_addr
+            "16",          // max_connections
+            "4",           // num_pumps
+            LEADER_ADDR,   // known_node_1
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -106,15 +105,13 @@ fn cluster_smoke_node_client_single_charge() {
             .expect("failed to open stdin for node_client");
 
         // One simple charge that should be OK
-        writeln!(stdin, "0 100 10 50.0")
-            .expect("failed to write charge line to node_client stdin");
+        writeln!(stdin, "0 100 10 50.0").expect("failed to write charge line to node_client stdin");
 
         // Small delay to let it travel & be processed
         thread::sleep(Duration::from_millis(400));
 
         // Clean exit so simulator closes
-        writeln!(stdin, "exit")
-            .expect("failed to write exit to node_client stdin");
+        writeln!(stdin, "exit").expect("failed to write exit to node_client stdin");
     }
 
     // 4) Wait for node_client and capture stdout
@@ -125,8 +122,10 @@ fn cluster_smoke_node_client_single_charge() {
     // If node_client failed, show stderr in the panic
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("node_client exited with failure status: {:?}\nstderr:\n{stderr}",
-               output.status);
+        panic!(
+            "node_client exited with failure status: {:?}\nstderr:\n{stderr}",
+            output.status
+        );
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -152,7 +151,9 @@ fn cluster_smoke_node_client_single_charge() {
 /// - esperar al menos un "CHARGE OK" en el stdout del node_client
 #[test]
 fn cluster_smoke_leader_with_replica_node_client_single_charge() {
-    println!("===== [TEST] cluster_smoke_leader_with_replica_node_client_single_charge START =====");
+    println!(
+        "===== [TEST] cluster_smoke_leader_with_replica_node_client_single_charge START ====="
+    );
 
     // Puertos libres para leader, replica y node_client
     let leader_port = pick_free_port();
@@ -186,7 +187,7 @@ fn cluster_smoke_leader_with_replica_node_client_single_charge() {
             "--max-conns",
             "16",
         ])
-        .stdout(Stdio::null())   // no queremos loguear nada del server en el test
+        .stdout(Stdio::null()) // no queremos loguear nada del server en el test
         .stderr(Stdio::null())
         .spawn()
         .expect("[TEST] failed to spawn leader process");
@@ -224,7 +225,7 @@ fn cluster_smoke_leader_with_replica_node_client_single_charge() {
             "--max-conns",
             "16",
         ])
-        .stdout(Stdio::null())   // sin logs del server
+        .stdout(Stdio::null()) // sin logs del server
         .stderr(Stdio::null())
         .spawn()
         .expect("[TEST] failed to spawn replica process");
@@ -259,14 +260,14 @@ fn cluster_smoke_leader_with_replica_node_client_single_charge() {
             "--bin",
             "node_client",
             "--",
-            &nc_bind_addr,           // bind_addr
-            "16",                    // max_connections
-            "4",                     // num_pumps
-            &leader_addr,            // known_node_1
-            &replica_addr,           // known_node_2
+            &nc_bind_addr, // bind_addr
+            "16",          // max_connections
+            "4",           // num_pumps
+            &leader_addr,  // known_node_1
+            &replica_addr, // known_node_2
         ])
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())     // acá sí, queremos ver el output del Station
+        .stdout(Stdio::piped()) // acá sí, queremos ver el output del Station
         .stderr(Stdio::null())
         .spawn()
         .expect("[TEST] failed to spawn node_client process");
@@ -288,8 +289,7 @@ fn cluster_smoke_leader_with_replica_node_client_single_charge() {
         thread::sleep(Duration::from_millis(400));
 
         // Cerramos prolijo el simulador
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to node_client stdin");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to node_client stdin");
     }
 
     // -------------------------
@@ -333,7 +333,9 @@ fn cluster_smoke_leader_with_replica_node_client_single_charge() {
 /// - se manda un solo CHARGE y se espera al menos un "CHARGE OK"
 #[test]
 fn cluster_smoke_leader_with_two_replicas_node_client_single_charge() {
-    println!("===== [TEST] cluster_smoke_leader_with_two_replicas_node_client_single_charge START =====");
+    println!(
+        "===== [TEST] cluster_smoke_leader_with_two_replicas_node_client_single_charge START ====="
+    );
 
     // Puertos libres para leader, replicas y node_client
     let leader_port = pick_free_port();
@@ -488,12 +490,12 @@ fn cluster_smoke_leader_with_two_replicas_node_client_single_charge() {
             "--bin",
             "node_client",
             "--",
-            &nc_bind_addr,      // bind_addr
-            "16",               // max_connections
-            "4",                // num_pumps
-            &leader_addr,       // known_node_1
-            &replica1_addr,     // known_node_2
-            &replica2_addr,     // known_node_3
+            &nc_bind_addr,  // bind_addr
+            "16",           // max_connections
+            "4",            // num_pumps
+            &leader_addr,   // known_node_1
+            &replica1_addr, // known_node_2
+            &replica2_addr, // known_node_3
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -515,8 +517,7 @@ fn cluster_smoke_leader_with_two_replicas_node_client_single_charge() {
 
         thread::sleep(Duration::from_millis(400));
 
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to node_client stdin");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to node_client stdin");
     }
 
     // -------------------------
@@ -552,7 +553,9 @@ fn cluster_smoke_leader_with_two_replicas_node_client_single_charge() {
     let _ = leader.kill();
     let _ = leader.wait();
 
-    println!("===== [TEST] cluster_smoke_leader_with_two_replicas_node_client_single_charge END =====");
+    println!(
+        "===== [TEST] cluster_smoke_leader_with_two_replicas_node_client_single_charge END ====="
+    );
 }
 
 /// Escenario:
@@ -563,7 +566,9 @@ fn cluster_smoke_leader_with_two_replicas_node_client_single_charge() {
 ///     * 40.0  → total 90.0 > 80.0 → CHARGE DENIED (por límite de cuenta)
 #[test]
 fn cluster_smoke_limit_account_then_exceeding_charge_is_denied() {
-    println!("===== [TEST] cluster_smoke_limit_account_then_exceeding_charge_is_denied START =====");
+    println!(
+        "===== [TEST] cluster_smoke_limit_account_then_exceeding_charge_is_denied START ====="
+    );
 
     // Puertos libres para leader, replicas, admin y node_client
     let leader_port = pick_free_port();
@@ -721,9 +726,9 @@ fn cluster_smoke_limit_account_then_exceeding_charge_is_denied() {
             "--bin",
             "administrator",
             "--",
-            &admin_bind_addr,  // admin bind_addr
-            &leader_addr,      // target_node_addr
-            "100",             // account_id
+            &admin_bind_addr, // admin bind_addr
+            &leader_addr,     // target_node_addr
+            "100",            // account_id
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -742,8 +747,7 @@ fn cluster_smoke_limit_account_then_exceeding_charge_is_denied() {
             .expect("[TEST] failed to write limit-account to admin stdin");
 
         // Cerramos el admin
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to admin stdin");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to admin stdin");
     }
 
     let admin_output = admin
@@ -773,12 +777,12 @@ fn cluster_smoke_limit_account_then_exceeding_charge_is_denied() {
             "--bin",
             "node_client",
             "--",
-            &nc_bind_addr,      // bind_addr
-            "16",               // max_connections
-            "4",                // num_pumps
-            &leader_addr,       // known_node_1
-            &replica1_addr,     // known_node_2
-            &replica2_addr,     // known_node_3
+            &nc_bind_addr,  // bind_addr
+            "16",           // max_connections
+            "4",            // num_pumps
+            &leader_addr,   // known_node_1
+            &replica1_addr, // known_node_2
+            &replica2_addr, // known_node_3
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped()) // queremos ver los CHARGE OK / DENIED
@@ -810,8 +814,7 @@ fn cluster_smoke_limit_account_then_exceeding_charge_is_denied() {
 
         thread::sleep(Duration::from_millis(300));
 
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to node_client stdin");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to node_client stdin");
     }
 
     // -------------------------
@@ -878,12 +881,12 @@ fn cluster_smoke_multiple_clients_then_account_query() {
     let nc1_port = pick_free_port();
     let nc2_port = pick_free_port();
 
-    let leader_addr     = format!("127.0.0.1:{leader_port}");
-    let replica1_addr   = format!("127.0.0.1:{replica1_port}");
-    let replica2_addr   = format!("127.0.0.1:{replica2_port}");
+    let leader_addr = format!("127.0.0.1:{leader_port}");
+    let replica1_addr = format!("127.0.0.1:{replica1_port}");
+    let replica2_addr = format!("127.0.0.1:{replica2_port}");
     let admin_bind_addr = format!("127.0.0.1:{admin_port}");
-    let nc1_bind_addr   = format!("127.0.0.1:{nc1_port}");
-    let nc2_bind_addr   = format!("127.0.0.1:{nc2_port}");
+    let nc1_bind_addr = format!("127.0.0.1:{nc1_port}");
+    let nc2_bind_addr = format!("127.0.0.1:{nc2_port}");
 
     println!("[TEST] leader_addr     = {leader_addr}");
     println!("[TEST] replica1_addr   = {replica1_addr}");
@@ -897,12 +900,19 @@ fn cluster_smoke_multiple_clients_then_account_query() {
     // -------------------------
     let mut leader = Command::new("cargo")
         .args([
-            "run", "-p", "server", "--bin", "server",
+            "run",
+            "-p",
+            "server",
+            "--bin",
+            "server",
             "--",
-            "--address", &leader_addr,
-            "--pumps", "4",
+            "--address",
+            &leader_addr,
+            "--pumps",
+            "4",
             "leader",
-            "--max-conns", "16",
+            "--max-conns",
+            "16",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -924,13 +934,21 @@ fn cluster_smoke_multiple_clients_then_account_query() {
     // -------------------------
     let mut replica1 = Command::new("cargo")
         .args([
-            "run", "-p", "server", "--bin", "server",
+            "run",
+            "-p",
+            "server",
+            "--bin",
+            "server",
             "--",
-            "--address", &replica1_addr,
-            "--pumps", "4",
+            "--address",
+            &replica1_addr,
+            "--pumps",
+            "4",
             "replica",
-            "--leader-addr", &leader_addr,
-            "--max-conns", "16",
+            "--leader-addr",
+            &leader_addr,
+            "--max-conns",
+            "16",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -956,13 +974,21 @@ fn cluster_smoke_multiple_clients_then_account_query() {
     // -------------------------
     let mut replica2 = Command::new("cargo")
         .args([
-            "run", "-p", "server", "--bin", "server",
+            "run",
+            "-p",
+            "server",
+            "--bin",
+            "server",
             "--",
-            "--address", &replica2_addr,
-            "--pumps", "4",
+            "--address",
+            &replica2_addr,
+            "--pumps",
+            "4",
             "replica",
-            "--leader-addr", &leader_addr,
-            "--max-conns", "16",
+            "--leader-addr",
+            &leader_addr,
+            "--max-conns",
+            "16",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -997,7 +1023,11 @@ fn cluster_smoke_multiple_clients_then_account_query() {
     // -------------------------
     let mut node_client1 = Command::new("cargo")
         .args([
-            "run", "-p", "client", "--bin", "node_client",
+            "run",
+            "-p",
+            "client",
+            "--bin",
+            "node_client",
             "--",
             &nc1_bind_addr,
             "16", // max_connections
@@ -1028,8 +1058,7 @@ fn cluster_smoke_multiple_clients_then_account_query() {
             .expect("[TEST] failed to write second charge to node_client1 stdin");
         thread::sleep(Duration::from_millis(200));
 
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to node_client1 stdin");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to node_client1 stdin");
     }
 
     let nc1_output = node_client1
@@ -1047,7 +1076,11 @@ fn cluster_smoke_multiple_clients_then_account_query() {
     // -------------------------
     let mut node_client2 = Command::new("cargo")
         .args([
-            "run", "-p", "client", "--bin", "node_client",
+            "run",
+            "-p",
+            "client",
+            "--bin",
+            "node_client",
             "--",
             &nc2_bind_addr,
             "16", // max_connections
@@ -1078,8 +1111,7 @@ fn cluster_smoke_multiple_clients_then_account_query() {
             .expect("[TEST] failed to write second charge to node_client2 stdin");
         thread::sleep(Duration::from_millis(200));
 
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to node_client2 stdin");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to node_client2 stdin");
     }
 
     let nc2_output = node_client2
@@ -1100,11 +1132,15 @@ fn cluster_smoke_multiple_clients_then_account_query() {
     // -------------------------
     let mut admin = Command::new("cargo")
         .args([
-            "run", "-p", "client", "--bin", "administrator",
+            "run",
+            "-p",
+            "client",
+            "--bin",
+            "administrator",
             "--",
-            &admin_bind_addr,  // bind_addr
-            &leader_addr,      // target_node_addr
-            "100",             // account_id
+            &admin_bind_addr, // bind_addr
+            &leader_addr,     // target_node_addr
+            "100",            // account_id
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1120,8 +1156,7 @@ fn cluster_smoke_multiple_clients_then_account_query() {
 
         writeln!(stdin, "account-query")
             .expect("[TEST] failed to write account-query to administrator stdin");
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to administrator stdin");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to administrator stdin");
     }
 
     let admin_output = admin
@@ -1209,12 +1244,12 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
     let nc1_port = pick_free_port();
     let nc2_port = pick_free_port();
 
-    let leader_addr     = format!("127.0.0.1:{leader_port}");
-    let replica1_addr   = format!("127.0.0.1:{replica1_port}");
-    let replica2_addr   = format!("127.0.0.1:{replica2_port}");
+    let leader_addr = format!("127.0.0.1:{leader_port}");
+    let replica1_addr = format!("127.0.0.1:{replica1_port}");
+    let replica2_addr = format!("127.0.0.1:{replica2_port}");
     let admin_bind_addr = format!("127.0.0.1:{admin_port}");
-    let nc1_bind_addr   = format!("127.0.0.1:{nc1_port}");
-    let nc2_bind_addr   = format!("127.0.0.1:{nc2_port}");
+    let nc1_bind_addr = format!("127.0.0.1:{nc1_port}");
+    let nc2_bind_addr = format!("127.0.0.1:{nc2_port}");
 
     println!("[TEST] leader_addr     = {leader_addr}");
     println!("[TEST] replica1_addr   = {replica1_addr}");
@@ -1228,12 +1263,19 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
     // -------------------------
     let mut leader = Command::new("cargo")
         .args([
-            "run", "-p", "server", "--bin", "server",
+            "run",
+            "-p",
+            "server",
+            "--bin",
+            "server",
             "--",
-            "--address", &leader_addr,
-            "--pumps", "4",
+            "--address",
+            &leader_addr,
+            "--pumps",
+            "4",
             "leader",
-            "--max-conns", "16",
+            "--max-conns",
+            "16",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1255,13 +1297,21 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
     // -------------------------
     let mut replica1 = Command::new("cargo")
         .args([
-            "run", "-p", "server", "--bin", "server",
+            "run",
+            "-p",
+            "server",
+            "--bin",
+            "server",
             "--",
-            "--address", &replica1_addr,
-            "--pumps", "4",
+            "--address",
+            &replica1_addr,
+            "--pumps",
+            "4",
             "replica",
-            "--leader-addr", &leader_addr,
-            "--max-conns", "16",
+            "--leader-addr",
+            &leader_addr,
+            "--max-conns",
+            "16",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1287,13 +1337,21 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
     // -------------------------
     let mut replica2 = Command::new("cargo")
         .args([
-            "run", "-p", "server", "--bin", "server",
+            "run",
+            "-p",
+            "server",
+            "--bin",
+            "server",
             "--",
-            "--address", &replica2_addr,
-            "--pumps", "4",
+            "--address",
+            &replica2_addr,
+            "--pumps",
+            "4",
             "replica",
-            "--leader-addr", &leader_addr,
-            "--max-conns", "16",
+            "--leader-addr",
+            &leader_addr,
+            "--max-conns",
+            "16",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1328,7 +1386,11 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
     // -------------------------
     let mut node_client1 = Command::new("cargo")
         .args([
-            "run", "-p", "client", "--bin", "node_client",
+            "run",
+            "-p",
+            "client",
+            "--bin",
+            "node_client",
             "--",
             &nc1_bind_addr,
             "16", // max_connections
@@ -1357,8 +1419,7 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
             .expect("[TEST] failed to write second charge to node_client1 stdin");
         thread::sleep(Duration::from_millis(200));
 
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to node_client1 stdin");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to node_client1 stdin");
     }
 
     let nc1_output = node_client1
@@ -1376,7 +1437,11 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
     // -------------------------
     let mut node_client2 = Command::new("cargo")
         .args([
-            "run", "-p", "client", "--bin", "node_client",
+            "run",
+            "-p",
+            "client",
+            "--bin",
+            "node_client",
             "--",
             &nc2_bind_addr,
             "16", // max_connections
@@ -1405,8 +1470,7 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
             .expect("[TEST] failed to write second charge to node_client2 stdin");
         thread::sleep(Duration::from_millis(200));
 
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to node_client2 stdin");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to node_client2 stdin");
     }
 
     let nc2_output = node_client2
@@ -1427,11 +1491,15 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
     // -------------------------
     let mut admin = Command::new("cargo")
         .args([
-            "run", "-p", "client", "--bin", "administrator",
+            "run",
+            "-p",
+            "client",
+            "--bin",
+            "administrator",
             "--",
-            &admin_bind_addr,  // bind_addr
-            &leader_addr,      // target_node_addr
-            "100",             // account_id
+            &admin_bind_addr, // bind_addr
+            &leader_addr,     // target_node_addr
+            "100",            // account_id
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1445,14 +1513,10 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
             .as_mut()
             .expect("[TEST] failed to open stdin for administrator");
 
-        writeln!(stdin, "account-query")
-            .expect("[TEST] failed to write first account-query");
-        writeln!(stdin, "bill")
-            .expect("[TEST] failed to write bill command");
-        writeln!(stdin, "account-query")
-            .expect("[TEST] failed to write second account-query");
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to administrator stdin");
+        writeln!(stdin, "account-query").expect("[TEST] failed to write first account-query");
+        writeln!(stdin, "bill").expect("[TEST] failed to write bill command");
+        writeln!(stdin, "account-query").expect("[TEST] failed to write second account-query");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to administrator stdin");
     }
 
     let admin_output = admin
@@ -1487,45 +1551,39 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
     let final_query_block = *parts.last().unwrap();
 
     // --- Primera query: total 200.0 y per-card 80 / 120 ---
-    let has_total_200 =
-        first_query_block.contains("total_spent=200.0") ||
-        first_query_block.contains("total_spent=200.00");
+    let has_total_200 = first_query_block.contains("total_spent=200.0")
+        || first_query_block.contains("total_spent=200.00");
     assert!(
         has_total_200,
         "first account-query block did not contain total_spent=200; block:\n{first_query_block}"
     );
 
-    let has_card10_80 =
-        first_query_block.contains("card_id=10 spent=80.0") ||
-        first_query_block.contains("card_id=10 spent=80.00");
+    let has_card10_80 = first_query_block.contains("card_id=10 spent=80.0")
+        || first_query_block.contains("card_id=10 spent=80.00");
     assert!(
         has_card10_80,
         "first account-query block did not show card 10 with 80.0; block:\n{first_query_block}"
     );
 
-    let has_card20_120 =
-        first_query_block.contains("card_id=20 spent=120.0") ||
-        first_query_block.contains("card_id=20 spent=120.00");
+    let has_card20_120 = first_query_block.contains("card_id=20 spent=120.0")
+        || first_query_block.contains("card_id=20 spent=120.00");
     assert!(
         has_card20_120,
         "first account-query block did not show card 20 with 120.0; block:\n{first_query_block}"
     );
 
     // --- Última query (post-bill): total 0 y consumos por tarjeta en 0 ---
-    let has_total_0 =
-        final_query_block.contains("total_spent=0.0") ||
-        final_query_block.contains("total_spent=0.00");
+    let has_total_0 = final_query_block.contains("total_spent=0.0")
+        || final_query_block.contains("total_spent=0.00");
     assert!(
         has_total_0,
         "final account-query block did not contain total_spent=0; block:\n{final_query_block}"
     );
 
-    let has_card10_zero =
-        final_query_block.contains("card_id=10 spent=0.0") ||
-        final_query_block.contains("card_id=10 spent=0.00");
-    let has_card20_zero =
-        final_query_block.contains("card_id=20 spent=0.0") ||
-        final_query_block.contains("card_id=20 spent=0.00");
+    let has_card10_zero = final_query_block.contains("card_id=10 spent=0.0")
+        || final_query_block.contains("card_id=10 spent=0.00");
+    let has_card20_zero = final_query_block.contains("card_id=20 spent=0.0")
+        || final_query_block.contains("card_id=20 spent=0.00");
 
     assert!(
         has_card10_zero && has_card20_zero,
@@ -1544,7 +1602,6 @@ fn cluster_smoke_multiple_clients_bill_clears_account() {
 
     println!("===== [TEST] cluster_smoke_multiple_clients_bill_clears_account END =====");
 }
-
 
 /// Concurrencia simple con 2 clientes sobre el mismo leader:
 /// - Leader sin réplicas.
@@ -1621,10 +1678,10 @@ fn cluster_smoke_concurrent_charges_two_clients() {
             "--bin",
             "node_client",
             "--",
-            &nc1_bind_addr,   // bind_addr
-            "16",             // max_connections
-            "4",              // num_pumps
-            &leader_addr,     // known_node_1
+            &nc1_bind_addr, // bind_addr
+            "16",           // max_connections
+            "4",            // num_pumps
+            &leader_addr,   // known_node_1
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -1643,10 +1700,10 @@ fn cluster_smoke_concurrent_charges_two_clients() {
             "--bin",
             "node_client",
             "--",
-            &nc2_bind_addr,   // bind_addr
-            "16",             // max_connections
-            "4",              // num_pumps
-            &leader_addr,     // known_node_1
+            &nc2_bind_addr, // bind_addr
+            "16",           // max_connections
+            "4",            // num_pumps
+            &leader_addr,   // known_node_1
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -1674,8 +1731,7 @@ fn cluster_smoke_concurrent_charges_two_clients() {
                 thread::sleep(Duration::from_millis(100));
             }
 
-            writeln!(stdin, "exit")
-                .expect("[TEST] failed to write exit to node_client 1 stdin");
+            writeln!(stdin, "exit").expect("[TEST] failed to write exit to node_client 1 stdin");
         }
 
         let output = child
@@ -1705,8 +1761,7 @@ fn cluster_smoke_concurrent_charges_two_clients() {
                 thread::sleep(Duration::from_millis(100));
             }
 
-            writeln!(stdin, "exit")
-                .expect("[TEST] failed to write exit to node_client 2 stdin");
+            writeln!(stdin, "exit").expect("[TEST] failed to write exit to node_client 2 stdin");
         }
 
         let output = child
@@ -1721,8 +1776,12 @@ fn cluster_smoke_concurrent_charges_two_clients() {
     });
 
     // Esperamos a que terminen los dos clientes
-    handle1.join().expect("[TEST] node_client 1 thread panicked");
-    handle2.join().expect("[TEST] node_client 2 thread panicked");
+    handle1
+        .join()
+        .expect("[TEST] node_client 1 thread panicked");
+    handle2
+        .join()
+        .expect("[TEST] node_client 2 thread panicked");
 
     // Un poquito de aire para que el líder termine de aplicar todo
     thread::sleep(Duration::from_millis(200));
@@ -1738,9 +1797,9 @@ fn cluster_smoke_concurrent_charges_two_clients() {
             "--bin",
             "administrator",
             "--",
-            &admin_bind_addr,  // bind_addr
-            &leader_addr,      // target_node_addr
-            "100",             // account_id
+            &admin_bind_addr, // bind_addr
+            &leader_addr,     // target_node_addr
+            "100",            // account_id
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1757,8 +1816,7 @@ fn cluster_smoke_concurrent_charges_two_clients() {
         // Un solo account-query
         writeln!(stdin, "account-query")
             .expect("[TEST] failed to write account-query to admin stdin");
-        writeln!(stdin, "exit")
-            .expect("[TEST] failed to write exit to admin stdin");
+        writeln!(stdin, "exit").expect("[TEST] failed to write exit to admin stdin");
     }
 
     let output = admin
@@ -1791,9 +1849,8 @@ fn cluster_smoke_concurrent_charges_two_clients() {
         }
     }
 
-    let total = maybe_total.expect(
-        "[TEST] admin stdout did not contain a parsable 'total_spent=' line",
-    );
+    let total =
+        maybe_total.expect("[TEST] admin stdout did not contain a parsable 'total_spent=' line");
 
     let expected_total = 100.0; // 20 cargos * 5.0
     assert!(

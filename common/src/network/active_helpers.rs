@@ -10,9 +10,10 @@ pub fn add_handler_from(
     handler: Handler,
     max_conns: usize,
 ) {
-    if active.len() >= max_conns &&
-    let Some(mut removed) = remove_last_recently_used(active) {
-        removed.stop();
+    if active.len() >= max_conns {
+        if let Some(mut removed) = remove_last_recently_used(active) {
+            removed.stop();
+        }
     }
 
     active.insert(handler.address, handler);

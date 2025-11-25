@@ -1,16 +1,16 @@
+use super::Message;
 use super::active_helpers::add_handler_from;
 use super::handler::Handler;
-use super::Message;
 use crate::errors::{AppError, AppResult};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::Sender;
 use tokio::task::{self, JoinHandle};
 
-const INCOMING_BUFF_SIZE: usize = 300;
+// const INCOMING_BUFF_SIZE: usize = 300;
 
 pub struct Acceptor {
     listener: TcpListener,
@@ -51,17 +51,14 @@ impl Acceptor {
 
     async fn run(&mut self, messages_tx: Arc<Sender<AppResult<Message>>>) {
         while let Ok((stream, _)) = self.listener.accept().await {
-            // TODO: acá falta un protocolo para saber el address del **listener** del nodo que se
-            // está conectando. Los puertos de los skts que se
-            // instancian en connect las pone el os así q son random, nosotros estamos usando addr
-            // para identfificar nodos así q necesitamos hacer algo como stream = listener.accept(),
-            // let addr: SocketAddr = stream.recv().into()
-            let Ok(handler) = Handler::start_from(stream.peer_addr().unwrap(), stream, messages_tx.clone()).await else {
-                continue;
-            };
-
+            println!("[ACCEPTOR] accepted stream");
+            println!("[ACCEPTOR] locking guard");
             let mut guard = self.active.lock().await;
+            let handler = Handler::start_from(stream, messages_tx.clone())
+                .await
+                .unwrap();
             add_handler_from(&mut guard, handler, self.max_conns);
+            println!("[ACCEPTOR] droping guard");
         }
     }
 }

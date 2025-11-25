@@ -49,12 +49,10 @@ impl<T: Into<Vec<u8>>> StreamSender<T> {
     }
 
     async fn write_all_bytes(&mut self, bytes: &[u8]) -> AppResult<()> {
-        self.stream
-            .write_all(bytes)
-            .await
-            .map_err(|_| AppError::ConnectionLostWith {
-                address: self.address,
-            })?;
+        self.stream.write_all(bytes).await.unwrap();
+        // .map_err(|_| AppError::ConnectionLostWith {
+        //     address: self.address,
+        // })?;
 
         Ok(())
     }

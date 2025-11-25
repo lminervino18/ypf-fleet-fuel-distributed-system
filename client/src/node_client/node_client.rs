@@ -16,8 +16,8 @@ use common::operation::Operation;
 use common::operation_result::{ChargeResult, OperationResult};
 use common::{Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
 
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use tokio::select;
@@ -116,11 +116,7 @@ impl NodeClient {
     /// Main event loop:
     /// - multiplexes Station messages and node messages with `tokio::select!`,
     /// - never touches the actor world.
-    pub async fn run(
-        mut self,
-        mut connection: Connection,
-        mut station: Station,
-    ) -> AppResult<()> {
+    pub async fn run(mut self, mut connection: Connection, mut station: Station) -> AppResult<()> {
         loop {
             select! {
                 // ======================
@@ -178,12 +174,7 @@ impl NodeClient {
                 request_id,
             } => {
                 self.forward_or_enqueue_charge(
-                    connection,
-                    station,
-                    account_id,
-                    card_id,
-                    amount,
-                    request_id,
+                    connection, station, account_id, card_id, amount, request_id,
                 )
                 .await?;
             }
@@ -250,15 +241,8 @@ impl NodeClient {
         }
 
         // ONLINE: try to forward to some known node.
-        self.forward_online_charge(
-            connection,
-            station,
-            account_id,
-            card_id,
-            amount,
-            request_id,
-        )
-        .await
+        self.forward_online_charge(connection, station, account_id, card_id, amount, request_id)
+            .await
     }
 
     /// OFFLINE path:

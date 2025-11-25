@@ -45,17 +45,17 @@ async fn async_main() -> AppResult<()> {
         return Ok(());
     }
 
-    let bind_addr: SocketAddr = args[1].parse().map_err(|e| {
-        AppError::Config(format!("invalid bind_addr '{}': {e}", args[1]))
-    })?;
+    let bind_addr: SocketAddr = args[1]
+        .parse()
+        .map_err(|e| AppError::Config(format!("invalid bind_addr '{}': {e}", args[1])))?;
 
-    let target_node: SocketAddr = args[2].parse().map_err(|e| {
-        AppError::Config(format!("invalid target_node_addr '{}': {e}", args[2]))
-    })?;
+    let target_node: SocketAddr = args[2]
+        .parse()
+        .map_err(|e| AppError::Config(format!("invalid target_node_addr '{}': {e}", args[2])))?;
 
-    let account_id: u64 = args[3].parse().map_err(|e| {
-        AppError::Config(format!("invalid account_id '{}': {e}", args[3]))
-    })?;
+    let account_id: u64 = args[3]
+        .parse()
+        .map_err(|e| AppError::Config(format!("invalid account_id '{}': {e}", args[3])))?;
 
     println!("[administrator] bind_addr   = {bind_addr}");
     println!("[administrator] target_node = {target_node}");
@@ -142,9 +142,9 @@ fn parse_line_to_command(line: &str, account_id: u64) -> Result<AdminCommand, St
             if args.len() != 1 {
                 return Err("Usage: limit-account <amount>".to_string());
             }
-            let amount: f32 = args[0].parse().map_err(|e| {
-                format!("invalid amount '{}': {e}", args[0])
-            })?;
+            let amount: f32 = args[0]
+                .parse()
+                .map_err(|e| format!("invalid amount '{}': {e}", args[0]))?;
             Ok(AdminCommand::LimitAccount { account_id, amount })
         }
 
@@ -152,12 +152,12 @@ fn parse_line_to_command(line: &str, account_id: u64) -> Result<AdminCommand, St
             if args.len() != 2 {
                 return Err("Usage: limit-card <card_id> <amount>".to_string());
             }
-            let card_id: u64 = args[0].parse().map_err(|e| {
-                format!("invalid card_id '{}': {e}", args[0])
-            })?;
-            let amount: f32 = args[1].parse().map_err(|e| {
-                format!("invalid amount '{}': {e}", args[1])
-            })?;
+            let card_id: u64 = args[0]
+                .parse()
+                .map_err(|e| format!("invalid card_id '{}': {e}", args[0]))?;
+            let amount: f32 = args[1]
+                .parse()
+                .map_err(|e| format!("invalid amount '{}': {e}", args[1]))?;
             Ok(AdminCommand::LimitCard {
                 account_id,
                 card_id,
@@ -176,7 +176,7 @@ fn parse_line_to_command(line: &str, account_id: u64) -> Result<AdminCommand, St
             if args.len() > 1 {
                 return Err("Usage: bill [period]".to_string());
             }
-            let period = args.get(0).map(|s| s.to_string());
+            let period = args.first().map(|s| s.to_string());
             Ok(AdminCommand::Bill { account_id, period })
         }
 
