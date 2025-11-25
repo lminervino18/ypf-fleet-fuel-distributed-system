@@ -149,7 +149,7 @@ pub trait Node {
     /// - flip their `is_offline` flag,
     /// - emit debug messages to the Station,
     /// - adjust cluster behavior.
-    async fn handle_disconnect_node(&mut self);
+    async fn handle_disconnect_node(&mut self, connection: &mut Connection);
 
     /// Default ONLINE transition handler.
     ///
@@ -185,11 +185,11 @@ pub trait Node {
                 .await
             }
             StationToNodeMsg::DisconnectNode => {
-                self.handle_disconnect_node().await;
+                self.handle_disconnect_node(connection).await;
                 Ok(RoleChange::None)
             }
             StationToNodeMsg::ConnectNode => {
-                self.handle_connect_node().await;
+                self.handle_connect_node(connection).await;
                 Ok(RoleChange::None)
             }
         }

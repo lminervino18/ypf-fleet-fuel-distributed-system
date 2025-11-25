@@ -89,12 +89,31 @@ impl Node for Replica {
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
             );
-            return self.start_election(connection).await;
+            //return self.start_election(connection).await;
+
         }
 
         Ok(RoleChange::None)
     }
 
+    async fn handle_disconnect_node(&mut self, connection: &mut Connection){
+        self.is_offline = true;
+        connection.disconnect().await;
+     }
+
+     async fn handle_connect_node(&mut self, connection: &mut Connection){
+        self.is_offline = false;
+        connection.reconnect().await.unwrap();
+        let _ = connection
+            .send(
+                Message::Join {
+                    addr: self.address,
+                },
+                &self.leader_addr,
+            )
+            .await;
+        
+     }
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         for node in self.cluster.values() {
             if node == &self.address {
@@ -185,23 +204,6 @@ impl Node for Replica {
         Ok(())
     }
 
-
-    async fn handle_disconnect_node(&mut self){
-        self.is_offline = true;
-     }
-
-     async fn handle_connect_node(&mut self, connection: &mut Connection){
-        self.is_offline = false;
-        let _ = connection
-            .send(
-                Message::Join {
-                    addr: self.address,
-                },
-                &self.leader_addr,
-            )
-            .await;
-        
-     }
 
      async fn handle_response(
     &mut self,
@@ -368,12 +370,12 @@ impl Node for Replica {
         // Si llega el cluster_view es porque nosotros mandamos el join, así que está ok.
 
         //inserto bdd nueva
-
+        
         while let Some(op) = self.offline_queue.pop_front() {
              self.handle_request(connection, database, 0, op, self.address).await.unwrap();
          }
 
-        self.members.clear();
+        self.cluster.clear();
         for (id, addr) in members {
             self.cluster.insert(id, addr);
         }

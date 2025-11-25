@@ -99,6 +99,17 @@ impl Node for Leader {
         Ok(RoleChange::None)
     }
 
+
+    async fn handle_connect_node(&mut self, connection: &mut Connection){
+        todo!()
+
+    }
+
+    async fn handle_disconnect_node(&mut self, connection: &mut Connection){
+        todo!()
+        
+    }
+
     async fn handle_request(
         &mut self,
         connection: &mut Connection,
