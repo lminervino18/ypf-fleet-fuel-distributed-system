@@ -1,6 +1,6 @@
+use crate::NodeRole;
 use crate::operation::Operation;
 use crate::operation_result::OperationResult;
-use crate::{NodeRole, VerifyError};
 use std::net::SocketAddr;
 
 /// Messages sent between nodes.

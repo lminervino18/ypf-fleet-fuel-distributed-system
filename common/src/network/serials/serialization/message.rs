@@ -3,7 +3,7 @@ use crate::network::serials::protocol::*;
 use crate::operation_result::OperationResult;
 use crate::{Message, operation::Operation};
 use crate::{Message::*, NodeRole};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 
 impl From<Message> for Vec<u8> {
     fn from(msg: Message) -> Self {
@@ -30,7 +30,6 @@ impl From<Message> for Vec<u8> {
                 candidate_addr,
             } => serialize_election_message(candidate_id, candidate_addr),
             ElectionOk { responder_id } => serialize_election_ok_message(responder_id),
-            _ => todo!(),
         }
     }
 }

@@ -1,14 +1,11 @@
 use super::actors::ActorEvent;
 use super::database::Database;
 use crate::errors::AppResult;
-use crate::node::database;
-use actix::dev::MessageResponse;
 use common::operation::Operation;
 use common::operation_result::OperationResult;
 use common::{AppError, Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
 use std::net::SocketAddr;
 use tokio::select;
-use tokio::time::Duration;
 
 /// Signal to indicate if a role change should occur.
 #[derive(Debug, Clone)]
@@ -52,10 +49,9 @@ pub trait Node {
         connection: &mut Connection,
         db: &mut Database,
         op_id: u32,
-        op: Operation,
-    );
+        new_op: Operation,
+    ) -> AppResult<()>;
 
-    // CHANGED: now it also receives a mutable reference to Database.
     async fn handle_ack(&mut self, connection: &mut Connection, db: &mut Database, op_id: u32);
 
     /// Resultado de una operación que ya pasó por el mundo de actores
@@ -63,11 +59,11 @@ pub trait Node {
     async fn handle_operation_result(
         &mut self,
         connection: &mut Connection,
-        station: &mut Station,
+        _station: &mut Station,
         op_id: u32,
-        operation: Operation,
-        result: OperationResult,
-    );
+        _operation: Operation,
+        _result: OperationResult,
+    ) -> AppResult<()>;
 
     /// Default dispatcher for Actor events.
     ///
@@ -84,16 +80,13 @@ pub trait Node {
                 op_id,
                 operation,
                 result,
-                // dejamos success/error en el enum pero no los necesitamos acá
                 ..
             } => {
                 self.handle_operation_result(connection, station, op_id, operation, result)
                     .await;
             }
             ActorEvent::Debug(msg) => {
-                // Por ahora lo ignoramos, o podrías loggear acá.
-                // e.g. println!("[NODE][ACTORS] {msg}");
-                let _ = msg; // para evitar warning de variable sin usar.
+                let _ = msg;
             }
         }
     }
@@ -111,7 +104,7 @@ pub trait Node {
         card_id: u64,
         amount: f32,
         request_id: u32,
-    ) {
+    ) -> AppResult<RoleChange> {
         if self.is_offline() {
             self.log_offline_operation(Operation::Charge {
                 account_id,
@@ -125,7 +118,7 @@ pub trait Node {
                 error: None,
             };
             if let Err(_e) = station.send(msg).await {}
-            return;
+            return Ok(RoleChange::None);
         }
 
         let op = Operation::Charge {
@@ -135,9 +128,13 @@ pub trait Node {
             from_offline_station: false,
         };
 
-        self.handle_request(connection, database, request_id, op, self.get_address())
+        match self
+            .handle_request(connection, database, request_id, op, self.get_address())
             .await
-            .unwrap();
+        {
+            Ok(()) => Ok(RoleChange::None),
+            Err(e) => Err(e)?,
+        }
     }
 
     async fn handle_connection_lost_with(
@@ -152,26 +149,7 @@ pub trait Node {
     /// - flip their `is_offline` flag,
     /// - emit debug messages to the Station,
     /// - adjust cluster behavior.
-    async fn handle_disconnect_node(&mut self) {
-        /* Example (Leader):
-        if self.is_offline {
-            let _ = self
-                .station.send(NodeToStationMsg::Debug(
-                    "[Leader] Node is already in OFFLINE mode; pump operations are auto-approved."
-                        .to_string(),
-                ))
-                .await;
-        } else {
-            self.is_offline = true;
-            let _ = self
-                .station.send(NodeToStationMsg::Debug(
-                    "[Leader] Node switched to OFFLINE mode. Cluster traffic will be ignored and pump operations will be queued and auto-approved."
-                        .to_string(),
-                ))
-                .await;
-        }
-        */
-    }
+    async fn handle_disconnect_node(&mut self, connection: &mut Connection);
 
     /// Default ONLINE transition handler.
     ///
@@ -179,49 +157,7 @@ pub trait Node {
     /// - flip their `is_offline` flag,
     /// - replay queued offline operations into the actor layer,
     /// - notify the Station via debug messages.
-    async fn handle_connect_node(&mut self) {
-        /* Example (Leader):
-        if !self.is_offline {
-            let _ = self
-                .station.send(NodeToStationMsg::Debug(
-                    "[Leader] Node is already in ONLINE mode; pump operations go through normal verification."
-                        .to_string(),
-                ))
-                .await;
-        } else {
-            self.is_offline = false;
-            let queued = self.offline_queue.len();
-            while let Some(OfflineQueuedCharge {
-                request_id,
-                account_id,
-                card_id,
-                amount,
-            }) = self.offline_queue.pop_front()
-            {
-                let op = Operation::Charge {
-                    account_id,
-                    card_id,
-                    amount,
-                    from_offline_station: true,
-                };
-
-                self.router.do_send(RouterCmd::Execute {
-                    op_id: request_id,
-                    operation: op,
-                });
-            }
-
-            let _ = self
-                .station.send(NodeToStationMsg::Debug(
-                    format!(
-                        "[Leader] Node switched back to ONLINE mode. Replayed {} queued offline operations into the actor system (they were already confirmed to the station).",
-                        queued
-                    ),
-                ))
-                .await;
-        }
-        */
-    }
+    async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()>;
 
     /// Default handler for high-level Station messages.
     ///
@@ -235,7 +171,7 @@ pub trait Node {
         station: &mut Station,
         database: &mut Database,
         msg: StationToNodeMsg,
-    ) {
+    ) -> AppResult<RoleChange> {
         match msg {
             StationToNodeMsg::ChargeRequest {
                 account_id,
@@ -246,13 +182,15 @@ pub trait Node {
                 self.handle_charge_request(
                     connection, station, database, account_id, card_id, amount, request_id,
                 )
-                .await;
+                .await
             }
             StationToNodeMsg::DisconnectNode => {
-                self.handle_disconnect_node().await;
+                self.handle_disconnect_node(connection).await;
+                Ok(RoleChange::None)
             }
             StationToNodeMsg::ConnectNode => {
-                self.handle_connect_node().await;
+                self.handle_connect_node(connection).await;
+                Ok(RoleChange::None)
             }
         }
     }
@@ -263,7 +201,7 @@ pub trait Node {
         connection: &mut Connection,
         candidate_id: u64,
         candidate_addr: SocketAddr,
-    );
+    ) -> AppResult<RoleChange>;
 
     async fn handle_election_ok(&mut self, connection: &mut Connection, responder_id: u64);
 
@@ -272,7 +210,7 @@ pub trait Node {
         connection: &mut Connection,
         leader_id: u64,
         leader_addr: SocketAddr,
-    ) -> RoleChange;
+    ) -> AppResult<RoleChange>;
 
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
@@ -283,7 +221,12 @@ pub trait Node {
     async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr)
         -> AppResult<()>;
 
-    async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>);
+    async fn handle_cluster_view(
+        &mut self,
+        connection: &mut Connection,
+        database: &mut Database,
+        members: Vec<(u64, SocketAddr)>,
+    );
 
     async fn handle_cluster_update(
         &mut self,
@@ -322,8 +265,7 @@ pub trait Node {
                 candidate_addr,
             } => {
                 self.handle_election(connection, candidate_id, candidate_addr)
-                    .await;
-                RoleChange::None
+                    .await?
             }
             Message::ElectionOk { responder_id } => {
                 self.handle_election_ok(connection, responder_id).await;
@@ -334,14 +276,14 @@ pub trait Node {
                 leader_addr,
             } => {
                 self.handle_coordinator(connection, leader_id, leader_addr)
-                    .await
+                    .await?
             }
             Message::Join { addr } => {
-                self.handle_join(connection, addr).await;
+                self.handle_join(connection, addr).await?;
                 RoleChange::None
             }
             Message::ClusterView { members } => {
-                self.handle_cluster_view(members).await;
+                self.handle_cluster_view(connection, db, members).await;
                 RoleChange::None
             }
             Message::ClusterUpdate { new_member } => {
@@ -349,8 +291,7 @@ pub trait Node {
                 RoleChange::None
             }
             Message::Response { req_id, op_result } => {
-                let _ = self
-                    .handle_response(connection, station, req_id, op_result)
+                self.handle_response(connection, station, req_id, op_result)
                     .await?;
                 RoleChange::None
             }
@@ -364,6 +305,33 @@ pub trait Node {
         Ok(role_change)
     }
 
+    async fn handle_run_result(
+        &mut self,
+        connection: &mut Connection,
+        result: AppResult<RoleChange>,
+    ) -> AppResult<RoleChange> {
+        match result {
+            Ok(_) => Ok(RoleChange::None), // ok está handleado en el loop
+            Err(AppError::ConnectionLostWith { address }) => {
+                let role_change = self
+                    .handle_connection_lost_with(connection, address)
+                    .await?;
+                match role_change {
+                    RoleChange::None => Ok(RoleChange::None),
+                    RoleChange::PromoteToLeader => {
+                        println!("[NODE] Role change detected: {:?}", role_change);
+                        Ok(role_change)
+                    }
+                    RoleChange::DemoteToReplica { new_leader_addr: _ } => {
+                        println!("[NODE] Role change detected: {:?}", role_change);
+                        Ok(role_change)
+                    }
+                }
+            }
+            Err(e) => Err(e)?,
+        }
+    }
+
     /// Main async event loop for any node role (Leader / Replica / Station-backed node).
     /// Returns a RoleChange signal if the node should switch roles.
     async fn run(
@@ -373,56 +341,60 @@ pub trait Node {
         mut station: Station,
     ) -> AppResult<RoleChange> {
         loop {
+            let mut result = Ok(RoleChange::None);
             select! {
-                // periodic tick to check liveness
-                // === Node-to-node messages (Raft / Bully / Cluster membership) ===
+                // node messages
                 node_msg = connection.recv() => {
                     println!("[NODE] Received node message: {:?}", node_msg);
                     match node_msg {
                         Ok(msg) => {
-                            let role_change = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await?;
-                            if !matches!(role_change, RoleChange::None) {
-                                println!("[NODE] Role change detected: {:?}", role_change);
-                                return Ok(role_change);
-                            }
+                            result = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await;
                         }
-                        Err(AppError::ConnectionLostWith { address }) => {
-                            let role_change = self.handle_connection_lost_with(&mut connection, address).await?;
-                            if !matches!(role_change, RoleChange::None) {
-                                println!("[NODE] Role change detected from connection loss: {:?}", role_change);
-                                return Ok(role_change);
-                            }
-                        },
-                        Err(_e) => {
-                            // TODO: manejar errores de red si querés algo más fino
-                        }
+                        Err(e) => {result = Err(e);},
                     }
                 }
-
-                // === Station (pump simulator) messages ===
+                // station messages
                 pump_msg = station.recv() => {
                     match pump_msg {
-                        Some(msg) => {
-                            self.handle_station_msg(&mut connection, &mut station,&mut db, msg).await;
-                        }
-                        None => {
-                            // Station side closed its channel.
-                            todo!();
-                        }
+                        Some(msg) => { result = self.handle_station_msg(&mut connection, &mut station,&mut db, msg).await; },
+                        None => panic!("[FATAL] station went down"),
                     }
                 }
-
-                // === Actor events (OperationResult, etc.) ===
+                // database events
                 actor_evt = db.recv() => {
                     match actor_evt {
-                        Some(evt) => {
-                            self.handle_actor_event(&mut connection, &mut station, evt).await;
-                        }
-                        None => {
-                            // Actor system stopped; for now, we treat it as a fatal condition.
-                            todo!();
-                        }
+                        Some(evt) => {self.handle_actor_event(&mut connection, &mut station, evt).await;},
+                        None => panic!("[FATAL] database went down"),
                     }
+                }
+            }
+
+            match result {
+                Ok(role_change) => match role_change {
+                    RoleChange::None => {}
+                    RoleChange::PromoteToLeader => return Ok(RoleChange::PromoteToLeader),
+                    RoleChange::DemoteToReplica { new_leader_addr } => {
+                        return Ok(RoleChange::DemoteToReplica { new_leader_addr })
+                    }
+                },
+                Err(AppError::ConnectionLostWith { address }) => {
+                    match self
+                        .handle_connection_lost_with(&mut connection, address)
+                        .await
+                    {
+                        Ok(RoleChange::PromoteToLeader) => return Ok(RoleChange::PromoteToLeader),
+                        Ok(RoleChange::DemoteToReplica { new_leader_addr }) => {
+                            return Ok(RoleChange::DemoteToReplica { new_leader_addr })
+                        }
+                        _ => {}
+                    }
+                }
+                Err(AppError::ConnectionLost) => {
+                    continue;
+                }
+                x => {
+                    println!("[NODE] stopping run beacause of: {x:?}");
+                    return x;
                 }
             }
         }

@@ -15,18 +15,6 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-/// Internal state for a charge coming from a station pump
-/// while the node is ONLINE.
-///
-/// These are requests for which we *expect* an OperationResult
-/// from the ActorRouter.
-#[derive(Debug, Clone)]
-struct StationPendingCharge {
-    account_id: u64,
-    card_id: u64,
-    amount: f32,
-}
-
 /// Leader node.
 ///
 /// The Leader wires together:
@@ -90,7 +78,7 @@ impl Node for Leader {
         self.address
     }
 
-    async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
+    async fn anounce_coordinator(&mut self, _connection: &mut Connection) -> AppResult<RoleChange> {
         todo!("leader anounce coordinator was called")
     }
 
@@ -119,6 +107,14 @@ impl Node for Leader {
         Ok(RoleChange::None)
     }
 
+    async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()> {
+        todo!()
+    }
+
+    async fn handle_disconnect_node(&mut self, connection: &mut Connection) {
+        todo!()
+    }
+
     async fn handle_request(
         &mut self,
         connection: &mut Connection,
@@ -136,7 +132,6 @@ impl Node for Leader {
             self.current_op_id,
             PendingOperation::new(op.clone(), client_addr, req_id),
         );
-
         if self.cluster.len() == 1 {
             println!("[LEADER] Only member in cluster, executing operation directly.");
             db.send(DatabaseCmd::Execute {
@@ -145,36 +140,28 @@ impl Node for Leader {
             });
             return Ok(());
         }
-
-        // Build the log message to replicate.
-        // Broadcast the log to all known members except self.
         for (node_id, addr) in &self.cluster {
             if *node_id == self.id {
                 continue;
             }
 
-            connection
-                .send(
-                    Message::Log {
-                        op_id: self.current_op_id,
-                        op: op.clone(),
-                    },
-                    addr,
-                )
-                .await?;
+            let msg = Message::Log {
+                op_id: self.current_op_id,
+                op: op.clone(),
+            };
+            connection.send(msg, addr).await?;
         }
 
         self.current_op_id += 1;
-
         Ok(())
     }
 
     async fn handle_response(
         &mut self,
-        connection: &mut Connection,
-        station: &mut Station,
-        req_id: u32,
-        op_result: OperationResult,
+        _connection: &mut Connection,
+        _station: &mut Station,
+        _req_id: u32,
+        _op_result: OperationResult,
     ) -> AppResult<()> {
         todo!()
     }
@@ -198,10 +185,9 @@ impl Node for Leader {
         _connection: &mut Connection,
         _db: &mut Database,
         _op_id: u32,
-        _op: Operation,
-    ) {
-        // Leader should not receive Log messages.
-        todo!(); // TODO: leader should not receive any Log messages.
+        _new_op: Operation,
+    ) -> AppResult<()> {
+        todo!();
     }
 
     // CHANGED SIGNATURE: now receives `db: &mut Database`
@@ -240,7 +226,7 @@ impl Node for Leader {
         op_id: u32,
         operation: Operation,
         result: OperationResult,
-    ) {
+    ) -> AppResult<()> {
         let pending = self
             .operations
             .remove(&op_id)
@@ -260,21 +246,15 @@ impl Node for Leader {
                         error,
                     };
 
-                    let _ = station.send(msg).await;
-                } else {
-                    // Mismatch raro entre Operation y OperationResult.
-                    // Podrías loggear algo acá si querés.
+                    station.send(msg).await?;
                 }
-            } else {
-                // Si en el futuro la estación dispara otras operaciones
-                // (por ejemplo algún Query), habría que manejarlas acá.
             }
 
-            return;
+            return Ok(());
         }
 
         // Caso cliente externo: devolvemos el OperationResult completo.
-        let _ = connection
+        connection
             .send(
                 Message::Response {
                     req_id: pending.request_id,
@@ -282,7 +262,7 @@ impl Node for Leader {
                 },
                 &pending.client_addr,
             )
-            .await;
+            .await
     }
 
     async fn handle_election(
@@ -290,7 +270,7 @@ impl Node for Leader {
         connection: &mut Connection,
         candidate_id: u64,
         candidate_addr: SocketAddr,
-    ) {
+    ) -> AppResult<RoleChange> {
         let should_reply = {
             let b = self.bully.lock().await;
             b.should_reply_ok(candidate_id)
@@ -300,8 +280,10 @@ impl Node for Leader {
             let reply = Message::ElectionOk {
                 responder_id: self.id,
             };
-            let _ = connection.send(reply, &candidate_addr).await;
+            connection.send(reply, &candidate_addr).await?;
         }
+
+        Ok(RoleChange::None)
     }
 
     async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
@@ -314,20 +296,31 @@ impl Node for Leader {
         connection: &mut Connection,
         leader_id: u64,
         leader_addr: SocketAddr,
-    ) -> RoleChange {
+    ) -> AppResult<RoleChange> {
         let mut b = self.bully.lock().await;
         b.on_coordinator(leader_id, leader_addr);
         drop(b); // release lock
 
         // Check if we should demote to replica (another node became leader)
+        // TODO: > o ==?
         if leader_id == self.id {
             println!("[LEADER {}] Demoting to REPLICA, new leader is {}", self.id, leader_id);
-            return super::node::RoleChange::DemoteToReplica { new_leader_addr: leader_addr };
+            return Ok(RoleChange::DemoteToReplica { new_leader_addr: leader_addr });
         }
-        RoleChange::None
+
+        // connection
+        //     .send(
+        //         Message::Coordinator {
+        //             leader_id: self.id,
+        //             leader_addr: self.address,
+        //         },
+        //         &leader_addr,
+        //     )
+        //     .await?;
+        Ok(RoleChange::None)
     }
 
-    async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
+    async fn start_election(&mut self, _connection: &mut Connection) -> AppResult<RoleChange> {
         /*         // Build peer_ids map from the current membership (excluding self).
         let mut peer_ids = HashMap::new();
         for (peer_id, addr) in &self.cluster {
@@ -362,6 +355,7 @@ impl Node for Leader {
         };
         // le mandamos el clúster view al que entró
         connection.send(view_msg, &addr).await?;
+        // le mandamos el update a las réplicas
         for replica_addr in self.cluster.values() {
             if *replica_addr == self.address || *replica_addr == addr {
                 continue;
@@ -396,7 +390,12 @@ impl Node for Leader {
 
     /// Called when we receive a `Message::ClusterView` through the
     /// generic Node dispatcher.
-    async fn handle_cluster_view(&mut self, _members: Vec<(u64, SocketAddr)>) {
+    async fn handle_cluster_view(
+        &mut self,
+        _connection: &mut Connection,
+        _database: &mut Database,
+        _members: Vec<(u64, SocketAddr)>,
+    ) {
         // leader shouldn't receive cluster_view messages
         todo!();
     }

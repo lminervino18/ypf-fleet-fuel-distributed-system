@@ -1,8 +1,8 @@
 use super::{receiver::StreamReceiver, sender::StreamSender};
 use crate::{
-    Message,
     errors::{AppError, AppResult},
     network::serials::{read_handler_first_message, send_handler_first_message},
+    Message,
 };
 use std::{
     net::SocketAddr,
@@ -25,10 +25,11 @@ pub enum MessageKind {
 
 use MessageKind::*;
 
-const HEARTBEAT_FREQUENCY: Duration = Duration::from_secs(1);
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
+const HEARTBEAT_FREQUENCY: Duration = Duration::from_millis(500);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 const MSG_BUFF_SIZE: usize = 512;
 
+#[derive(Debug)]
 pub struct Handler {
     handle: JoinHandle<AppResult<()>>,
     messages_tx: Sender<Message>,
@@ -38,19 +39,23 @@ pub struct Handler {
 
 impl Handler {
     pub async fn start(
-        address: SocketAddr,
+        self_addr: SocketAddr,
+        peer_addr: SocketAddr,
         receiver_tx: Arc<Sender<AppResult<Message>>>,
     ) -> AppResult<Self> {
+        println!("[HANDLER] starting active handler with address: {}", {
+            peer_addr
+        });
         let mut stream =
-            TcpStream::connect(address)
+            TcpStream::connect(peer_addr)
                 .await
                 .map_err(|_| AppError::ConnectionRefused {
-                    address: address.to_string(),
+                    address: peer_addr.to_string(),
                 })?;
 
-        send_handler_first_message(address, &mut stream).await?;
+        send_handler_first_message(self_addr, &mut stream).await?;
         let (messages_tx, sender_rx) = mpsc::channel(MSG_BUFF_SIZE);
-        Handler::new(stream, messages_tx, sender_rx, receiver_tx, address).await
+        Handler::new(stream, messages_tx, sender_rx, receiver_tx, peer_addr).await
     }
 
     pub async fn start_from(
@@ -58,6 +63,9 @@ impl Handler {
         receiver_tx: Arc<Sender<AppResult<Message>>>,
     ) -> AppResult<Self> {
         let address = read_handler_first_message(&mut stream).await?;
+        println!("[HANDLER] starting pasive handler with address: {}", {
+            address
+        });
         let (messages_tx, sender_rx) = mpsc::channel(MSG_BUFF_SIZE);
         Handler::new(stream, messages_tx, sender_rx, receiver_tx, address).await
     }
@@ -98,6 +106,7 @@ impl Handler {
         sender: &mut StreamSender<Message>,
         received: AppResult<MessageKind>,
         last_seen: &mut Instant,
+        _address: SocketAddr, // sólo para printear debug
     ) -> AppResult<()> {
         match received {
             Ok(msg_kind) => match msg_kind {
@@ -116,46 +125,42 @@ impl Handler {
     fn run(
         mut sender: StreamSender<Message>,
         mut receiver: StreamReceiver<Message>,
-        address: SocketAddr,
+        address: SocketAddr, // sólo para printear debugs
     ) -> JoinHandle<AppResult<()>> {
         task::spawn(async move {
             let mut last_seen = Instant::now();
             loop {
+                let mut result = Ok(());
                 select! {
                         // mando msjs q el handle escribió en el mpsc
-                        sent = sender.send() => { match sent {
-                            Ok(()) => {},
-                            Err(AppError::ChannelClosed) => { break; },
-                            Err(AppError::ConnectionLostWith { address }) => {
-                                receiver.write_connection_lost().await?;
-                                return Err(AppError::ConnectionLostWith { address });
-                            }
-                            Err(e) => return Err(e),
-                        }},
+                        sent = sender.send() => result = sent,
                         // leo por recv stream y escribo en el mpsc que tiene Connection
-                        received = receiver.recv() => {
-                            if let Err(e) = Self::handle_recv_result(&mut sender, received, &mut last_seen).await {
-                                match e {
-                                    AppError::ChannelClosed => { break; },
-                                    AppError::ConnectionLostWith { address } => {
-                                        receiver.write_connection_lost().await?;
-                                        return Err(AppError::ConnectionLostWith { address });
-                                    }
-                                    _ => return Err(e),
-                                };
-                            };
-                        },
+                        received = receiver.recv() =>
+                            result = Self::handle_recv_result(&mut sender, received, &mut last_seen, address).await,
                         // si se cumplió esta duration entonces mando hearbeat
                         _ = sleep(HEARTBEAT_FREQUENCY) => {
                             sender.send_heartbeat_request().await?;
                         }
                 }
 
+                match result {
+                    Ok(()) => {}
+                    Err(AppError::ChannelClosed) => break,
+                    Err(AppError::ConnectionLostWith { address }) => {
+                        println!("[HANDLER] connection lost with: {}", address);
+                        receiver.write_connection_lost().await?;
+                        break;
+                        // return Err(AppError::ConnectionLostWith { address });
+                    }
+                    x => return x,
+                };
                 // cada vez que hice alguna de las tres cosas anteriores me fijo si hay timeout del
                 // heartbeat
                 if Instant::now() - last_seen > HEARTBEAT_TIMEOUT {
+                    println!("[HANDLER] heartbeat timeout, writting connection lost");
                     receiver.write_connection_lost().await?;
-                    return Err(AppError::ConnectionLostWith { address });
+                    break;
+                    // return Err(AppError::ConnectionLostWith { address });
                 }
             }
 
@@ -205,7 +210,7 @@ mod test {
 
         tokio::time::sleep(Duration::from_secs(1)).await; // wait for listener
         let (receiver_tx, mut receiver_rx) = mpsc::channel(1);
-        let _handler = Handler::start(address, Arc::new(receiver_tx))
+        let _handler = Handler::start(address, address, Arc::new(receiver_tx))
             .await
             .unwrap();
         let received = receiver_rx.recv().await.unwrap();
@@ -222,7 +227,7 @@ mod test {
         let listener = TcpListener::bind(address).await.unwrap();
         let handle = task::spawn(async move {
             let (receiver_tx, _) = mpsc::channel(1);
-            let mut handler = Handler::start(address, Arc::new(receiver_tx))
+            let mut handler = Handler::start(address, address, Arc::new(receiver_tx))
                 .await
                 .unwrap();
             handler.send(message_copy).await.unwrap();
@@ -246,7 +251,7 @@ mod test {
         let listener = TcpListener::bind(address).await.unwrap();
         let handle1 = task::spawn(async move {
             let (receiver_tx, _) = mpsc::channel(1);
-            let mut handler = Handler::start(address, Arc::new(receiver_tx))
+            let mut handler = Handler::start(address, address, Arc::new(receiver_tx))
                 .await
                 .unwrap();
             handler.send(message_copy).await.unwrap();

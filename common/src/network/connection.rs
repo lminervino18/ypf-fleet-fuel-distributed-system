@@ -17,6 +17,9 @@ pub struct Connection {
     messages_tx: Arc<Sender<AppResult<Message>>>, // sólo para pasarle a quienes me mandan (Receiver)
     messages_rx: Receiver<AppResult<Message>>,
     max_conns: usize,
+    // estas tres cosas son sólo para simular bajas de conexión
+    address: SocketAddr,
+    connected: bool,
 }
 
 // TODO: tanto send como recv tienen que retornar un Result que pueda contener el error
@@ -36,21 +39,44 @@ impl Connection {
             messages_tx,
             messages_rx,
             max_conns,
+            address,
+            connected: true,
         })
     }
 
     pub async fn send(&mut self, msg: Message, address: &SocketAddr) -> AppResult<()> {
+        if !self.connected {
+            // simular caída
+            return Err(AppError::ConnectionLost);
+        }
+
         let mut guard = self.active.lock().await;
         if !guard.contains_key(address) {
-            let handler = Handler::start(*address, self.messages_tx.clone()).await?;
+            println!(
+                "[CONNECTION] no tengo el address {}, la creo y mando",
+                address
+            );
+            let handler = Handler::start(self.address, *address, self.messages_tx.clone()).await?;
             add_handler_from(&mut guard, handler, self.max_conns);
         }
 
-        guard.get_mut(address).unwrap().send(msg).await?;
-        Ok(())
+        println!("[CONNECTION] tengo {} handlers", guard.len());
+        match guard.get_mut(address).unwrap().send(msg).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                println!("[CONNECTION] handler {} errored, removing it", address);
+                guard.remove(address);
+                Err(e)
+            }
+        }
     }
 
     pub async fn recv(&mut self) -> AppResult<Message> {
+        if !self.connected {
+            // simular caída
+            return Err(AppError::ConnectionLost);
+        }
+
         // NOTE: acá si todos los handlers están abajo tiro ConnectionLost, o sea
         // asumimos que perdimos la conexión **nosotros** pero el tema es que no
         // deberíamos hacer entonces nunca un recv sin antes haber instanciado alguna
@@ -60,6 +86,30 @@ impl Connection {
             .recv()
             .await
             .ok_or(AppError::ConnectionLost)?
+    }
+
+    // estos dos métodos son sólop para simular caídas
+    pub async fn disconnect(&mut self) {
+        self.connected = false;
+        let mut guard = self.active.lock().await;
+        for handle in guard.values_mut() {
+            handle.stop();
+        }
+
+        self.acceptor_handle.abort();
+    }
+
+    pub async fn reconnect(&mut self) -> AppResult<()> {
+        self.connected = true;
+        self.acceptor_handle = Acceptor::start(
+            self.address,
+            self.active.clone(),
+            self.messages_tx.clone(),
+            self.max_conns,
+        )
+        .await?;
+
+        Ok(())
     }
 }
 

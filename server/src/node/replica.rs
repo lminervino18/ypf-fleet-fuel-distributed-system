@@ -12,7 +12,7 @@ use crate::{
 use common::{
     operation::Operation,
     operation_result::{ChargeResult, OperationResult},
-    Connection, Message, NodeToStationMsg, Station, StationToNodeMsg,
+    AppError, Connection, Message, NodeToStationMsg, Station, StationToNodeMsg,
 };
 
 use std::{
@@ -105,10 +105,39 @@ impl Node for Replica {
         Ok(RoleChange::None)
     }
 
+    async fn handle_disconnect_node(&mut self, connection: &mut Connection) {
+        self.is_offline = true;
+        connection.disconnect().await;
+    }
+
+    async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()> {
+        self.is_offline = false;
+        connection.reconnect().await?;
+        println!(
+            "[REPLICA {}] Reconnected to the network, sending Join to leader",
+            self.id
+        );
+        match connection
+            .send(Message::Join { addr: self.address }, &self.leader_addr)
+            .await
+        {
+            Err(AppError::ConnectionLostWith {
+                address: _leader_addr,
+            }) => {
+                connection
+                    .send(Message::Join { addr: self.address }, &self.leader_addr)
+                    .await?
+            }
+            x => x?,
+        }
+
+        Ok(())
+    }
 
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
-        for (peer_id, addr) in &self.cluster {
-            if *peer_id == self.id {
+        println!("[REPLICA {}] announcing myself as coordinator", self.id);
+        for (node, addr) in &self.cluster {
+            if *node == self.id {
                 continue; // Skip announcing to ourselves
             }
             connection
@@ -123,9 +152,7 @@ impl Node for Replica {
         }
 
         // Handle our own promotion to leader
-        Ok(self
-            .handle_coordinator(connection, self.id, self.address)
-            .await)
+        self.handle_coordinator(connection, self.id, self.address).await
     }
 
     
@@ -162,13 +189,12 @@ impl Node for Replica {
         op_id: u32,
         _operation: Operation,
         _result: OperationResult,
-    ) {
+    ) -> AppResult<()> {
         // Igual que antes: cuando termina la operación en la réplica,
         // mandamos un Ack al líder.
         connection
             .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
             .await
-            .unwrap();
     }
 
     async fn handle_request(
@@ -201,6 +227,9 @@ impl Node for Replica {
         req_id: u32,
         op_result: OperationResult,
     ) -> AppResult<()> {
+        if req_id == 0 {
+            return Ok(());
+        }
         match op_result {
             OperationResult::Charge(cr) => {
                 let (allowed, error) = match cr {
@@ -248,21 +277,19 @@ impl Node for Replica {
         db: &mut Database,
         op_id: u32,
         new_op: Operation,
-    ) {
+    ) -> AppResult<()> {
         println!("[REPLICA] Received Log for op_id={op_id}: {new_op:?}");
         // Guardamos el log y commiteamos la operación anterior.
         self.operations.insert(op_id, new_op);
         if op_id == 0 {
-            connection
+            return connection
                 .send(Message::Ack { op_id: 0 }, &self.leader_addr)
-                .await
-                .unwrap();
-            return; // si es la primera no hay op previamente loggeada
+                .await;
         }
 
         // Igual que antes, pero ahora via `Database` en vez de `router`.
         // Ignoramos el Result como ya hacíamos antes.
-        self.commit_operation(db, op_id - 1).await.unwrap();
+        self.commit_operation(db, op_id - 1).await
     }
 
     async fn handle_ack(&mut self, _connection: &mut Connection, _db: &mut Database, _id: u32) {
@@ -275,7 +302,7 @@ impl Node for Replica {
         connection: &mut Connection,
         candidate_id: u64,
         candidate_addr: SocketAddr,
-    ) {
+    ) -> AppResult<RoleChange> {
         println!(
             "[REPLICA {}] received election message from {}",
             self.id, candidate_addr
@@ -289,9 +316,10 @@ impl Node for Replica {
             let reply = Message::ElectionOk {
                 responder_id: self.id,
             };
-            let _ = connection.send(reply, &candidate_addr).await;
+            connection.send(reply, &candidate_addr).await?;
         }
         // otherwise, do not reply
+        Ok(RoleChange::None)
     }
 
     async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
@@ -310,9 +338,9 @@ impl Node for Replica {
         _connection: &mut Connection,
         leader_id: u64,
         leader_addr: SocketAddr,
-    ) -> super::node::RoleChange {
+    ) -> AppResult<RoleChange> {
         println!(
-            "[REPLICA {}] received coordinator message from {}",
+            "[REPLICA {}] AAAAAAAAAAAA received coordinator message from {}",
             self.id, leader_addr
         );
         let mut b = self.bully.lock().await;
@@ -322,7 +350,7 @@ impl Node for Replica {
         // Check if we should promote to leader
         if leader_id == self.id {
             println!("[REPLICA {}] Promoting to LEADER", self.id);
-            return RoleChange::PromoteToLeader;
+            return Ok(RoleChange::PromoteToLeader);
         } 
 
         // TODO: por ahí ya q somos réplica confiamos en el algoritmo e ignoramos el caso de q el
@@ -334,7 +362,7 @@ impl Node for Replica {
 
         // Update our local "current leader" pointer
         self.leader_addr = leader_addr;
-        RoleChange::None
+        Ok(RoleChange::None)
     }
 
     async fn handle_join(
@@ -353,20 +381,34 @@ impl Node for Replica {
         new_member: (u64, SocketAddr),
     ) {
         self.cluster.insert(new_member.0, new_member.1);
-        println!("[REPLICA] new cluster member added: {new_member:?}");
+        println!("[REPLICA] handle cluster update: {new_member:?}");
         println!("[REPLICA] current members {:?}: {:?}", self.cluster.len(), self.cluster);
     }
 
-    async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>) {
+    async fn handle_cluster_view(
+        &mut self,
+        connection: &mut Connection,
+        database: &mut Database,
+        members: Vec<(u64, SocketAddr)>,
+    ) {
         // Si llega el cluster_view es porque nosotros mandamos el join, así que está ok.
+
+        //inserto bdd nueva
+
+        while let Some(op) = self.offline_queue.pop_front() {
+            self.handle_request(connection, database, 0, op, self.address)
+                .await
+                .unwrap();
+        }
+
         self.cluster.clear();
         for (id, addr) in members {
             self.cluster.insert(id, addr);
         }
 
         // Ensure we are present with the correct address.
-        self.cluster.insert(self.id, self.address);
-        println!("[REPLICA] updated cluster view: {:?}", self.cluster);
+        // self.cluster.insert(self.id, self.address);
+        println!("[REPLICA] handled cluster view: {:?}", self.cluster);
     }
 }
 
@@ -377,7 +419,7 @@ impl Replica {
         use super::leader::Leader;
 
         // When promoting, we use the replica's last op_id as current_op_id
-        let current_op_id = self.operations.keys().max().map(|k| *k).unwrap_or(0);
+        let current_op_id = self.operations.keys().max().copied().unwrap_or(0);
         // let only_last_op = self
         //     .operations
         //     .get(&current_op_id)
@@ -458,17 +500,17 @@ impl Replica {
         // Loop para manejar cambios de rol
         loop {
             let role_change = replica.run(connection, db, station).await?;
-
+            println!("[REPLICA] run stopped, changing role");
             match role_change {
-                super::node::RoleChange::PromoteToLeader => {
-                    println!("[REPLICA] Converting to Leader...");
+                RoleChange::PromoteToLeader => {
                     let leader = replica.into_leader();
                     return Box::pin(Leader::run_from_replica(
                         leader, address, coords, max_conns, pumps,
                     ))
                     .await;
                 }
-                _ => {
+                x => {
+                    println!("unknown result: {x:?}");
                     return Ok(());
                 }
             }
@@ -507,7 +549,7 @@ impl Replica {
             id, address, leader_addr
         );
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
-        members.insert(id, address);
+        // members.insert(id, address);
 
         let leader_id = get_id_given_addr(leader_addr);
         members.insert(leader_id, leader_addr);
@@ -540,7 +582,6 @@ impl Replica {
         // - own `connection`, `db` y `station`.
         loop {
             let role_change = replica.run(connection, db, station).await?;
-
             match role_change {
                 super::node::RoleChange::PromoteToLeader => {
                     println!("[REPLICA] Converting to Leader...");
