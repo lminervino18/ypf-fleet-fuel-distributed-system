@@ -1,5 +1,6 @@
 use super::{
-    deserialize_socket_address_srl, protocol::MSG_TYPE_HANDLER_FIRST, serialize_socket_address,
+    deserialization::deserialize_socket_address_srl, protocol::MSG_TYPE_HANDLER_FIRST,
+    serialization::serialize_socket_address,
 };
 use crate::{AppError, AppResult};
 use std::net::SocketAddr;
