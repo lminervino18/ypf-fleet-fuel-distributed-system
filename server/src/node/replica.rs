@@ -84,12 +84,12 @@ impl Node for Replica {
             return Ok(RoleChange::None); // me voy sin preguntar
         }; */
 
-        if address == self.leader_addr {
+        if address == self.leader_addr || self.cluster.contains_key(&get_id_given_addr(address)) {
             println!(
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
             );
-            //return self.start_election(connection).await;
+            return self.start_election(connection).await;
         }
 
         Ok(RoleChange::None)
@@ -297,6 +297,7 @@ impl Node for Replica {
         candidate_id: u64,
         candidate_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
+        self.cluster.remove(&get_id_given_addr(self.leader_addr));
         println!(
             "[REPLICA {}] received election message from {}",
             self.id, candidate_addr
@@ -331,7 +332,7 @@ impl Node for Replica {
         leader_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
         println!(
-            "[REPLICA {}] AAAAAAAAAAAA received coordinator message from {}",
+            "[REPLICA {}] received coordinator message from {}",
             self.id, leader_addr
         );
         if leader_id == self.id {
