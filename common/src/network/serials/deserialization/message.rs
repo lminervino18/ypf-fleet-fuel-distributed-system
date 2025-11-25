@@ -1,8 +1,8 @@
-use crate::Message;
-use crate::Message::*;
 use crate::errors::AppError;
 use crate::errors::AppResult;
 use crate::network::serials::protocol::*;
+use crate::Message;
+use crate::Message::*;
 use std::net::SocketAddr;
 
 impl TryFrom<Vec<u8>> for Message {
@@ -33,13 +33,11 @@ impl TryFrom<Vec<u8>> for Message {
 
 fn deserialize_coordinator_message(payload: &[u8]) -> AppResult<Message> {
     let mut ptr = 0;
-    let leader_id = u64::from_be_bytes(
-        payload[ptr..ptr + NODE_ID_SRL_LEN]
-            .try_into()
-            .map_err(|e| AppError::InvalidProtocol {
-                details: format!("failed to deserialize leader_id in coordinator message: {e}"),
-            })?,
-    );
+    let leader_id = u64::from_be_bytes(payload[ptr..ptr + NODE_ID_SRL_LEN].try_into().map_err(
+        |e| AppError::InvalidProtocol {
+            details: format!("failed to deserialize leader_id in coordinator message: {e}"),
+        },
+    )?);
     ptr += NODE_ID_SRL_LEN;
     let leader_addr = deserialize_socket_address_srl(&payload[ptr..])?;
     Ok(Message::Coordinator {
@@ -50,13 +48,11 @@ fn deserialize_coordinator_message(payload: &[u8]) -> AppResult<Message> {
 
 fn deserialize_election_message(payload: &[u8]) -> AppResult<Message> {
     let mut ptr = 0;
-    let candidate_id = u64::from_be_bytes(
-        payload[ptr..ptr + NODE_ID_SRL_LEN]
-            .try_into()
-            .map_err(|e| AppError::InvalidProtocol {
-                details: format!("failed to deserialize candidate_id in election message: {e}"),
-            })?,
-    );
+    let candidate_id = u64::from_be_bytes(payload[ptr..ptr + NODE_ID_SRL_LEN].try_into().map_err(
+        |e| AppError::InvalidProtocol {
+            details: format!("failed to deserialize candidate_id in election message: {e}"),
+        },
+    )?);
     ptr += NODE_ID_SRL_LEN;
     let candidate_addr = deserialize_socket_address_srl(&payload[ptr..])?;
     Ok(Message::Election {
@@ -66,13 +62,11 @@ fn deserialize_election_message(payload: &[u8]) -> AppResult<Message> {
 }
 
 fn deserialize_election_ok_message(payload: &[u8]) -> AppResult<Message> {
-    let responder_id = u64::from_be_bytes(
-        payload[0..NODE_ID_SRL_LEN]
-            .try_into()
-            .map_err(|e| AppError::InvalidProtocol {
-                details: format!("failed to deserialize responder_id in election_ok message: {e}"),
-            })?,
-    );
+    let responder_id = u64::from_be_bytes(payload[0..NODE_ID_SRL_LEN].try_into().map_err(|e| {
+        AppError::InvalidProtocol {
+            details: format!("failed to deserialize responder_id in election_ok message: {e}"),
+        }
+    })?);
     Ok(Message::ElectionOk { responder_id })
 }
 
@@ -320,6 +314,31 @@ mod test {
         let msg = Message::Response {
             req_id: 12039,
             op_result: OperationResult::Charge(ChargeResult::Ok),
+        };
+        let msg_srl: Vec<u8> = msg.clone().into();
+        let expected = Ok(msg);
+        let msg = msg_srl.try_into();
+        assert_eq!(msg, expected);
+    }
+
+    /* MSG_TYPE_ELECTION => deserialize_election_message(&payload[1..]),
+    MSG_TYPE_ELECTION_OK => deserialize_election_ok_message(&payload[1..]), */
+    #[test]
+    fn test_deserialize_election_message() {
+        let msg = Message::Election {
+            candidate_id: 234,
+            candidate_addr: SocketAddr::from(([127, 0, 0, 1], 12346)),
+        };
+        let msg_srl: Vec<u8> = msg.clone().into();
+        let expected = Ok(msg);
+        let msg = msg_srl.try_into();
+        assert_eq!(msg, expected);
+    }
+
+    #[test]
+    fn test_deserialize_election_ok_message() {
+        let msg = Message::ElectionOk {
+            responder_id: 15388,
         };
         let msg_srl: Vec<u8> = msg.clone().into();
         let expected = Ok(msg);
