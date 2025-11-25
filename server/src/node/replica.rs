@@ -457,7 +457,7 @@ impl Replica {
     }
     async fn commit_operation(&mut self, db: &mut Database, op_id: u32) -> AppResult<()> {
         let Some(op) = self.operations.remove(&op_id) else {
-            todo!();
+            return Ok(());
         };
 
         // Igual que en Leader: fire-and-forget al actor world, ahora vía `Database`.

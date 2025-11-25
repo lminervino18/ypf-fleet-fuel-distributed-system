@@ -1,39 +1,47 @@
+// server.ts
 import express from "express";
 import cors from "cors";
-import { RustTcpClient } from "./tcpClient";
-import { startTcpServer } from "./tcpServer";
+import { queryNodeRole } from "./nodeConnections";
 
-const HTTP_PORT = 3001;
-
-startTcpServer();
+const HTTP_PORT = 3988; // poné acá el que realmente te está usando ts-node-dev
 
 const app = express();
-app.use(cors({ origin: "http://localhost:5173" }));
+
+// En dev, abrimos a cualquier puerto de localhost
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true); // requests tipo curl / same-origin
+      if (origin.startsWith("http://localhost:")) {
+        return callback(null, true);
+      }
+      callback(new Error("Not allowed by CORS"));
+    },
+  })
+);
+
 app.use(express.json());
 
 app.post("/api/roles", async (req, res) => {
   const nodes: { host: string; port: number }[] = req.body.nodes ?? [];
-
   const results: any[] = [];
 
-  // 🔁 Consulta secuencial: un nodo por vez, esperando respuesta
   for (const n of nodes) {
     try {
-      const r = await new RustTcpClient(n.host, n.port).queryRole();
-      // Devolvemos también host/port para que el front pueda mapear el nodo
+      const r = await queryNodeRole(n.host, n.port);
       results.push({
         host: n.host,
         port: n.port,
         ...r,
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error("[HTTP] Error querying node", n, err);
       results.push({
         host: n.host,
         port: n.port,
         ok: false,
         role: "disconnected",
-        error: "exception in backend",
+        error: err?.message ?? "exception in backend",
       });
     }
   }
