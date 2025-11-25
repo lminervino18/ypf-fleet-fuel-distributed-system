@@ -136,6 +136,24 @@ impl Node for Replica {
         Ok(())
     }
 
+
+    async fn handle_disconnect_node(&mut self){
+        self.is_offline = true;
+     }
+
+     async fn handle_connect_node(&mut self, connection: &mut Connection){
+        self.is_offline = false;
+        let _ = connection
+            .send(
+                Message::Join {
+                    addr: self.address,
+                },
+                &self.leader_addr,
+            )
+            .await;
+        
+     }
+
      async fn handle_response(
     &mut self,
     connection: &mut Connection,
@@ -143,13 +161,18 @@ impl Node for Replica {
     req_id: u32,
     op_result: OperationResult,
 ) -> AppResult<()> {
+    if req_id == 0 {
+            return Ok(());
+        }
     match op_result {
+        
         OperationResult::Charge(cr) => {
             let (allowed, error) = match cr {
                 ChargeResult::Ok => (true, None),
                 ChargeResult::Failed(err) => (false, Some(err)),
             };
 
+            
             station
                 .send(NodeToStationMsg::ChargeResult {
                     request_id: req_id,
@@ -271,8 +294,15 @@ impl Node for Replica {
         println!("[REPLICA] current members: {:?}", self.members.len());
     }
 
-    async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>) {
+    async fn handle_cluster_view(&mut self, connection: &mut Connection, database: &mut Database, members: Vec<(u64, SocketAddr)>) {
         // Si llega el cluster_view es porque nosotros mandamos el join, así que está ok.
+
+        //inserto bdd nueva
+
+        while let Some(op) = self.offline_queue.pop_front() {
+             self.handle_request(connection, database, 0, op, self.address).await.unwrap();
+         }
+
         self.members.clear();
         for (id, addr) in members {
             self.members.insert(id, addr);

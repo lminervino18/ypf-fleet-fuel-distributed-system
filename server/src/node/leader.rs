@@ -3,6 +3,7 @@ use super::election::bully::Bully;
 use super::node::Node;
 use super::pending_operatoin::PendingOperation;
 use super::replica::Replica;
+use crate::node::database;
 use crate::{errors::AppResult, node::utils::get_id_given_addr};
 use common::operation::Operation;
 use common::operation_result::{ChargeResult, OperationResult};
@@ -322,6 +323,15 @@ impl Node for Leader {
         .await;
     }
 
+     async fn handle_disconnect_node(&mut self){
+        self.is_offline = true;
+     }
+
+     async fn handle_connect_node(&mut self, connection: &mut Connection){
+        self.is_offline = false;
+        todo!("Leader never has to connect as leader")
+     }
+
     /// Called when we receive a `Message::Join` through the generic
     /// Node dispatcher.
     async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr) {
@@ -362,7 +372,7 @@ impl Node for Leader {
 
     /// Called when we receive a `Message::ClusterView` through the
     /// generic Node dispatcher.
-    async fn handle_cluster_view(&mut self, _members: Vec<(u64, SocketAddr)>) {
+    async fn handle_cluster_view(&mut self, _connection: &mut Connection, _database: &mut Database, _members: Vec<(u64, SocketAddr)>) {
         // leader shouldn't receive cluster_view messages
         todo!();
     }

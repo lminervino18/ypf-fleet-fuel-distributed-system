@@ -146,26 +146,7 @@ pub trait Node {
     /// - flip their `is_offline` flag,
     /// - emit debug messages to the Station,
     /// - adjust cluster behavior.
-    async fn handle_disconnect_node(&mut self) {
-        /* Example (Leader):
-        if self.is_offline {
-            let _ = self
-                .station.send(NodeToStationMsg::Debug(
-                    "[Leader] Node is already in OFFLINE mode; pump operations are auto-approved."
-                        .to_string(),
-                ))
-                .await;
-        } else {
-            self.is_offline = true;
-            let _ = self
-                .station.send(NodeToStationMsg::Debug(
-                    "[Leader] Node switched to OFFLINE mode. Cluster traffic will be ignored and pump operations will be queued and auto-approved."
-                        .to_string(),
-                ))
-                .await;
-        }
-        */
-    }
+    async fn handle_disconnect_node(&mut self);
 
     /// Default ONLINE transition handler.
     ///
@@ -173,49 +154,7 @@ pub trait Node {
     /// - flip their `is_offline` flag,
     /// - replay queued offline operations into the actor layer,
     /// - notify the Station via debug messages.
-    async fn handle_connect_node(&mut self) {
-        /* Example (Leader):
-        if !self.is_offline {
-            let _ = self
-                .station.send(NodeToStationMsg::Debug(
-                    "[Leader] Node is already in ONLINE mode; pump operations go through normal verification."
-                        .to_string(),
-                ))
-                .await;
-        } else {
-            self.is_offline = false;
-            let queued = self.offline_queue.len();
-            while let Some(OfflineQueuedCharge {
-                request_id,
-                account_id,
-                card_id,
-                amount,
-            }) = self.offline_queue.pop_front()
-            {
-                let op = Operation::Charge {
-                    account_id,
-                    card_id,
-                    amount,
-                    from_offline_station: true,
-                };
-
-                self.router.do_send(RouterCmd::Execute {
-                    op_id: request_id,
-                    operation: op,
-                });
-            }
-
-            let _ = self
-                .station.send(NodeToStationMsg::Debug(
-                    format!(
-                        "[Leader] Node switched back to ONLINE mode. Replayed {} queued offline operations into the actor system (they were already confirmed to the station).",
-                        queued
-                    ),
-                ))
-                .await;
-        }
-        */
-    }
+    async fn handle_connect_node(&mut self, connection: &mut Connection);
 
     /// Default handler for high-level Station messages.
     ///
@@ -246,7 +185,7 @@ pub trait Node {
                 self.handle_disconnect_node().await;
             }
             StationToNodeMsg::ConnectNode => {
-                self.handle_connect_node().await;
+                self.handle_connect_node(connection).await;
             }
         }
     }
@@ -274,7 +213,7 @@ pub trait Node {
 
     async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr);
 
-    async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>);
+    async fn handle_cluster_view(&mut self, connection: &mut Connection, database: &mut Database, members: Vec<(u64, SocketAddr)>);
 
     async fn handle_cluster_update(
         &mut self,
@@ -332,7 +271,7 @@ pub trait Node {
                 RoleChange::None
             }
             Message::ClusterView { members } => {
-                self.handle_cluster_view(members).await;
+                self.handle_cluster_view(connection, db, members).await;
                 RoleChange::None
             }
             Message::ClusterUpdate { new_member } => {
@@ -382,6 +321,10 @@ pub trait Node {
                 node_msg = connection.recv() => {
                     match node_msg {
                         Ok(msg) => {
+                            if self.is_offline() {
+                                // if we're offline, ignore node messages
+                                continue;
+                            }
                             last_seen = Instant::now();
                             let role_change = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await?;
                             match role_change {
