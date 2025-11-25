@@ -75,6 +75,7 @@ impl Node for Replica {
         self.address
     }
 
+    /// Handle a lost connection to a peer.
     async fn handle_connection_lost_with(
         &mut self,
         connection: &mut Connection,
@@ -85,11 +86,12 @@ impl Node for Replica {
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
             );
-            self.start_election(connection).await;
+            let _ = self.start_election(connection).await;
         }
 
         Ok(())
     }
+
 
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         for (_id, addr) in &self.cluster {
@@ -109,35 +111,36 @@ impl Node for Replica {
             .await)
     }
 
+    
+
+    // async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         println!("[REPLICA {}] starting election", self.id);
-        let mut greater_ids = 0;
-        for (id, addr) in &self.cluster {
-            if *id > self.id
-                && connection
-                    .send(
-                        Message::Election {
-                            candidate_id: self.id,
-                            candidate_addr: self.address,
-                        },
-                        addr,
-                    )
-                    .await
-                    .is_ok()
-            {
-                println!(
-                    "[REPLICA {}] could send election to a higher role: {}",
-                    self.id, id
-                );
-                greater_ids += 1;
+
+        // Build peer_ids map from the current membership (excluding self).
+        let mut peer_ids = HashMap::new();
+        for (peer_id, addr) in &self.cluster {
+            if *peer_id == self.id {
+                continue;
             }
-        }
 
-        if greater_ids > 0 {
-            return Ok(RoleChange::None);
+            peer_ids.insert(*peer_id, *addr);
         }
+        println!(
+            "[REPLICA {}] election peer_ids: {:?}",
+            self.id, peer_ids
+        );
 
-        self.anounce_coordinator(connection).await
+        crate::node::election::bully::conduct_election(
+            &self.bully,
+            connection,
+            peer_ids,
+            self.id,
+            self.address,
+        )
+        .await;
+
+        Ok(RoleChange::None)
     }
 
     async fn handle_operation_result(
@@ -265,17 +268,18 @@ impl Node for Replica {
             "[REPLICA {}] received election message from {}",
             self.id, candidate_addr
         );
-        if candidate_id > self.id {
-            todo!("election message should never come from a greater id");
-        }
-
-        connection.send(
-            Message::ElectionOk {
+        let should_reply = {
+            let b = self.bully.lock().await;
+            b.should_reply_ok(candidate_id)
+        };
+        if should_reply {
+            // if i'm higher, reply OK
+            let reply = Message::ElectionOk {
                 responder_id: self.id,
-            },
-            &candidate_addr,
-        );
-        self.start_election(connection).await;
+            };
+            let _ = connection.send(reply, &candidate_addr).await;
+        }
+        // otherwise, do not reply
     }
 
     async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
@@ -283,6 +287,10 @@ impl Node for Replica {
         // no hago nada porque en realidad si no me "iba a llegar" ya crasheé antes, el tema es si
         // el otro nodo crashea justo después de recibir mi mensaje de election (no va a pasar en
         // nuestra demo ;)   )
+        
+        // => aún asi debo poner un "listo, terminé la elección y hay un líder. no hacer nada más"
+        let mut b = self.bully.lock().await;
+        b.on_election_ok(responder_id);
     }
 
     async fn handle_coordinator(
@@ -303,7 +311,7 @@ impl Node for Replica {
         // TODO: por ahí ya q somos réplica confiamos en el algoritmo e ignoramos el caso de q el
         // id sea menor al nuestro
         if leader_id < self.id {
-            todo!("leader_id should not be less than self");
+            panic!("leader_id should not be less than self");
         }
 
         self.leader_addr = leader_addr;
@@ -470,8 +478,14 @@ impl Replica {
         // Start network connection.
         let mut connection = Connection::start(address, max_conns).await?;
 
+
         // Seed membership: self + leader.
         let id = get_id_given_addr(address);
+
+        println!(
+            "[REPLICA {}] Started at {}, leader at {}",
+            id, address, leader_addr
+        );
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
         members.insert(id, address);
 

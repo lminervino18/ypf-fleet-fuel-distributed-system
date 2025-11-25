@@ -101,6 +101,14 @@ impl Node for Leader {
     ) -> AppResult<()> {
         if let Some(_dead_member) = self.cluster.remove(&get_id_given_addr(address)) {
             println!("[LEADER] Se cayó {:?}, sacándolo del cluster", address);
+            // listar miembros del cluster (con id y puerto)
+            let miembros: Vec<String> = self
+                .cluster
+                .iter()
+                .map(|(id, addr)| format!("ID={} ADDR={}", id, addr))
+                .collect();
+            println!("[LEADER] Miembros actuales del cluster: {:?}", miembros);
+
         } else {
             println!(
                 "[LEADER] Se cayó {:?}, pero no estaba en el cluster",
@@ -297,7 +305,8 @@ impl Node for Leader {
     }
 
     async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
-        todo!("leader received election_ok");
+        let mut b = self.bully.lock().await;
+        b.on_election_ok(responder_id);
     }
 
     async fn handle_coordinator(
@@ -520,6 +529,8 @@ impl Leader {
         let self_id = get_id_given_addr(address);
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
         members.insert(self_id, address);
+
+        println!("[LEADER {}] Starting leader node with address={}", self_id, address);
 
         // Start the TCP ConnectionManager for this node.
         let connection = Connection::start(address, max_conns).await?;
