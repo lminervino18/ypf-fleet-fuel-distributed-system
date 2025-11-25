@@ -2,6 +2,10 @@
 pub const HEARTBEAT_REQUEST: u8 = 0xFE;
 pub const HEARBEAT_REPLY: u8 = 0xFF;
 
+// handler first message
+pub const MSG_TYPE_HANDLER_FIRST: u8 = 0x69;
+// pub const HANDLER_FIRST_MSG_SRL_LEN: usize = SOCKET_ADDR_LEN;
+
 // msg types
 pub const MSG_TYPE_REQUEST: u8 = 0x00;
 pub const MSG_TYPE_LOG: u8 = 0x01;

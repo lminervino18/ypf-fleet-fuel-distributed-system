@@ -1,3 +1,4 @@
+use super::serialize_socket_address;
 use crate::network::serials::protocol::*;
 use crate::operation_result::OperationResult;
 use crate::{Message, operation::Operation};
@@ -20,8 +21,14 @@ impl From<Message> for Vec<u8> {
             Response { req_id, op_result } => serialize_response_message(req_id, op_result),
             RoleQuery { addr } => serialize_role_query_message(addr),
             RoleResponse { node_id, role } => serialize_role_response_message(node_id, role),
-            Coordinator { leader_id, leader_addr } => serialize_coordinator_message(leader_id, leader_addr),
-            Election { candidate_id, candidate_addr } => serialize_election_message(candidate_id, candidate_addr),
+            Coordinator {
+                leader_id,
+                leader_addr,
+            } => serialize_coordinator_message(leader_id, leader_addr),
+            Election {
+                candidate_id,
+                candidate_addr,
+            } => serialize_election_message(candidate_id, candidate_addr),
             ElectionOk { responder_id } => serialize_election_ok_message(responder_id),
             _ => todo!(),
         }
@@ -166,15 +173,4 @@ fn serialize_cluster_update_message(new_member: (u64, SocketAddr)) -> Vec<u8> {
     srl.extend(type_srl);
     srl.extend(new_member_srl);
     srl
-}
-
-fn serialize_socket_address(addr: SocketAddr) -> [u8; 6] {
-    match addr.ip() {
-        IpAddr::V4(ip) => {
-            let [a, b, c, d] = ip.octets();
-            let [p0, p1] = addr.port().to_be_bytes();
-            [a, b, c, d, p0, p1]
-        }
-        _ => panic!("only ipv4 is supported"),
-    }
 }
