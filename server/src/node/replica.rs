@@ -89,7 +89,7 @@ impl Node for Replica {
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
             );
-            return self.start_election(connection).await;
+            //return self.start_election(connection).await;
         }
 
         Ok(RoleChange::None)
