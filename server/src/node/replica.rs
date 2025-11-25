@@ -19,6 +19,7 @@ use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::Arc,
+    time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
 
@@ -59,6 +60,7 @@ pub struct Replica {
     operations: HashMap<u32, Operation>,
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
+    start_time: Instant,
     // NOTE: no `router` field anymore; we talk to the actor system via `Database`.
 }
 
@@ -82,6 +84,17 @@ impl Node for Replica {
         address: SocketAddr,
     ) -> AppResult<()> {
         if address == self.leader_addr {
+            // Ignorar falsos positivos durante los primeros 5 segundos después del inicio.
+            let elapsed = Instant::now().duration_since(self.start_time);
+            if elapsed < Duration::from_secs(5) {
+                println!(
+                    "[REPLICA {}] Ignorando ConnectionLostWith temporal del líder ({}s desde inicio)",
+                    self.id,
+                    elapsed.as_secs_f32()
+                );
+                return Ok(());
+            }
+
             println!(
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
@@ -120,6 +133,7 @@ impl Node for Replica {
         // Build peer_ids map from the current membership (excluding self).
         let mut peer_ids = HashMap::new();
         for (peer_id, addr) in &self.cluster {
+            // TODO: REVISAR ESTA LOGICA, PUEDE QUE NO ESTÉ MAL QUE UN NODO SE ENVIE UN MENSAJE A SI MISMO (revisar loop)
             if *peer_id == self.id {
                 continue;
             }
@@ -335,7 +349,7 @@ impl Node for Replica {
     ) {
         self.cluster.insert(new_member.0, new_member.1);
         println!("[REPLICA] new cluster member added: {new_member:?}");
-        println!("[REPLICA] current members: {:?}", self.cluster.len());
+        println!("[REPLICA] current members {:?}: {:?}", self.cluster.len(), self.cluster);
     }
 
     async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>) {
@@ -405,6 +419,7 @@ impl Replica {
             operations,
             is_offline,
             offline_queue,
+            start_time: Instant::now(),
         }
     }
     async fn commit_operation(&mut self, db: &mut Database, op_id: u32) -> AppResult<()> {
@@ -502,6 +517,7 @@ impl Replica {
             operations: HashMap::new(),
             is_offline: false,
             offline_queue: VecDeque::new(),
+            start_time: Instant::now(),
         };
 
         // Join inicial contra el líder para que rebroadcastée el ClusterView.

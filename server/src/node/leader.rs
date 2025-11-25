@@ -381,7 +381,7 @@ impl Node for Leader {
                 .await?;
         }
         println!("[LEADER] New node joined: {addr:?} (ID={node_id})");
-        println!("[LEADER] Current members: {:?}", self.cluster.len());
+        println!("[LEADER] current members {:?}: {:?}", self.cluster.len(), self.cluster);
         /* if node_id > self.id {
             self.start_election(connection).await;
         } */
