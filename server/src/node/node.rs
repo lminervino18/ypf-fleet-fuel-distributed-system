@@ -5,7 +5,7 @@ use crate::node::database;
 use actix::dev::MessageResponse;
 use common::operation::Operation;
 use common::operation_result::OperationResult;
-use common::{Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
+use common::{AppError, Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
 use std::net::SocketAddr;
 use tokio::select;
 use tokio::time::Duration;
@@ -106,7 +106,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
-        database: &mut Database,    
+        database: &mut Database,
         account_id: u64,
         card_id: u64,
         amount: f32,
@@ -135,10 +135,16 @@ pub trait Node {
             from_offline_station: false,
         };
 
-        self.handle_request(connection, database,request_id, op, self.get_address())
+        self.handle_request(connection, database, request_id, op, self.get_address())
             .await
             .unwrap();
     }
+
+    async fn handle_connection_lost_with(
+        &mut self,
+        connection: &mut Connection,
+        address: SocketAddr,
+    ) -> AppResult<()>;
 
     /// Default OFFLINE transition handler.
     ///
@@ -268,11 +274,14 @@ pub trait Node {
         leader_addr: SocketAddr,
     ) -> RoleChange;
 
-    async fn start_election(&mut self, connection: &mut Connection);
+    async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
+
+    async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
     // === Cluster membership hooks (Join / ClusterView) ===
 
-    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr);
+    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr)
+        -> AppResult<()>;
 
     async fn handle_cluster_view(&mut self, members: Vec<(u64, SocketAddr)>);
 
@@ -297,7 +306,7 @@ pub trait Node {
                 op,
                 addr,
             } => {
-                self.handle_request(connection, db,op_id, op, addr).await?;
+                self.handle_request(connection, db, op_id, op, addr).await?;
                 RoleChange::None
             }
             Message::Log { op_id, op } => {
@@ -340,7 +349,8 @@ pub trait Node {
                 RoleChange::None
             }
             Message::Response { req_id, op_result } => {
-                let _ = self.handle_response(connection, station, req_id, op_result)
+                let _ = self
+                    .handle_response(connection, station, req_id, op_result)
                     .await?;
                 RoleChange::None
             }
@@ -362,27 +372,13 @@ pub trait Node {
         mut db: Database,
         mut station: Station,
     ) -> AppResult<RoleChange> {
-        use tokio::time::{interval, Instant};
-        let mut check = interval(Duration::from_millis(100));
-        let liveness_threshold = Duration::from_millis(300);
-        let mut last_seen = Instant::now();
-
         loop {
             select! {
                 // periodic tick to check liveness
-                // _ = check.tick() => {
-                //     let elapsed = last_seen.elapsed();
-                //     if elapsed >= liveness_threshold {
-                //         self.start_election(&mut connection).await;
-                //         last_seen = Instant::now();
-                //     }
-                // }
-
                 // === Node-to-node messages (Raft / Bully / Cluster membership) ===
                 node_msg = connection.recv() => {
                     match node_msg {
                         Ok(msg) => {
-                            last_seen = Instant::now();
                             let role_change = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await?;
                             match role_change {
                                 RoleChange::None => {},
@@ -396,6 +392,9 @@ pub trait Node {
                                 }
                             }
                         }
+                        Err(AppError::ConnectionLostWith { address }) => {
+                            self.handle_connection_lost_with(&mut connection, address).await?;
+                        },
                         Err(_e) => {
                             // TODO: manejar errores de red si querés algo más fino
                         }
