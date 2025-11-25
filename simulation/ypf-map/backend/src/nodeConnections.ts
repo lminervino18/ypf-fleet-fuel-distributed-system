@@ -21,7 +21,7 @@ class NodeConnection {
   private buffer: Buffer = Buffer.alloc(0);
   private pending: PendingRequest = null;
 
-  // 🔧 CAMBIO: que sea opcional, no null | Promise
+  // que sea opcional, no null | Promise
   private connecting?: Promise<void>;
 
   private closed = true;
@@ -42,7 +42,7 @@ class NodeConnection {
       return this.connecting;
     }
 
-    // 🔧 CAMBIO: usamos una variable local tipada Promise<void>
+    // usamos una variable local tipada Promise<void>
     const p = new Promise<void>((resolve, reject) => {
       const socket = new net.Socket();
       this.socket = socket;
@@ -227,10 +227,26 @@ export function getNodeConnection(host: string, port: number): NodeConnection {
   return conn;
 }
 
+// ⬇️ SOLO CAMBIAMOS ESTO: atrapamos errores y devolvemos "disconnected"
 export async function queryNodeRole(
   host: string,
   port: number
 ): Promise<any> {
   const conn = getNodeConnection(host, port);
-  return conn.queryRole();
+
+  try {
+    const res = await conn.queryRole();
+    return res;
+  } catch (err: any) {
+    console.warn(
+      `[NODE-CONN] queryNodeRole failed for ${host}:${port}:`,
+      err?.message ?? err
+    );
+
+    return {
+      ok: false,
+      role: "disconnected",
+      error: err?.message ?? "connection error",
+    };
+  }
 }
