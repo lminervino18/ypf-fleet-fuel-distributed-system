@@ -106,19 +106,12 @@ impl Handler {
         sender: &mut StreamSender<Message>,
         received: AppResult<MessageKind>,
         last_seen: &mut Instant,
-        address: SocketAddr, // sólo para printear debug
+        _address: SocketAddr, // sólo para printear debug
     ) -> AppResult<()> {
         match received {
             Ok(msg_kind) => match msg_kind {
-                HeartbeatRequest => {
-                    println!(
-                        "[HANDLER] received heartbeat request from {}, replying",
-                        address
-                    );
-                    Ok(sender.send_heartbeat_reply().await?)
-                }
+                HeartbeatRequest => Ok(sender.send_heartbeat_reply().await?),
                 HeartbeatReply => {
-                    println!("[HANDLER] received heartbeat reply from {}", address);
                     *last_seen = Instant::now();
                     Ok(())
                 }
@@ -146,7 +139,6 @@ impl Handler {
                             result = Self::handle_recv_result(&mut sender, received, &mut last_seen, address).await,
                         // si se cumplió esta duration entonces mando hearbeat
                         _ = sleep(HEARTBEAT_FREQUENCY) => {
-                            println!("[HANDLER] sending hearbeat request to {}", address);
                             sender.send_heartbeat_request().await?;
                         }
                 }
