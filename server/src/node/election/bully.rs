@@ -1,6 +1,6 @@
 use common::Message;
 use std::net::SocketAddr;
-use std::time::{SystemTime, Instant};
+use std::time::{Instant};
 
 /// Bully algorithm helper
 pub struct Bully {

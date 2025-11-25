@@ -7,7 +7,7 @@ use crate::node::node::RoleChange;
 use crate::{errors::AppResult, node::utils::get_id_given_addr};
 use common::operation::Operation;
 use common::operation_result::{ChargeResult, OperationResult};
-use common::{AppError, Connection, Message, NodeToStationMsg, Station};
+use common::{Connection, Message, NodeToStationMsg, Station};
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
