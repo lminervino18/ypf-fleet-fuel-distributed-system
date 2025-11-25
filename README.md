@@ -14,59 +14,223 @@ Enunciado disponible en [este enlace](https://concurrentes-fiuba.github.io/2025_
 
 
 ## Levantar proyecto
-Ejecutar el siguiente comando en la terminal para ejecutar el lado del servidor
+
+Ejecutar el siguiente comando en la terminal para levantar el lado del servidor (líder + réplicas + estaciones simuladas) de forma automática:
+
 ```bash
 ./scripts/launch.sh <N_replicas> <M_estaciones>
 ```
 
-Para el administrador de tarjetas (cliente) se pueden ejecutar los siguientes comandos en la terminal
+> `<N_replicas>` = cantidad de réplicas del cluster  
+> `<M_estaciones>` = cantidad de node_client (estaciones) a levantar  
+
+---
+
+### Servidor distribuido (`server`)
+
+Si se quiere lanzar los nodos a mano (sin script), se usa el binario `server` con `clap`:
+
 ```bash
-# Especificar el servidor, en caso contrario utiliza el default
-./scripts/admin.sh --server <direccion_servidor> limit-account --account-id <id_cuenta> --amount <monto>
+# Líder
+cargo run --bin server -- \
+  --address 127.0.0.1:5000 \
+  --coords -31.4 -64.2 \
+  --pumps 4 \
+  leader --max-conns 32
 
-# Especificar coordenadas del cliente (latitud y longitud), por defecto usa -34.6989 -64.7597 (centro de Argentina)
-# Es un parametro global, su orden no importa
-./scripts/admin.sh --coords <lat> <lon> account-query --account-id <id_cuenta>
-
-# Limitar los montos disponibles en la cuenta
-./scripts/admin.sh limit-account --account-id <id_cuenta> --amount <monto>
-
-# Limitar el monto disponible de una tarjeta en particular de una cuenta
-./scripts/admin.sh limit-card --account-id <id_cuenta> --card-id <id_tarjeta> --amount <monto>
-
-# Consultar el saldo de la cuenta y de cada tarjeta de la misma
-./scripts/admin.sh account-query --account-id <id_cuenta>
-
-# Realizar la facturación de la cuenta (en su totalidad o en un periodo)
-./scripts/admin.sh bill --account-id <id_cuenta> [--period <año-mes>]
+# Réplica (apuntando al líder)
+cargo run --bin server -- \
+  --address 127.0.0.1:5001 \
+  --coords -34.6 -58.4 \
+  --pumps 4 \
+  replica --leader-addr 127.0.0.1:5000 --max-conns 32
 ```
 
-Ejemplos de uso
+Parámetros principales:
+
+- `--address <IP:PORT>`: dirección en la que escucha el nodo.  
+- `--coords <LAT> <LON>`: coordenadas geográficas del nodo (para el mapa).  
+- `--pumps <N>`: cantidad de surtidores que simula la estación interna.  
+- Subcomandos:
+  - `leader --max-conns <N>`: inicia un nodo líder.
+  - `replica --leader-addr <IP:PORT> --max-conns <N>`: inicia una réplica conectada al líder.
+  - `station { ... }`: modo estación dedicado (aún no implementado, `todo!`).
+
+> Tanto el **líder** como cada **réplica** levantan internamente un simulador de estación (`Station::start(pumps)`) que lee **stdin** y permite disparar cargas desde la terminal (ver sección *Simulador de estación por stdin*).
+
+---
+
+### Estación / nodo cliente (`node_client`)
+
+El `node_client` es un cliente fino que simula los surtidores de una estación y reenvía las operaciones al cluster:
+
 ```bash
-# especificar el servidor, en caso contrario utiliza el default
-./scripts/admin.sh --server 127.0.0.1:7070 limit-account --account-id 100 --amount 100.50
+# Uso general
+node_client <bind_addr> <max_connections> <num_pumps> <known_node_1> [<known_node_2> ...]
 
-# idem pero especificando coordenadas
-./scripts/admin.sh --server 127.0.0.1:7070 limit-account --account-id 100 --amount 100.50 --coords -31.4 -64.2
-
-# especificar coordenadas del cliente (Córdoba, Argentina)
-./scripts/admin.sh --coords -31.4 -64.2 account-query --account-id 100
-
-# Limitar los montos disponibles en la cuenta
-./scripts/admin.sh limit-account --account-id 100 --amount 100.50
-
-# Limitar el monto disponible de una tarjeta en particular
-./scripts/admin.sh limit-card --account-id 100 --card-id card123 --amount 50.0
-
-# Consultar el saldo de la cuenta
-./scripts/admin.sh account-query --account-id 100
-
-# Realizar la facturación de la cuenta (sin aclarar periodo, muestra la totalidad)
-./scripts/admin.sh bill --account-id 100
-
-# Realizar la facturación de la cuenta (aclarando periodo, muestra solo en ese periodo)
-./scripts/admin.sh bill --account-id 100 --period 2025-10
+# Ejemplo
+cargo run --bin node_client -- \
+  127.0.0.1:6000 \
+  128 \
+  5 \
+  127.0.0.1:5000 127.0.0.1:5001
 ```
+
+Donde:
+
+- `<bind_addr>`: IP:PUERTO donde escucha el `node_client`.
+- `<max_connections>`: máximo de conexiones aceptadas.
+- `<num_pumps>`: cantidad de surtidores que simula.
+- `<known_node_*>`: uno o más nodos del cluster (líder y/o réplicas) a los que envía las operaciones.
+
+> Igual que el servidor, el `node_client` crea internamente un `Station::start(num_pumps)` que usa **stdin** para simular las cargas de los surtidores.
+
+---
+
+### Simulador de estación por stdin (server y node_client)
+
+Tanto el binario `server` (líder / réplica) como el binario `node_client` comparten el mismo simulador de estación.  
+Cada proceso que levanta una `Station` muestra un prompt estilo:
+
+```text
+[Station] Starting station simulator with N pumps (ids: 0..=N-1)
+=== Station / pump simulator commands ===
+...
+```
+
+Desde **stdin** se pueden enviar comandos con el siguiente formato:
+
+```text
+<pump_id> <account_id> <card_id> <amount>
+```
+
+Ejemplos:
+
+```text
+0 100 10 50.0     # surtidor 0, cuenta 100, tarjeta 10, monto 50.0
+1 200 20 125.5    # surtidor 1, cuenta 200, tarjeta 20, monto 125.5
+```
+
+- `pump_id`: índice del surtidor (0..=N-1).  
+- `account_id`: id de cuenta a debitar.  
+- `card_id`: id de tarjeta dentro de esa cuenta.  
+- `amount`: monto a consumir.
+
+Cuando se envía una línea válida:
+
+- El simulador genera un `request_id` único.
+- Marca el `pump_id` como **ocupado** hasta recibir la respuesta.
+- Envía un `StationToNodeMsg::ChargeRequest` al nodo (server o node_client).
+
+Las respuestas del nodo llegan como `NodeToStationMsg::ChargeResult` y se muestran así:
+
+```text
+[Station][RESULT] pump=0 -> CHARGE OK (request_id=123, account=100, card=10, amount=50)
+[Station][RESULT] pump=1 -> CHARGE DENIED (request_id=456, account=200, card=20, amount=125.5, error=...)
+```
+
+---
+
+#### Comandos especiales del simulador
+
+Además de las líneas de carga, el simulador entiende los siguientes comandos de texto plano:
+
+```text
+help
+quit
+exit
+disconnect
+connect
+```
+
+- `help`  
+  Muestra la ayuda del simulador (formato de comandos y ejemplos).
+
+- `quit` / `exit`  
+  Detiene el simulador de estación de ese proceso:
+  - Se imprime: `[Station] Received 'quit', shutting down simulator.`
+  - El proceso principal sigue corriendo, pero ya no se leen más comandos de stdin para esa estación.
+
+- `disconnect`  
+  Envía `StationToNodeMsg::DisconnectNode` al nodo:
+  - Pide al nodo pasar a **modo OFFLINE** (según la lógica interna del nodo).
+  - Útil para probar colas de operaciones y reconexión.
+
+- `connect`  
+  Envía `StationToNodeMsg::ConnectNode` al nodo:
+  - Pide al nodo volver a **modo ONLINE**.
+  - Útil para probar cómo se vacía la cola de operaciones pendientes.
+
+---
+
+### Administrador de cuentas interactivo (`administrator`)
+
+El administrador se conecta a un nodo del cluster para consultar y modificar límites de cuenta/tarjeta.  
+Es **interactivo por stdin** (un pequeño REPL con comandos de texto).
+
+```bash
+# Uso general
+administrator <bind_addr> <target_node_addr> <account_id>
+
+# Ejemplos
+cargo run --bin administrator -- \
+  127.0.0.1:9000 \
+  127.0.0.1:5000 \
+  100
+
+cargo run --bin administrator -- \
+  127.0.0.1:9001 \
+  127.0.0.1:5001 \
+  200
+```
+
+- `<bind_addr>`: dirección local desde la que se conecta el administrador.
+- `<target_node_addr>`: nodo del cluster al que se le envían las solicitudes (típicamente el líder).
+- `<account_id>`: cuenta fija sobre la que va a operar esta instancia del administrador.
+
+Una vez levantado, aparece el prompt:
+
+```text
+Interactive administrator is ready.
+Type 'help' to see commands, 'exit' to quit.
+admin>
+```
+
+Comandos disponibles dentro del administrador:
+
+- `help`  
+  Muestra la lista de comandos.
+
+- `exit` / `quit`  
+  Cierra el administrador.
+
+- `limit-account <amount>`  
+  Actualiza el límite de la cuenta fija (`account_id` con la que se levantó el proceso).  
+  - `amount > 0` → establece ese límite.  
+  - `amount <= 0` → elimina el límite (lo deja en `None`).
+
+- `limit-card <card_id> <amount>`  
+  Actualiza el límite de una tarjeta específica de la cuenta.
+
+- `account-query`  
+  Consulta el estado de la cuenta (saldos, consumos por tarjeta, etc.).
+
+- `bill`  
+- `bill 2025-10`  
+  Dispara la facturación de la cuenta, opcionalmente filtrando por periodo `YYYY-MM`.  
+
+Ejemplos de sesión:
+
+```text
+admin> limit-account 1000.0
+admin> limit-card 10 200.0
+admin> account-query
+admin> bill
+admin> bill 2025-10
+admin> exit
+```
+
+
 
 
 ## Informe
