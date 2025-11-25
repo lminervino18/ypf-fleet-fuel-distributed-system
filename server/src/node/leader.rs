@@ -85,16 +85,16 @@ impl Node for Leader {
     async fn handle_connection_lost_with(
         &mut self,
         _connection: &mut Connection,
-        address: SocketAddr,
+        _address: SocketAddr,
     ) -> AppResult<RoleChange> {
-        if let Some(_dead_member) = self.cluster.remove(&get_id_given_addr(address)) {
+        /* if let Some(_dead_member) = self.cluster.remove(&get_id_given_addr(address)) {
             println!("[LEADER] Se cayó {:?}, sacándolo del cluster", address);
         } else {
             println!(
                 "[LEADER] Se cayó {:?}, pero no estaba en el cluster",
                 address
             );
-        }
+        } */
 
         Ok(RoleChange::None)
     }

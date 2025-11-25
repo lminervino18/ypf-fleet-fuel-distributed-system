@@ -80,9 +80,9 @@ impl Node for Replica {
         connection: &mut Connection,
         address: SocketAddr,
     ) -> AppResult<RoleChange> {
-        let Some(_dead_node) = self.cluster.remove(&get_id_given_addr(address)) else {
+        /* let Some(_dead_node) = self.cluster.remove(&get_id_given_addr(address)) else {
             return Ok(RoleChange::None); // me voy sin preguntar
-        };
+        }; */
 
         if address == self.leader_addr {
             println!(
@@ -96,6 +96,7 @@ impl Node for Replica {
     }
 
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
+        println!("[REPLICA {}] announcing myself as coordinator", self.id);
         for node in self.cluster.values() {
             if node == &self.address {
                 continue;
@@ -299,10 +300,9 @@ impl Node for Replica {
         leader_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
         println!(
-            "[REPLICA {}] received coordinator message from {}",
+            "[REPLICA {}] AAAAAAAAAAAA received coordinator message from {}",
             self.id, leader_addr
         );
-
         if leader_id == self.id {
             println!(
                 "[REPLICA {}] coordinator msg id is self.id, address: {}",
@@ -516,7 +516,6 @@ impl Replica {
         // - own `connection`, `db` y `station`.
         loop {
             let role_change = replica.run(connection, db, station).await?;
-
             match role_change {
                 super::node::RoleChange::PromoteToLeader => {
                     println!("[REPLICA] Converting to Leader...");
