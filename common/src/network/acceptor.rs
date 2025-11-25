@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
 use tokio::task::{self, JoinHandle};
 
-const INCOMING_BUFF_SIZE: usize = 300;
+// const INCOMING_BUFF_SIZE: usize = 300;
 
 pub struct Acceptor {
     listener: TcpListener,
@@ -51,12 +51,14 @@ impl Acceptor {
 
     async fn run(&mut self, messages_tx: Arc<Sender<AppResult<Message>>>) {
         while let Ok((stream, _)) = self.listener.accept().await {
-            let Ok(handler) = Handler::start_from(stream, messages_tx.clone()).await else {
-                continue;
-            };
-
+            println!("[ACCEPTOR] accepted stream");
+            println!("[ACCEPTOR] locking guard");
             let mut guard = self.active.lock().await;
+            let handler = Handler::start_from(stream, messages_tx.clone())
+                .await
+                .unwrap();
             add_handler_from(&mut guard, handler, self.max_conns);
+            println!("[ACCEPTOR] droping guard");
         }
     }
 }

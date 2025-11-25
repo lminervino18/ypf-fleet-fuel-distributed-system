@@ -14,9 +14,9 @@ pub fn add_handler_from(
         if let Some(mut removed) = remove_last_recently_used(active) {
             removed.stop();
         }
-
-        active.insert(handler.address, handler);
     }
+
+    active.insert(handler.address, handler);
 }
 
 fn remove_last_recently_used(

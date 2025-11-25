@@ -52,12 +52,16 @@ impl Connection {
 
         let mut guard = self.active.lock().await;
         if !guard.contains_key(address) {
-            let handler = Handler::start(*address, self.messages_tx.clone()).await?;
+            println!(
+                "[CONNECTION] no tengo el address {}, la creo y mando",
+                address
+            );
+            let handler = Handler::start(self.address, *address, self.messages_tx.clone()).await?;
             add_handler_from(&mut guard, handler, self.max_conns);
         }
 
-        guard.get_mut(address).unwrap().send(msg).await?;
-        Ok(())
+        println!("[CONNECTION] tengo {} handlers", guard.len());
+        guard.get_mut(address).unwrap().send(msg).await
     }
 
     pub async fn recv(&mut self) -> AppResult<Message> {
