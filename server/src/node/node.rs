@@ -363,8 +363,26 @@ pub trait Node {
                 }
             }
 
-            match self.handle_run_result(&mut connection, result).await {
-                Ok(RoleChange::None) => {}
+            match result {
+                Ok(role_change) => match role_change {
+                    RoleChange::None => {}
+                    RoleChange::PromoteToLeader => return Ok(RoleChange::PromoteToLeader),
+                    RoleChange::DemoteToReplica { new_leader_addr } => {
+                        return Ok(RoleChange::DemoteToReplica { new_leader_addr })
+                    }
+                },
+                Err(AppError::ConnectionLostWith { address }) => {
+                    match self
+                        .handle_connection_lost_with(&mut connection, address)
+                        .await
+                    {
+                        Ok(RoleChange::PromoteToLeader) => return Ok(RoleChange::PromoteToLeader),
+                        Ok(RoleChange::DemoteToReplica { new_leader_addr }) => {
+                            return Ok(RoleChange::DemoteToReplica { new_leader_addr })
+                        }
+                        _ => {}
+                    }
+                }
                 x => {
                     println!("[NODE] stopping run beacause of: {x:?}");
                     return x;
