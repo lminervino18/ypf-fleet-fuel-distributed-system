@@ -104,6 +104,7 @@ impl Node for Replica {
      async fn handle_connect_node(&mut self, connection: &mut Connection){
         self.is_offline = false;
         connection.reconnect().await.unwrap();
+        println!("[REPLICA {}] Reconnected to the network, sending Join to leader", self.id);
         let _ = connection
             .send(
                 Message::Join {

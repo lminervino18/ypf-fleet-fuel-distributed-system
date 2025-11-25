@@ -383,6 +383,9 @@ pub trait Node {
                         _ => {}
                     }
                 }
+                Err(AppError::ConnectionLost) => {
+                    continue;
+                }
                 x => {
                     println!("[NODE] stopping run beacause of: {x:?}");
                     return x;
