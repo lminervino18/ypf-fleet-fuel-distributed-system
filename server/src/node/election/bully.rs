@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 
 /// Conduct a Bully election: sends Election to higher-ID peers,
 /// waits for replies, and promotes to coordinator if no ElectionOk received.
+/// Returns true if this node became the coordinator.
 /// peer_ids: map of peer_id -> SocketAddr for all other nodes
 pub async fn conduct_election(
     bully: &Arc<Mutex<Bully>>,
@@ -25,10 +26,11 @@ pub async fn conduct_election(
     cluster: HashMap<u64, SocketAddr>,
     id: u64,
     address: SocketAddr,
-) {
+) -> bool {
     // attempt to start election; return early if another election is active
     if !bully.lock().await.mark_start_election() {
-        return;
+        println!("[Bully ID={}] Election already in progress, not starting another", id);
+        return false;
     }
 
     let msg = Message::Election {
@@ -77,20 +79,24 @@ pub async fn conduct_election(
         let mut b = bully.lock().await;
         b.mark_coordinator();
 
-        // Announce to ALL peers (including itself, so that way we are marked as Leader)
-        // let all_peers: Vec<SocketAddr> = peer_ids.values().copied().collect();
-        println!("[Bully ID={}] Announcing coordinator to {:?} peers", id, cluster);
+        // Announce to ALL peers (excluding itself)
+        println!("[Bully ID={}] Announcing coordinator to {:?} peers (except itself)", id, cluster);
         let coordinator_msg = Message::Coordinator {
             leader_id: id,
             leader_addr: address,
         };
-        for p in cluster.values() {
-            
-            let _ = connection.send(coordinator_msg.clone(), p).await;
+        for (peer_id, peer_addr) in cluster.iter() {
+            if *peer_id == id {
+                continue; // Skip announcing to ourselves
+            }
+            let _ = connection.send(coordinator_msg.clone(), peer_addr).await;
         }
+        return true; // We became the coordinator
     } else {
         println!("[Bully ID={}] Received ElectionOk, stepping down", id);
     }
+    
+    false // We did not become the coordinator
 }
 
 impl Bully {

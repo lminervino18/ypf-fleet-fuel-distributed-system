@@ -98,7 +98,7 @@ impl Node for Leader {
         &mut self,
         _connection: &mut Connection,
         address: SocketAddr,
-    ) -> AppResult<()> {
+    ) -> AppResult<RoleChange> {
         if let Some(_dead_member) = self.cluster.remove(&get_id_given_addr(address)) {
             println!("[LEADER] Se cayó {:?}, sacándolo del cluster", address);
             // listar miembros del cluster (con id y puerto)
@@ -116,7 +116,7 @@ impl Node for Leader {
             );
         }
 
-        Ok(())
+        Ok(RoleChange::None)
     }
 
     async fn handle_request(
@@ -320,7 +320,7 @@ impl Node for Leader {
         drop(b); // release lock
 
         // Check if we should demote to replica (another node became leader)
-        if leader_id > self.id {
+        if leader_id == self.id {
             println!("[LEADER {}] Demoting to REPLICA, new leader is {}", self.id, leader_id);
             return super::node::RoleChange::DemoteToReplica { new_leader_addr: leader_addr };
         }

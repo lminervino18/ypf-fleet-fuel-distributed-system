@@ -81,10 +81,10 @@ impl Node for Replica {
     async fn handle_connection_lost_with(
         &mut self,
         connection: &mut Connection,
-        address: SocketAddr,
-    ) -> AppResult<()> {
-        if address == self.leader_addr {
-            // Ignorar falsos positivos durante los primeros 5 segundos después del inicio.
+        lost_address: SocketAddr,
+    ) -> AppResult<RoleChange> {
+        if lost_address == self.leader_addr {
+            // TEMPORAL: Ignorar falsos positivos durante los primeros segundos después del inicio.
             let elapsed = Instant::now().duration_since(self.start_time);
             if elapsed < Duration::from_secs(2) {
                 println!(
@@ -92,22 +92,25 @@ impl Node for Replica {
                     self.id,
                     elapsed.as_secs_f32()
                 );
-                return Ok(());
+                return Ok(RoleChange::None);
             }
 
             println!(
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
             );
-            let _ = self.start_election(connection).await;
+            return self.start_election(connection).await;
         }
 
-        Ok(())
+        Ok(RoleChange::None)
     }
 
 
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
-        for (_id, addr) in &self.cluster {
+        for (peer_id, addr) in &self.cluster {
+            if *peer_id == self.id {
+                continue; // Skip announcing to ourselves
+            }
             connection
                 .send(
                     Message::Coordinator {
@@ -119,6 +122,7 @@ impl Node for Replica {
                 .await?;
         }
 
+        // Handle our own promotion to leader
         Ok(self
             .handle_coordinator(connection, self.id, self.address)
             .await)
@@ -126,7 +130,6 @@ impl Node for Replica {
 
     
 
-    // async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         println!("[REPLICA {}] starting election", self.id);
 
@@ -135,7 +138,7 @@ impl Node for Replica {
             self.id, self.cluster
         );
 
-        crate::node::election::bully::conduct_election(
+        let became_coordinator = crate::node::election::bully::conduct_election(
             &self.bully,
             connection,
             self.cluster.clone(),
@@ -143,6 +146,11 @@ impl Node for Replica {
             self.address,
         )
         .await;
+        
+        if became_coordinator {
+            println!("[REPLICA {}] Election complete: promoting to LEADER", self.id);
+            return Ok(RoleChange::PromoteToLeader);
+        }
         
         Ok(RoleChange::None)
     }

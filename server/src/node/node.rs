@@ -144,7 +144,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         address: SocketAddr,
-    ) -> AppResult<()>;
+    ) -> AppResult<RoleChange>;
 
     /// Default OFFLINE transition handler.
     ///
@@ -377,23 +377,21 @@ pub trait Node {
                 // periodic tick to check liveness
                 // === Node-to-node messages (Raft / Bully / Cluster membership) ===
                 node_msg = connection.recv() => {
+                    println!("[NODE] Received node message: {:?}", node_msg);
                     match node_msg {
                         Ok(msg) => {
                             let role_change = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await?;
-                            match role_change {
-                                RoleChange::None => {},
-                                RoleChange::PromoteToLeader => {
-                                    println!("[NODE] Role change detected: {:?}", role_change);
-                                    return Ok(role_change);
-                                }
-                                RoleChange::DemoteToReplica { new_leader_addr } => {
-                                    println!("[NODE] Role change detected: {:?}", role_change);
-                                    return Ok(role_change);
-                                }
+                            if !matches!(role_change, RoleChange::None) {
+                                println!("[NODE] Role change detected: {:?}", role_change);
+                                return Ok(role_change);
                             }
                         }
                         Err(AppError::ConnectionLostWith { address }) => {
-                            self.handle_connection_lost_with(&mut connection, address).await?;
+                            let role_change = self.handle_connection_lost_with(&mut connection, address).await?;
+                            if !matches!(role_change, RoleChange::None) {
+                                println!("[NODE] Role change detected from connection loss: {:?}", role_change);
+                                return Ok(role_change);
+                            }
                         },
                         Err(_e) => {
                             // TODO: manejar errores de red si querés algo más fino
