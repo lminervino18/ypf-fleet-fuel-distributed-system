@@ -7,6 +7,7 @@ use super::account::AccountActor;
 use super::actor_router::ActorRouter;
 use super::messages::{AccountChargeReply, AccountMsg, CardMsg, RouterInternalMsg};
 use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
+use common::operation::CardSnapshot; // <- desde common::operation
 
 /// Internal representation of a card-level charge.
 #[derive(Debug, Clone, Copy)]
@@ -222,7 +223,9 @@ impl Handler<CardMsg> for CardActor {
                     self.send_internal(RouterInternalMsg::OperationCompleted {
                         op_id,
                         success: false,
-                        error: Some(VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded)),
+                        error: Some(VerifyError::ChargeLimit(
+                            LimitCheckError::CardLimitExceeded,
+                        )),
                     });
                     return;
                 }
@@ -280,6 +283,32 @@ impl Handler<CardMsg> for CardActor {
                 }
             }
 
+            // ===== Nuevos mensajes para snapshot / replace =====
+            CardMsg::GetSnapshot { op_id } => {
+                // Construimos snapshot de este card con su estado actual.
+                let snapshot = CardSnapshot {
+                    account_id: self.account_id,
+                    card_id: self.card_id,
+                    limit: self.limit,
+                    consumed: self.consumed,
+                };
+
+                self.send_internal(RouterInternalMsg::CardSnapshotCollected { op_id, snapshot });
+            }
+
+            CardMsg::ReplaceState {
+                new_limit,
+                new_consumed,
+            } => {
+                // Reemplazamos nuestro estado por el del snapshot.
+                self.limit = new_limit;
+                self.consumed = new_consumed;
+
+                // Al aplicar un snapshot de DB, descartamos cualquier tarea pendiente:
+                self.current_task = None;
+                self.queue.clear();
+            }
+
             CardMsg::Debug(text) => {
                 self.send_internal(RouterInternalMsg::Debug(format!(
                     "[Card {}/{}] {}",
@@ -325,8 +354,8 @@ impl Handler<AccountChargeReply> for CardActor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc;
     use std::collections::VecDeque;
+    use tokio::sync::mpsc;
 
     /// Crea un CardActor de prueba.
     fn make_test_card() -> CardActor {

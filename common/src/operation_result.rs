@@ -1,5 +1,7 @@
 use crate::VerifyError;
-use std::collections::HashMap;
+use std::net::SocketAddr;
+
+use crate::operation::{AccountSnapshot, CardSnapshot, DatabaseSnapshot};
 
 /// Resultado de una operación de alto nivel.
 ///
@@ -8,6 +10,8 @@ use std::collections::HashMap;
 /// - `LimitAccount`     → `OperationResult::LimitAccount(LimitResult)`
 /// - `LimitCard`        → `OperationResult::LimitCard(LimitResult)`
 /// - `AccountQuery`     → `OperationResult::AccountQuery(AccountQueryResult)`
+/// - `GetDatabase`      → `OperationResult::DatabaseSnapshot(DatabaseSnapshot)`
+/// - `ReplaceDatabase`  → `OperationResult::ReplaceDatabase`
 #[derive(Debug, Clone, PartialEq)]
 pub enum OperationResult {
     /// Resultado de un `Operation::Charge`.
@@ -19,8 +23,20 @@ pub enum OperationResult {
     /// Resultado de un `Operation::LimitCard`.
     LimitCard(LimitResult),
 
-    /// Resultado de un `Operation::AccountQuery`.
+    /// Resultado de un `Operation::AccountQuery` o `Bill`.
     AccountQuery(AccountQueryResult),
+
+    /// Resultado de un `Operation::GetDatabase`.
+    ///
+    /// Contiene el snapshot completo (incluye el `addr` embebido en
+    /// `snapshot.addr`).
+    DatabaseSnapshot(DatabaseSnapshot),
+
+    /// Ack de `Operation::ReplaceDatabase`.
+    ///
+    /// Si en el futuro querés propagar errores de validación del snapshot,
+    /// podés cambiar este tipo por un enum con Ok / Failed.
+    ReplaceDatabase,
 }
 
 /// Resultado específico de un `Charge`.

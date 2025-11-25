@@ -177,19 +177,25 @@ impl Node for Replica {
     }
 
     async fn handle_operation_result(
-        &mut self,
-        connection: &mut Connection,
-        _station: &mut Station,
-        op_id: u32,
-        _operation: Operation,
-        _result: OperationResult,
-    ) -> AppResult<()> {
-        // Igual que antes: cuando termina la operación en la réplica,
-        // mandamos un Ack al líder.
-        connection
-            .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
-            .await
+    &mut self,
+    connection: &mut Connection,
+    _station: &mut Station,
+    op_id: u32,
+    operation: Operation,
+    _result: OperationResult,
+) -> AppResult<()> {
+    // Si esta operación era un ReplaceDatabase, no mandamos ningún Ack al líder.
+    if let Operation::ReplaceDatabase { .. } = operation {
+        return Ok(());
     }
+
+    // Igual que antes: cuando termina la operación "normal" en la réplica,
+    // mandamos un Ack al líder.
+    connection
+        .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
+        .await
+}
+
 
     async fn handle_request(
         &mut self,
@@ -377,10 +383,15 @@ impl Node for Replica {
         connection: &mut Connection,
         database: &mut Database,
         members: Vec<(u64, SocketAddr)>,
+        leader_addr: SocketAddr,
+        database: DatabaseSnapshot,
     ) {
         // Si llega el cluster_view es porque nosotros mandamos el join, así que está ok.
 
         //inserto bdd nueva
+        database
+            .send(DatabaseCmd::ReplaceDatabase { snapshot: database })
+            .await;
 
         while let Some(op) = self.offline_queue.pop_front() {
             self.handle_request(connection, database, 0, op, self.address)
@@ -393,6 +404,7 @@ impl Node for Replica {
             self.cluster.insert(id, addr);
         }
 
+        self.leader_addr = leader_addr;
         // Ensure we are present with the correct address.
         // self.cluster.insert(self.id, self.address);
         println!("[REPLICA] handled cluster view: {:?}", self.cluster);

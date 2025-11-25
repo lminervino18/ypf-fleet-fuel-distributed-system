@@ -3,6 +3,7 @@ use super::election::bully::Bully;
 use super::node::Node;
 use super::pending_operatoin::PendingOperation;
 use super::replica::Replica;
+use crate::node::database;
 use crate::node::node::RoleChange;
 use crate::{errors::AppResult, node::utils::get_id_given_addr};
 use common::operation::Operation;
@@ -212,50 +213,91 @@ impl Node for Leader {
     }
 
     async fn handle_operation_result(
-        &mut self,
-        connection: &mut Connection,
-        station: &mut Station,
-        op_id: u32,
-        operation: Operation,
-        result: OperationResult,
-    ) -> AppResult<()> {
-        let pending = self
-            .operations
-            .remove(&op_id)
-            .expect("leader received the result of an unexisting operation");
+    &mut self,
+    connection: &mut Connection,
+    station: &mut Station,
+    op_id: u32,
+    operation: Operation,
+    result: OperationResult,
+) -> AppResult<()> {
+    let pending = self
+        .operations
+        .remove(&op_id)
+        .expect("leader received the result of an unexisting operation");
 
-        if pending.client_addr == self.address {
-            if let Operation::Charge { .. } = operation {
-                if let OperationResult::Charge(charge_res) = result {
-                    let (allowed, error) = match charge_res {
-                        ChargeResult::Ok => (true, None),
-                        ChargeResult::Failed(e) => (false, Some(e)),
-                    };
+    match operation {
+        // ==========================
+        // GET DATABASE → ClusterView
+        // ==========================
+        Operation::GetDatabase { addr } => {
+            // Este OperationResult viene del ActorRouter como DatabaseSnapshot.
+            if let OperationResult::DatabaseSnapshot(snapshot) = result {
+                let view = ClusterView {
+                    leader_addr: self.address,
+                    database: snapshot,
+                };
 
-                    let msg = NodeToStationMsg::ChargeResult {
-                        request_id: pending.request_id,
-                        allowed,
-                        error,
-                    };
-
-                    station.send(msg).await?;
-                }
+                // Se lo mandamos al nodo que pidió el snapshot (addr),
+                // no al client_addr del pending.
+                connection
+                    .send(Message::ClusterView { members: self.members, leader_addr: self.leader_addr, database: snapshot }, &addr)
+                    .await
+            } else {
+                // Fallback defensivo: no coincide Operation vs OperationResult.
+                // Podés loguear algo si querés.
+                Ok(())
             }
-
-            return Ok(());
         }
 
-        // Caso cliente externo: devolvemos el OperationResult completo.
-        connection
-            .send(
-                Message::Response {
-                    req_id: pending.request_id,
-                    op_result: result,
-                },
-                &pending.client_addr,
-            )
-            .await
+        // ======================================
+        // REPLACE DATABASE → no se reenvía nada
+        // ======================================
+        Operation::ReplaceDatabase { .. } => {
+            // Ya aplicaste el snapshot en el router/actores.
+            // No hay que devolver nada ni a estación ni a clientes.
+            Ok(())
+        }
+
+        // ======================================
+        // RESTO DE OPERACIONES (comportamiento viejo)
+        // ======================================
+        op => {
+            if pending.client_addr == self.address {
+                // Caso estación local: sólo nos importa Charge para contestarle.
+                if let Operation::Charge { .. } = op {
+                    if let OperationResult::Charge(charge_res) = result {
+                        let (allowed, error) = match charge_res {
+                            ChargeResult::Ok => (true, None),
+                            ChargeResult::Failed(e) => (false, Some(e)),
+                        };
+
+                        let msg = NodeToStationMsg::ChargeResult {
+                            request_id: pending.request_id,
+                            allowed,
+                            error,
+                        };
+
+                        station.send(msg).await?;
+                    }
+                }
+
+                return Ok(());
+            }
+
+            // Caso cliente externo: devolvemos el OperationResult completo.
+            connection
+                .send(
+                    Message::Response {
+                        req_id: pending.request_id,
+                        op_result: result,
+                    },
+                    &pending.client_addr,
+                )
+                .await
+        }
     }
+}
+
 
     async fn handle_election(
         &mut self,
@@ -332,15 +374,17 @@ impl Node for Leader {
     async fn handle_join(
         &mut self,
         connection: &mut Connection,
+        database: &mut Database,
         addr: SocketAddr,
     ) -> AppResult<()> {
         let node_id = get_id_given_addr(addr); // gracias ale :)
         self.cluster.insert(node_id, addr);
-        let view_msg = Message::ClusterView {
-            members: self.cluster.iter().map(|(id, addr)| (*id, *addr)).collect(),
-        };
-        // le mandamos el clúster view al que entró
-        connection.send(view_msg, &addr).await?;
+
+        
+        database.send(DatabaseCmd::GetDatabase {
+            addr,
+        });
+
         // le mandamos el update a las réplicas
         for replica_addr in self.cluster.values() {
             if *replica_addr == self.address || *replica_addr == addr {
@@ -378,14 +422,16 @@ impl Node for Leader {
     /// generic Node dispatcher.
     async fn handle_cluster_view(
         &mut self,
-        _connection: &mut Connection,
-        _database: &mut Database,
-        _members: Vec<(u64, SocketAddr)>,
-    ) {
+        connection: &mut Connection,
+        database: &mut Database,
+        members: Vec<(u64, SocketAddr)>,
+        leader_addr: SocketAddr,
+        database: DatabaseSnapshot,
+    );
         // leader shouldn't receive cluster_view messages
         todo!();
     }
-}
+
 
 impl Leader {
     /// Convert this Leader into a Replica with the given new leader address.
@@ -592,30 +638,6 @@ mod test {
                     .unwrap()
                 });
         })
-    }
-
-    #[tokio::test]
-    #[ignore = "se queda en timeout ya que no hay replica corriendo"]
-    async fn test_leader_sends_log_msg_when_handling_a_request() {
-        let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12362);
-        let replica_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12363);
-        let _leader_handle = spawn_leader_in_thread(leader_addr);
-        thread::sleep(Duration::from_secs(1)); // fuerzo context switch
-        let mut replica = Connection::start(replica_addr, 1).await.unwrap();
-        replica
-            .send(Message::Join { addr: replica_addr }, &leader_addr)
-            .await
-            .unwrap();
-
-        let received = replica.recv().await.unwrap();
-        let expected = Message::ClusterView {
-            members: vec![
-                (get_id_given_addr(leader_addr), leader_addr),
-                (get_id_given_addr(replica_addr), replica_addr),
-            ],
-        };
-        // FIXME: este test a veces falla porq las addr vienen al revés, comparar sets
-        assert_eq!(received, expected);
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 use crate::NodeRole;
-use crate::operation::Operation;
-use crate::operation_result::OperationResult;
+use crate::operation::{Operation,DatabaseSnapshot };
+use crate::operation_result::{OperationResult};
 use std::net::SocketAddr;
 
 /// Messages sent between nodes.
@@ -66,9 +66,14 @@ pub enum Message {
         addr: SocketAddr,
     },
 
-    /// Snapshot of the current cluster membership.
+    /// Snapshot of the current cluster membership + database.
     ClusterView {
+        /// Lista de miembros conocidos: (node_id, addr)
         members: Vec<(u64, SocketAddr)>,
+        /// Dirección del líder actual.
+        leader_addr: SocketAddr,
+        /// Snapshot lógico de toda la base de datos.
+        database: DatabaseSnapshot,
     },
 
     /// Notificación incremental de un nuevo miembro.
@@ -76,7 +81,7 @@ pub enum Message {
         new_member: (u64, SocketAddr),
     },
 
-    // debug msgs for typescript simulation fend
+    // debug msgs for typescript simulation frontend
     RoleQuery {
         addr: SocketAddr,
     },
