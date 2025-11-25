@@ -226,7 +226,7 @@ pub trait Node {
         connection: &mut Connection,
         database: &mut Database,
         members: Vec<(u64, SocketAddr)>,
-    );
+    ) -> AppResult<()>;
 
     async fn handle_cluster_update(
         &mut self,
@@ -389,6 +389,10 @@ pub trait Node {
                     }
                 }
                 Err(AppError::ConnectionLost) => {
+                    continue;
+                }
+                Err(AppError::ConnectionRefused { address }) => {
+                    println!("[NODE] connection refused: {}", address);
                     continue;
                 }
                 x => {
