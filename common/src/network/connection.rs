@@ -42,7 +42,7 @@ impl Connection {
     pub async fn send(&mut self, msg: Message, address: &SocketAddr) -> AppResult<()> {
         let mut guard = self.active.lock().await;
         if !guard.contains_key(address) {
-            let handler = Handler::start(address, self.messages_tx.clone()).await?;
+            let handler = Handler::start(*address, self.messages_tx.clone()).await?;
             add_handler_from(&mut guard, handler, self.max_conns);
         }
 
@@ -77,9 +77,7 @@ mod test {
         time::Duration,
     };
     use tokio::{
-        io::AsyncReadExt,
-        net::TcpStream,
-        task::{self, yield_now},
+        task::{self},
         time::sleep,
     };
 
@@ -175,6 +173,7 @@ mod test {
         let mut connection1 = Connection::start(address1, 1).await.unwrap();
         let mut connection2 = Connection::start(address2, 1).await.unwrap();
         let msg = Message::Ack { op_id: 0 };
+        // este test falla por el comentario que puse en `acceptor.rs`
         connection1.send(msg.clone(), &address2).await.unwrap();
         let result1 = connection2.recv().await;
         assert_eq!(result1, Ok(msg));

@@ -1,12 +1,14 @@
 use super::handler::MessageKind::{self, *};
 use crate::errors::{AppError, AppResult};
 use crate::network::serials::protocol::{HEARBEAT_REPLY, HEARTBEAT_REQUEST};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::{io::AsyncReadExt, net::tcp::OwnedReadHalf, sync::mpsc::Sender};
 
 pub struct StreamReceiver<T> {
     messages_tx: Arc<Sender<AppResult<T>>>,
     stream: OwnedReadHalf,
+    address: SocketAddr,
 }
 
 impl<T> StreamReceiver<T>
@@ -14,10 +16,15 @@ where
     T: TryFrom<Vec<u8>>,
     T::Error: Into<AppError>,
 {
-    pub fn new(messages_tx: Arc<Sender<AppResult<T>>>, stream: OwnedReadHalf) -> Self {
+    pub fn new(
+        messages_tx: Arc<Sender<AppResult<T>>>,
+        stream: OwnedReadHalf,
+        address: SocketAddr,
+    ) -> Self {
         Self {
             messages_tx,
             stream,
+            address,
         }
     }
 
@@ -25,9 +32,7 @@ where
     pub async fn write_connection_lost(&mut self) -> AppResult<()> {
         self.messages_tx
             .send(Err(AppError::ConnectionLostWith {
-                address: self.stream.peer_addr().expect(
-                    "receiver failed to get peer address while writing connection_lost message",
-                ),
+                address: self.address,
             }))
             .await
             .map_err(|_| AppError::ChannelClosed)?;
@@ -42,11 +47,7 @@ where
             .read_exact(&mut len_bytes)
             .await
             .map_err(|_| AppError::ConnectionLostWith {
-                address: self.stream.peer_addr().unwrap_or_else(|e| {
-                    // this should never happen since the skt was ok at the moment of
-                    // initialization of this sender
-                    panic!("failed to get peer address during handling of ConnectionClosed: {e}")
-                }),
+                address: self.address,
             })?;
         let len = u16::from_be_bytes(len_bytes) as usize;
         // read to buffer with allocated expected size
@@ -55,9 +56,7 @@ where
             .read_exact(&mut bytes)
             .await
             .map_err(|_| AppError::ConnectionLostWith {
-                address: self.stream.peer_addr().unwrap_or_else(|e| {
-                    panic!("failed to get peer address during handling of ConnectionClosed: {e}")
-                }),
+                address: self.address,
             })?;
 
         match bytes[..] {
@@ -79,6 +78,7 @@ where
 mod test {
     use super::*;
     use crate::Message;
+    use std::net::IpAddr;
     use tokio::{
         io::AsyncWriteExt,
         net::{TcpListener, TcpStream},
@@ -90,7 +90,7 @@ mod test {
     async fn test_successful_receive_with_valid_stream() {
         let sent_message = Message::Ack { op_id: 0 };
         let sent_message_copy = sent_message.clone();
-        let server_address = "127.0.0.1:12350";
+        let server_address = SocketAddr::new(IpAddr::V4([127, 0, 0, 1].into()), 12350);
         let client = task::spawn(async move {
             let mut client_skt = TcpStream::connect(server_address).await.unwrap();
             let mut message: Vec<u8> = 5u16.to_be_bytes().to_vec(); // 5 is the len of the ack msg
@@ -108,7 +108,7 @@ mod test {
         let (stream_rx, _) = stream.into_split();
         let (messages_tx, mut messages_rx) = mpsc::channel::<AppResult<Message>>(1);
         let messages_tx = Arc::new(messages_tx);
-        let mut receiver = StreamReceiver::new(messages_tx, stream_rx);
+        let mut receiver = StreamReceiver::new(messages_tx, stream_rx, server_address);
         client.await.unwrap();
         receiver.recv().await.unwrap();
         let received_msg = messages_rx.recv().await.unwrap();

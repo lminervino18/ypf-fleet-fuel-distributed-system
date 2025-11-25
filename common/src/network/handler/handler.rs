@@ -37,7 +37,7 @@ pub struct Handler {
 
 impl Handler {
     pub async fn start(
-        address: &SocketAddr,
+        address: SocketAddr,
         receiver_tx: Arc<Sender<AppResult<Message>>>,
     ) -> AppResult<Self> {
         let stream =
@@ -47,18 +47,15 @@ impl Handler {
                     address: address.to_string(),
                 })?;
 
-        Self::start_from(stream, receiver_tx).await
+        Self::start_from(address, stream, receiver_tx).await
     }
 
     pub async fn start_from(
+        address: SocketAddr,
         stream: TcpStream,
         receiver_tx: Arc<Sender<AppResult<Message>>>,
     ) -> AppResult<Self> {
         let (messages_tx, sender_rx) = mpsc::channel(MSG_BUFF_SIZE);
-        let address = stream.peer_addr().map_err(|e| AppError::Unexpected {
-            details: e.to_string(),
-        })?;
-
         Handler::new(stream, messages_tx, sender_rx, receiver_tx, address).await
     }
 
@@ -84,8 +81,8 @@ impl Handler {
         address: SocketAddr,
     ) -> AppResult<Self> {
         let (stream_rx, stream_tx) = stream.into_split();
-        let sender = StreamSender::new(sender_rx, stream_tx);
-        let receiver = StreamReceiver::new(receiver_tx, stream_rx);
+        let sender = StreamSender::new(sender_rx, stream_tx, address);
+        let receiver = StreamReceiver::new(receiver_tx, stream_rx, address);
         Ok(Self {
             handle: Self::run(sender, receiver, address),
             messages_tx,
@@ -205,7 +202,7 @@ mod test {
 
         tokio::time::sleep(Duration::from_secs(1)).await; // wait for listener
         let (receiver_tx, mut receiver_rx) = mpsc::channel(1);
-        let _handler = Handler::start(&address, Arc::new(receiver_tx))
+        let _handler = Handler::start(address, Arc::new(receiver_tx))
             .await
             .unwrap();
         let received = receiver_rx.recv().await.unwrap();
@@ -221,7 +218,7 @@ mod test {
         let listener = TcpListener::bind(address).await.unwrap();
         let handle = task::spawn(async move {
             let (receiver_tx, _) = mpsc::channel(1);
-            let mut handler = Handler::start(&address, Arc::new(receiver_tx))
+            let mut handler = Handler::start(address, Arc::new(receiver_tx))
                 .await
                 .unwrap();
             handler.send(message_copy).await.unwrap();
@@ -245,7 +242,7 @@ mod test {
         let listener = TcpListener::bind(address).await.unwrap();
         let handle1 = task::spawn(async move {
             let (receiver_tx, _) = mpsc::channel(1);
-            let mut handler = Handler::start(&address, Arc::new(receiver_tx))
+            let mut handler = Handler::start(address, Arc::new(receiver_tx))
                 .await
                 .unwrap();
             handler.send(message_copy).await.unwrap();
@@ -254,7 +251,7 @@ mod test {
 
         let (stream2, _) = listener.accept().await.unwrap();
         let (receiver_tx, mut receiver_rx) = mpsc::channel(1);
-        let _handler2 = Handler::start_from(stream2, Arc::new(receiver_tx))
+        let _handler2 = Handler::start_from(address, stream2, Arc::new(receiver_tx))
             .await
             .unwrap();
         let received = receiver_rx.recv().await.unwrap();
