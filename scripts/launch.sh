@@ -12,23 +12,17 @@ SERVER_BIN="$ROOT_DIR/server/target/debug/server"
 SERVER_CARGO="$ROOT_DIR/server/Cargo.toml"
 
 # --- Validación de argumentos ---
-if [ $# -ne 2 ]; then
-  echo "Uso: $0 <N_replicas> <M_estaciones>"
+if [ $# -ne 1 ]; then
+  echo "Uso: $0 <N_replicas>"
+  echo "Ejemplo: $0 3"
   exit 1
 fi
 
 N_REPLICAS=$1
-M_ESTACIONES=$2
 
-BASE_PORT=9000
+BASE_PORT=5000
 BASE_LAT=-34.60
 BASE_LON=-58.38
-
-# --- Compilar el servidor si no existe ---
-if [ ! -f "$SERVER_BIN" ]; then
-  echo "[BUILD] Compilando servidor..."
-  cargo build --manifest-path "$SERVER_CARGO"
-fi
 
 # --- Función para abrir terminales ---
 open_term() {
@@ -48,51 +42,44 @@ open_term() {
 }
 
 # --- Lanzar líder ---
-LEADER_PORT=$((BASE_PORT))
+LEADER_PORT=$BASE_PORT
 LEADER_IP="127.0.0.1"
-LEADER_CMD="$SERVER_BIN \
-  --role leader \
-  --ip $LEADER_IP \
-  --port $LEADER_PORT \
-  --coords $BASE_LAT $BASE_LON \
+LEADER_ADDR="$LEADER_IP:$LEADER_PORT"
+LEADER_CMD="cargo run --bin server -- \
+  --address $LEADER_ADDR \
+  --pumps 4 \
+  leader \
   --max-conns 32"
 
-echo "[BOOT] Lanzando líder en puerto $LEADER_PORT"
-open_term "$LEADER_CMD" "Líder"
+echo "[BOOT] Lanzando líder en $LEADER_ADDR"
+open_term "$LEADER_CMD" "Líder ($LEADER_PORT)"
+
+# Esperar un poco para que el líder esté listo
+sleep 2
 
 # --- Lanzar réplicas ---
 for i in $(seq 1 $N_REPLICAS); do
   PORT=$((BASE_PORT + i))
   LAT=$(echo "$BASE_LAT - 0.01 * $i" | bc)
   LON=$(echo "$BASE_LON - 0.01 * $i" | bc)
-  CMD="$SERVER_BIN \
-    --role replica \
-    --ip 127.0.0.1 \
-    --port $PORT \
-    --coords $LAT $LON \
-    --leader 127.0.0.1:$LEADER_PORT"
-  echo "[BOOT] Lanzando réplica $i en puerto $PORT"
-  open_term "$CMD" "Réplica $i"
-done
-
-# --- Lanzar estaciones ---
-for j in $(seq 1 $M_ESTACIONES); do
-  PORT=$((BASE_PORT + N_REPLICAS + j))
-  LAT=$(echo "$BASE_LAT + 0.02 * $j" | bc)
-  LON=$(echo "$BASE_LON + 0.02 * $j" | bc)
-  CMD="$SERVER_BIN \
-    --role station \
-    --ip 127.0.0.1 \
-    --port $PORT \
-    --coords $LAT $LON \
-    --leader 127.0.0.1:$LEADER_PORT"
-  echo "[BOOT] Lanzando estación $j en puerto $PORT"
-  open_term "$CMD" "Estación $j"
+  REPLICA_ADDR="127.0.0.1:$PORT"
+  
+  CMD="cargo run --bin server -- \
+    --address $REPLICA_ADDR \
+    --pumps 4 \
+    replica \
+    --leader-addr $LEADER_ADDR \
+    --max-conns 32"
+  
+  echo "[BOOT] Lanzando réplica $i en $REPLICA_ADDR"
+  open_term "$CMD" "Réplica $i ($PORT)"
+  
+  # Pequeña pausa entre réplicas para evitar race conditions
+  sleep 0.5
 done
 
 echo ""
 echo "✅ Sistema YPF Ruta iniciado con:"
-echo "   - 1 Líder en puerto $LEADER_PORT"
-echo "   - $N_REPLICAS Réplicas"
-echo "   - $M_ESTACIONES Estaciones"
+echo "   - 1 Líder en $LEADER_ADDR"
+echo "   - $N_REPLICAS Réplicas (puertos $((BASE_PORT + 1))-$((BASE_PORT + N_REPLICAS)))"
 echo ""
