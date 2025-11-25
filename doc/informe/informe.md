@@ -1,19 +1,3 @@
-# YPF Ruta
-Enunciado disponible en [este enlace](https://concurrentes-fiuba.github.io/2025_2C_tp2.html) o bien su copia local en [docs/enunciado_tp2](docs/enunciado_tp2.pdf).
-
-## Integrantes
-- **Nombre del equipo**: `:(){ :|:& };:`
-- **Corrector**: Darius Maitia
-
-| Nombre              | Padrón  |
-|---------------------|---------|
-| [Alejo Ordonez](https://github.com/alejoordonez02) | 108397 |
-| [Francisco Pereyra](https://github.com/fapereyra) | 105666 |
-| [Lorenzo Minervino](https://github.com/lminervino18) | 107863 |
-| [Alejandro Paff](https://github.com/AlePaff) | 103376 |
-
-## Informe
-El informe que se presenta a continuación está disponible en formato PDF $\LaTeX{}$ en [docs/informe.pdf](docs/informe/informe.pdf).
 
 # Introducción
 
@@ -531,5 +515,4 @@ El rol del **líder** como punto de compromiso de las operaciones, junto con las
 El uso del **modelo de actores** para representar cuentas y tarjetas introduce un esquema de concurrencia que evita compartir memoria mutable entre hilos y nodos. Todas las modificaciones de estado se expresan como mensajes de alto nivel (`Operation`) y sus correspondientes resultados (`OperationResult`), lo que simplifica tanto el razonamiento sobre la lógica de negocio como la integración con el protocolo de replicación. La política explícita para el **modo OFFLINE** en estaciones o nodos del clúster, junto con la reconciliación posterior, permite balancear continuidad de servicio y consistencia eventual del sistema.
 
 En conjunto, la arquitectura propuesta muestra que es posible construir un servicio de cobros distribuido que combina: replicación y consenso sobre operaciones, encapsulamiento de la lógica de negocio en actores y un protocolo de comunicación binario simple pero suficiente para las necesidades del dominio. A partir de esta base se pueden explorar extensiones naturales, como nuevas operaciones administrativas, métricas de uso por estación, o políticas más sofisticadas de manejo de riesgo en m
-
 
