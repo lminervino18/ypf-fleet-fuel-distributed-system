@@ -1,0 +1,107 @@
+/* Que todo ocupe la pantalla y sin scroll extra */
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  overflow: hidden;
+}
+
+/* El div del mapa ocupa todo */
+#map {
+  height: 100%;
+  width: 100%;
+}
+
+/* Botón de actualizar: centrado arriba usando la barra de Leaflet */
+.refresh-container {
+  /* contenedor del botón */
+}
+
+.leaflet-top.leaflet-right {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+}
+
+/* Estética del botón */
+.refresh-button {
+  padding: 8px 14px;
+  background: #1976d2;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.refresh-button:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+/* Spinner reutilizable */
+.spinner {
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* =====================
+   ICONOS YPF COLOREADOS
+   ===================== */
+
+.ypf-marker {
+  /* el <img> real tiene también clases de Leaflet */
+}
+
+.ypf-marker.leaflet-marker-icon {
+  width: 40px;
+  height: 40px;
+}
+
+/* Ajustá estos filtros según cómo se vea tu logo base */
+.ypf-marker--leader {
+  filter: hue-rotate(0deg) saturate(2); /* rojo-ish */
+}
+
+.ypf-marker--replica {
+  filter: hue-rotate(200deg) saturate(2); /* azul */
+}
+
+.ypf-marker--client {
+  filter: hue-rotate(120deg) saturate(2); /* verde */
+}
+
+.ypf-marker--disconnected {
+  filter: grayscale(1) brightness(0.7);
+}
+
+.ypf-marker--unknown {
+  filter: hue-rotate(50deg) saturate(2); /* dorado/amarillo */
+}
+
+/* Flecha leader → replica */
+.arrow-icon {
+  font-size: 18px;
+  color: #1976d2;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
+}

@@ -1,0 +1,10 @@
+target/
+.vscode/
+/scripts
+**/*.sh
+*.log
+
+# Todos los node_modules dentro del simulador YPF map
+simulation/ypf-map/node_modules/
+simulation/ypf-map/backend/node_modules/
+simulation/ypf-map/frontend/node_modules/

@@ -12,6 +12,63 @@ Enunciado disponible en [este enlace](https://concurrentes-fiuba.github.io/2025_
 | [Lorenzo Minervino](https://github.com/lminervino18) | 107863 |
 | [Alejandro Paff](https://github.com/AlePaff) | 103376 |
 
+
+## Levantar proyecto
+Ejecutar el siguiente comando en la terminal para ejecutar el lado del servidor
+```bash
+./scripts/launch.sh <N_replicas> <M_estaciones>
+```
+
+Para el administrador de tarjetas (cliente) se pueden ejecutar los siguientes comandos en la terminal
+```bash
+# Especificar el servidor, en caso contrario utiliza el default
+./scripts/admin.sh --server <direccion_servidor> limit-account --account-id <id_cuenta> --amount <monto>
+
+# Especificar coordenadas del cliente (latitud y longitud), por defecto usa -34.6989 -64.7597 (centro de Argentina)
+# Es un parametro global, su orden no importa
+./scripts/admin.sh --coords <lat> <lon> account-query --account-id <id_cuenta>
+
+# Limitar los montos disponibles en la cuenta
+./scripts/admin.sh limit-account --account-id <id_cuenta> --amount <monto>
+
+# Limitar el monto disponible de una tarjeta en particular de una cuenta
+./scripts/admin.sh limit-card --account-id <id_cuenta> --card-id <id_tarjeta> --amount <monto>
+
+# Consultar el saldo de la cuenta y de cada tarjeta de la misma
+./scripts/admin.sh account-query --account-id <id_cuenta>
+
+# Realizar la facturación de la cuenta (en su totalidad o en un periodo)
+./scripts/admin.sh bill --account-id <id_cuenta> [--period <año-mes>]
+```
+
+Ejemplos de uso
+```bash
+# especificar el servidor, en caso contrario utiliza el default
+./scripts/admin.sh --server 127.0.0.1:7070 limit-account --account-id 100 --amount 100.50
+
+# idem pero especificando coordenadas
+./scripts/admin.sh --server 127.0.0.1:7070 limit-account --account-id 100 --amount 100.50 --coords -31.4 -64.2
+
+# especificar coordenadas del cliente (Córdoba, Argentina)
+./scripts/admin.sh --coords -31.4 -64.2 account-query --account-id 100
+
+# Limitar los montos disponibles en la cuenta
+./scripts/admin.sh limit-account --account-id 100 --amount 100.50
+
+# Limitar el monto disponible de una tarjeta en particular
+./scripts/admin.sh limit-card --account-id 100 --card-id card123 --amount 50.0
+
+# Consultar el saldo de la cuenta
+./scripts/admin.sh account-query --account-id 100
+
+# Realizar la facturación de la cuenta (sin aclarar periodo, muestra la totalidad)
+./scripts/admin.sh bill --account-id 100
+
+# Realizar la facturación de la cuenta (aclarando periodo, muestra solo en ese periodo)
+./scripts/admin.sh bill --account-id 100 --period 2025-10
+```
+
+
 ## Informe
 El informe que se presenta a continuación está disponible en formato PDF $\LaTeX{}$ en [docs/informe.pdf](docs/informe/informe.pdf).
 

@@ -1,0 +1,18 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+common = { path = "../common" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[[bin]]
+name = "administrator"
+path = "src/administrator/main.rs"
+
+[[bin]]
+name = "node_client"
+path = "src/node_client/main.rs"

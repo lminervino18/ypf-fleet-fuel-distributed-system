@@ -1,0 +1,31 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime + net
+tokio = { version = "1", features = ["full", "net"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Ergonomía de errores
+anyhow = "1"
+
+# RNG (tenés habilitado small_rng; también usamos StdRng)
+rand = { version = "0.8", features = ["small_rng"] }
+
+# Actores
+actix = { version = "0.13", features = ["macros"] }
+
+# Logging (opcional pero recomendado; lo uso en Gateway)
+log = "0.4"
+env_logger = "0.11"
+
+# Tu crate compartido
+common = { path = "../common" }
+thiserror = "2.0.17"
+serde_json = "1.0.145"
+serde = "1.0.228"
+actix-rt = "2.11.0"
