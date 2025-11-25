@@ -26,7 +26,7 @@ pub enum MessageKind {
 use MessageKind::*;
 
 const HEARTBEAT_FREQUENCY: Duration = Duration::from_millis(500);
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 const MSG_BUFF_SIZE: usize = 512;
 
 #[derive(Debug)]

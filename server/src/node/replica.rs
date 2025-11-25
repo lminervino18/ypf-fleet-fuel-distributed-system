@@ -88,7 +88,7 @@ impl Node for Replica {
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
             );
-            return self.start_election(connection).await;
+            //return self.start_election(connection).await;
         }
 
         Ok(RoleChange::None)
@@ -315,7 +315,6 @@ impl Node for Replica {
         candidate_id: u64,
         candidate_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
-        self.cluster.remove(&get_id_given_addr(self.leader_addr));
         println!(
             "[REPLICA {}] received election message from {}",
             self.id, candidate_addr
@@ -367,7 +366,7 @@ impl Node for Replica {
         leader_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
         println!(
-            "[REPLICA {}] received coordinator message from {}",
+            "[REPLICA {}] AAAAAAAAAAAA received coordinator message from {}",
             self.id, leader_addr
         );
         let mut b = self.bully.lock().await;
@@ -417,15 +416,10 @@ impl Node for Replica {
         connection: &mut Connection,
         database: &mut Database,
         members: Vec<(u64, SocketAddr)>,
-    ) {
-        // Si llega el cluster_view es porque nosotros mandamos el join, así que está ok.
-
-        //inserto bdd nueva
-
+    ) -> AppResult<()> {
         while let Some(op) = self.offline_queue.pop_front() {
             self.handle_request(connection, database, 0, op, self.address)
-                .await
-                .unwrap();
+                .await?
         }
 
         self.cluster.clear();
@@ -433,9 +427,8 @@ impl Node for Replica {
             self.cluster.insert(id, addr);
         }
 
-        // Ensure we are present with the correct address.
-        // self.cluster.insert(self.id, self.address);
         println!("[REPLICA] handled cluster view: {:?}", self.cluster);
+        Ok(())
     }
 }
 
@@ -498,7 +491,7 @@ impl Replica {
     }
     async fn commit_operation(&mut self, db: &mut Database, op_id: u32) -> AppResult<()> {
         let Some(op) = self.operations.remove(&op_id) else {
-            todo!();
+            return Ok(());
         };
 
         // Igual que en Leader: fire-and-forget al actor world, ahora vía `Database`.

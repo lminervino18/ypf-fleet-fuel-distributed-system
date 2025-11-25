@@ -6,6 +6,12 @@ import nodesConfig from "../../../nodes.json";
 import ypfLogo from "./assets/ypf-logo.png"; // ajustá si tu estructura es distinta
 
 // =====================
+// CONFIG BACKEND
+// =====================
+const BACKEND_URL =
+  import.meta.env.VITE_BACKEND_URL ?? "http://localhost:3988";
+
+// =====================
 // TIPOS
 // =====================
 type BackendRole = "leader" | "replica" | "client" | "station" | "disconnected";
@@ -219,9 +225,9 @@ function App() {
       }
 
       try {
-        console.log("🌍 Fetching roles from backend…");
+        console.log("🌍 Fetching roles from backend…", BACKEND_URL);
 
-        const res = await fetch("http://localhost:3001/api/roles", {
+        const res = await fetch(`${BACKEND_URL}/api/roles`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -311,9 +317,7 @@ function App() {
             ];
 
             json.results
-              .filter(
-                (r) => r.ok && normalizeRole(r.role) === "replica"
-              )
+              .filter((r) => r.ok && normalizeRole(r.role) === "replica")
               .forEach((rep) => {
                 const cfg = nodeByKey[keyForNode(rep)];
                 if (!cfg) return;
