@@ -66,8 +66,8 @@ pub async fn conduct_election(
         let _ = connection.send(msg.clone(), p).await;
     }
 
-    // Configurar ventana SIN bloquear el loop principal: sólo fijamos deadline
-    const WINDOW_MS: u64 = 1200; // ventana de espera para ElectionOk
+    // Configurar ventana SIN bloquear el loop principal
+    const WINDOW_MS: u64 = 1200;
     {
         let mut b = bully.lock().await;
         b.election_deadline = Some(Instant::now() + std::time::Duration::from_millis(WINDOW_MS));

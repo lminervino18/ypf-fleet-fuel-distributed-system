@@ -150,7 +150,7 @@ impl Node for Replica {
         // Jitter mínimo para evitar colisiones exactas
         let jitter_ms = (self.id % 50) as u64;
         tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
-        
+
         println!("[REPLICA {}] starting election", self.id);
         println!("[REPLICA {}] current cluster members: {:?}", self.id, self.cluster);
 
@@ -182,7 +182,7 @@ impl Node for Replica {
                             let _ = connection.send(coordinator_msg.clone(), addr).await;
                         }
                         println!("[REPLICA {}] Election timeout: promoting to LEADER", self.id);
-            return Ok(RoleChange::PromoteToLeader);
+                        return Ok(RoleChange::PromoteToLeader);
                     } else {
                         b.election_in_progress = false;
                         b.election_deadline = None;
@@ -334,8 +334,15 @@ impl Node for Replica {
             };
             connection.send(reply, &candidate_addr).await?;
             
-            // Start my own election
-            return self.start_election(connection).await;
+            // Start my own election ONLY if not already in progress
+            let already_electing = {
+                let b = self.bully.lock().await;
+                b.election_in_progress
+            };
+            
+            if !already_electing {
+                return self.start_election(connection).await;
+            }
         }
         
         // otherwise, do not reply

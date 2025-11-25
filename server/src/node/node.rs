@@ -216,7 +216,7 @@ pub trait Node {
 
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
-    /// Chequea si venció el deadline de bully y aplica el cambio de rol.
+    /// Checks if the bully deadline has passed and applies the role change.
     async fn poll_election_timeout(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
     // === Cluster membership hooks (Join / ClusterView) ===
@@ -343,12 +343,15 @@ pub trait Node {
         mut db: Database,
         mut station: Station,
     ) -> AppResult<RoleChange> {
+        // Intervalo para chequeos periódicos de timeout de elección
+        let mut election_check_interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        
         loop {
             let mut result = Ok(RoleChange::None);
             select! {
                 // node messages
                 node_msg = connection.recv() => {
-                    println!("[NODE] Received node message: {:?}", node_msg);
+                    println!("[NODE] !!!Received node message: {:?}", node_msg);
                     match node_msg {
                         Ok(msg) => {
                             result = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await;
@@ -370,14 +373,16 @@ pub trait Node {
                         None => panic!("[FATAL] database went down"),
                     }
                 }
-            }
-            // chequeo de timeout de elección (no bloqueante)
-            match self.poll_election_timeout(&mut connection).await? {
-                RoleChange::PromoteToLeader => return Ok(RoleChange::PromoteToLeader),
-                RoleChange::DemoteToReplica { new_leader_addr } => {
-                    return Ok(RoleChange::DemoteToReplica { new_leader_addr })
+                // chequeo periódico de deadline de elección
+                _ = election_check_interval.tick() => {
+                    match self.poll_election_timeout(&mut connection).await? {
+                        RoleChange::PromoteToLeader => return Ok(RoleChange::PromoteToLeader),
+                        RoleChange::DemoteToReplica { new_leader_addr } => {
+                            return Ok(RoleChange::DemoteToReplica { new_leader_addr })
+                        }
+                        RoleChange::None => {}
+                    }
                 }
-                RoleChange::None => {}
             }
 
             match result {
