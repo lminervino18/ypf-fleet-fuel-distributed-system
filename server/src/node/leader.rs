@@ -302,8 +302,7 @@ impl Node for Leader {
         drop(b); // release lock
 
         // Check if we should demote to replica (another node became leader)
-        // TODO: > o ==?
-        if leader_id == self.id {
+        if leader_id >= self.id {
             println!("[LEADER {}] Demoting to REPLICA, new leader is {}", self.id, leader_id);
             return Ok(RoleChange::DemoteToReplica { new_leader_addr: leader_addr });
         }

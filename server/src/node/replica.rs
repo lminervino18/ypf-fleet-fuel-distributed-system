@@ -84,17 +84,6 @@ impl Node for Replica {
         lost_address: SocketAddr,
     ) -> AppResult<RoleChange> {
         if lost_address == self.leader_addr {
-            // TEMPORAL: Ignorar falsos positivos durante los primeros segundos después del inicio.
-            let elapsed = Instant::now().duration_since(self.start_time);
-            if elapsed < Duration::from_secs(2) {
-                println!(
-                    "[REPLICA {}] Ignorando ConnectionLostWith temporal del líder ({}s desde inicio)",
-                    self.id,
-                    elapsed.as_secs_f32()
-                );
-                return Ok(RoleChange::None);
-            }
-
             println!(
                 "[REPLICA {}] Se cayó el líder, arranco leader election",
                 self.id
@@ -158,6 +147,10 @@ impl Node for Replica {
     
 
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
+        // Add random jitter to avoid simultaneous elections
+        let jitter_ms = (self.id % 100) as u64; // Use node ID for deterministic but varied jitter
+        tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
+        
         println!("[REPLICA {}] starting election", self.id);
 
         println!(
@@ -178,7 +171,8 @@ impl Node for Replica {
             println!("[REPLICA {}] Election complete: promoting to LEADER", self.id);
             return Ok(RoleChange::PromoteToLeader);
         }
-        
+
+        println!("[REPLICA {}] Election complete: NOT promoting (higher node exists)", self.id);
         Ok(RoleChange::None)
     }
 
@@ -307,17 +301,24 @@ impl Node for Replica {
             "[REPLICA {}] received election message from {}",
             self.id, candidate_addr
         );
+        
+        // Check if should reply (release lock immediately)
         let should_reply = {
             let b = self.bully.lock().await;
             b.should_reply_ok(candidate_id)
         };
+
         if should_reply {
             // if i'm higher, reply OK
             let reply = Message::ElectionOk {
                 responder_id: self.id,
             };
             connection.send(reply, &candidate_addr).await?;
+            
+            // Start my own election
+            return self.start_election(connection).await;
         }
+        
         // otherwise, do not reply
         Ok(RoleChange::None)
     }
@@ -349,7 +350,7 @@ impl Node for Replica {
 
         // Check if we should promote to leader
         if leader_id == self.id {
-            println!("[REPLICA {}] Promoting to LEADER", self.id);
+            println!("[REPLICA {}] Election complete: promoting to LEADER", self.id);
             return Ok(RoleChange::PromoteToLeader);
         } 
 
@@ -382,7 +383,7 @@ impl Node for Replica {
     ) {
         self.cluster.insert(new_member.0, new_member.1);
         println!("[REPLICA] handle cluster update: {new_member:?}");
-        println!("[REPLICA] current members {:?}: {:?}", self.cluster.len(), self.cluster);
+        println!("[REPLICA] ============ current members {:?}: {:?}", self.cluster.len(), self.cluster);
     }
 
     async fn handle_cluster_view(
