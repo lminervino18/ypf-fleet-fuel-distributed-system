@@ -1,3 +1,7 @@
+// heartbeat protocol
+pub const HEARTBEAT_REQUEST: u8 = 0xFE;
+pub const HEARBEAT_REPLY: u8 = 0xFF;
+
 // msg types
 pub const MSG_TYPE_REQUEST: u8 = 0x00;
 pub const MSG_TYPE_LOG: u8 = 0x01;

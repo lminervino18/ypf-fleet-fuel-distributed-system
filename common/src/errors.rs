@@ -39,16 +39,19 @@ pub enum AppError {
         source: AddrParseError,
     },
 
-    #[error("Connection refused to {addr}")]
-    ConnectionRefused { addr: String },
+    #[error("Connection refused to {address}")]
+    ConnectionRefused { address: String },
 
-    #[error("Connection timed out to {addr}")]
-    ConnectionTimeout { addr: String },
+    #[error("Connection timed out to {address}")]
+    ConnectionTimeout { address: String },
 
-    /* #[error("Connection I/O error with {addr}: {source}")]
-    ConnectionIO { addr: String, source: io::Error }, */
-    #[error("Connection closed")]
-    ConnectionClosed { addr: SocketAddr },
+    // cuando perdemos la conexión con alguien
+    #[error("Connection lost with {address}")]
+    ConnectionLostWith { address: SocketAddr },
+
+    // cuando perdemos la conexión nosotros (o sea con todos)
+    #[error("Connection lost")]
+    ConnectionLost,
 
     #[error("Connection limit reached: max = {max}")]
     ConnectionLimit { max: usize },

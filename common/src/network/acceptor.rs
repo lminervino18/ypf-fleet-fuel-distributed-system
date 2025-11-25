@@ -1,13 +1,13 @@
-use super::Message;
 use super::active_helpers::add_handler_from;
 use super::handler::Handler;
+use super::Message;
 use crate::errors::{AppError, AppResult};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
 use tokio::task::{self, JoinHandle};
 
 const INCOMING_BUFF_SIZE: usize = 300;
@@ -22,7 +22,7 @@ impl Acceptor {
     pub async fn start(
         address: SocketAddr,
         active: Arc<Mutex<HashMap<SocketAddr, Handler>>>,
-        messages_tx: Arc<Sender<Message>>,
+        messages_tx: Arc<Sender<AppResult<Message>>>,
         max_conns: usize,
     ) -> AppResult<JoinHandle<()>> {
         let mut acceptor = Acceptor::new(address, active, max_conns).await?;
@@ -41,7 +41,7 @@ impl Acceptor {
         Ok(Self {
             listener: TcpListener::bind(address).await.map_err(|_| {
                 AppError::ConnectionRefused {
-                    addr: address.to_string(),
+                    address: address.to_string(),
                 }
             })?,
             active,
@@ -49,9 +49,14 @@ impl Acceptor {
         })
     }
 
-    async fn run(&mut self, messages_tx: Arc<Sender<Message>>) {
+    async fn run(&mut self, messages_tx: Arc<Sender<AppResult<Message>>>) {
         while let Ok((stream, _)) = self.listener.accept().await {
-            let Ok(handler) = Handler::start_from(stream, messages_tx.clone()).await else {
+            // TODO: acá falta un protocolo para saber el address del **listener** del nodo que se
+            // está conectando. Los puertos de los skts que se
+            // instancian en connect las pone el os así q son random, nosotros estamos usando addr
+            // para identfificar nodos así q necesitamos hacer algo como stream = listener.accept(),
+            // let addr: SocketAddr = stream.recv().into()
+            let Ok(handler) = Handler::start_from(stream.peer_addr().unwrap(), stream, messages_tx.clone()).await else {
                 continue;
             };
 

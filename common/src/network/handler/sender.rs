@@ -1,17 +1,37 @@
-use crate::errors::{AppError, AppResult};
+use crate::{
+    errors::{AppError, AppResult},
+    network::serials::protocol::{HEARBEAT_REPLY, HEARTBEAT_REQUEST},
+};
+use std::net::SocketAddr;
 use tokio::{io::AsyncWriteExt, net::tcp::OwnedWriteHalf, sync::mpsc::Receiver};
 
 pub struct StreamSender<T> {
     messages_rx: Receiver<T>,
     stream: OwnedWriteHalf,
+    address: SocketAddr,
 }
 
 impl<T: Into<Vec<u8>>> StreamSender<T> {
-    pub fn new(messages_rx: Receiver<T>, stream: OwnedWriteHalf) -> Self {
+    pub fn new(messages_rx: Receiver<T>, stream: OwnedWriteHalf, address: SocketAddr) -> Self {
         Self {
             messages_rx,
             stream,
+            address,
         }
+    }
+
+    pub async fn send_heartbeat_request(&mut self) -> AppResult<()> {
+        let len = size_of::<u8>() as u16; // u8 medio hardcoded pero es el len del hearbeat
+        let mut len_bytes = len.to_be_bytes().to_vec();
+        len_bytes.push(HEARTBEAT_REQUEST);
+        self.write_all_bytes(&len_bytes).await
+    }
+
+    pub async fn send_heartbeat_reply(&mut self) -> AppResult<()> {
+        let len = size_of::<u8>() as u16;
+        let mut len_bytes = len.to_be_bytes().to_vec();
+        len_bytes.push(HEARBEAT_REPLY);
+        self.write_all_bytes(&len_bytes).await
     }
 
     pub async fn send(&mut self) -> AppResult<()> {
@@ -22,23 +42,21 @@ impl<T: Into<Vec<u8>>> StreamSender<T> {
             let len: u16 = bytes.len() as u16;
             let mut len_bytes = len.to_be_bytes().to_vec();
             len_bytes.extend(bytes);
-            self.stream
-                .write_all(&len_bytes)
-                .await
-                .map_err(|_| AppError::ConnectionClosed {
-                    addr: self.stream.peer_addr().unwrap_or_else(|e| {
-                        // this should never happen since the skt was ok at the moment of
-                        // initialization of this sender
-                        panic!(
-                            "failed to get peer address during handling of ConnectionClosed: {e}"
-                        )
-                    }),
-                })?;
-
-            return Ok(());
+            return self.write_all_bytes(&len_bytes).await;
         };
 
         Err(AppError::ChannelClosed)
+    }
+
+    async fn write_all_bytes(&mut self, bytes: &[u8]) -> AppResult<()> {
+        self.stream
+            .write_all(bytes)
+            .await
+            .map_err(|_| AppError::ConnectionLostWith {
+                address: self.address,
+            })?;
+
+        Ok(())
     }
 }
 
@@ -54,7 +72,7 @@ mod test {
 
     #[tokio::test]
     async fn test_successful_send_with_valid_stream() {
-        let server_address = "127.0.0.1:12348";
+        let server_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12348);
         let message = [1, 2, 3, 4, 5];
         let server = task::spawn(async move {
             let (messages_tx, messages_rx) = mpsc::channel(1);
@@ -65,7 +83,7 @@ mod test {
                 .await
                 .unwrap();
             let (_, stream) = stream.into_split();
-            let mut sender = StreamSender::new(messages_rx, stream);
+            let mut sender = StreamSender::new(messages_rx, stream, server_address);
             messages_tx.send(message).await.unwrap();
             sender.send().await.unwrap();
         });
@@ -101,10 +119,15 @@ mod test {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait for listener
         let (_, sender_skt) = TcpStream::connect(peer_address).await.unwrap().into_split();
         let (messages_tx, messages_rx) = mpsc::channel(1);
-        let mut sender = StreamSender::new(messages_rx, sender_skt);
+        let mut sender = StreamSender::new(messages_rx, sender_skt, peer_address);
         peer.await.unwrap(); // close the conn on the other side
         messages_tx.send([1, 2, 3, 4, 5]).await.unwrap();
         let result = sender.send().await.unwrap_err();
-        assert_eq!(result, AppError::ConnectionClosed { addr: peer_address });
+        assert_eq!(
+            result,
+            AppError::ConnectionLostWith {
+                address: peer_address
+            }
+        );
     }
 }

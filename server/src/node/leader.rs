@@ -3,10 +3,7 @@ use super::election::bully::Bully;
 use super::node::Node;
 use super::pending_operatoin::PendingOperation;
 use super::replica::Replica;
-use crate::{
-    errors::AppResult,
-    node::utils::get_id_given_addr,
-};
+use crate::{errors::AppResult, node::utils::get_id_given_addr};
 use common::operation::Operation;
 use common::operation_result::{ChargeResult, OperationResult};
 use common::{Connection, Message, NodeToStationMsg, Station};
@@ -101,7 +98,10 @@ impl Node for Leader {
         client_addr: SocketAddr,
     ) -> AppResult<()> {
         // Store the operation locally.
-        println!("[LEADER] Handling new request from {client_addr:?}: {op:?}");
+        println!(
+            "[LEADER] Handling new request from {:?}: {:?}",
+            client_addr, op
+        );
         self.operations.insert(
             self.current_op_id,
             PendingOperation::new(op.clone(), client_addr, req_id),
@@ -154,7 +154,6 @@ impl Node for Leader {
         connection: &mut Connection,
         addr: SocketAddr,
     ) -> AppResult<()> {
-
         println!("[LEADER] Received role query from {:?}", addr);
         let role_msg = Message::RoleResponse {
             node_id: get_id_given_addr(self.address),
@@ -163,7 +162,7 @@ impl Node for Leader {
         connection.send(role_msg, &addr).await?;
         Ok(())
     }
-    
+
     async fn handle_log(
         &mut self,
         _connection: &mut Connection,
@@ -177,15 +176,13 @@ impl Node for Leader {
 
     // CHANGED SIGNATURE: now receives `db: &mut Database`
     async fn handle_ack(&mut self, _connection: &mut Connection, db: &mut Database, op_id: u32) {
-
         let Some(pending) = self.operations.get_mut(&op_id) else {
             return; // TODO: handle this case (unknown op_id).
         };
 
         println!("[LEADER] Received ACK for op_id {op_id}");
         pending.ack_count += 1;
-        if pending.ack_count != (self.members.len() - 1) / 2  && self.members.len() -1 != 1 {
-            
+        if pending.ack_count != (self.members.len() - 1) / 2 && self.members.len() - 1 != 1 {
             return;
         }
 
@@ -294,8 +291,13 @@ impl Node for Leader {
 
         // Check if we should demote to replica (another node became leader)
         if leader_id != self.id {
-            println!("[LEADER {}] Demoting to REPLICA, new leader is {}", self.id, leader_id);
-            return super::node::RoleChange::DemoteToReplica { new_leader_addr: leader_addr };
+            println!(
+                "[LEADER {}] Demoting to REPLICA, new leader is {}",
+                self.id, leader_id
+            );
+            return super::node::RoleChange::DemoteToReplica {
+                new_leader_addr: leader_addr,
+            };
         }
         super::node::RoleChange::None
     }
@@ -447,13 +449,16 @@ impl Leader {
         // Loop para manejar cambios de rol
         loop {
             let role_change = leader.run(connection, db, station).await?;
-            
+
             match role_change {
                 super::node::RoleChange::DemoteToReplica { new_leader_addr } => {
                     println!("[LEADER] Converting to Replica...");
                     let replica = leader.into_replica(new_leader_addr);
-                    // 
-                    return Box::pin(Replica::run_from_leader(replica, address, coords, max_conns, pumps)).await;
+                    //
+                    return Box::pin(Replica::run_from_leader(
+                        replica, address, coords, max_conns, pumps,
+                    ))
+                    .await;
                 }
                 _ => {
                     return Ok(());
@@ -511,12 +516,15 @@ impl Leader {
         // Loop para manejar cambios de rol
         loop {
             let role_change = leader.run(connection, db, station).await?;
-            
+
             match role_change {
                 super::node::RoleChange::DemoteToReplica { new_leader_addr } => {
                     println!("[LEADER] Converting to Replica...");
                     let replica = leader.into_replica(new_leader_addr);
-                    return Box::pin(Replica::run_from_leader(replica, address, coords, max_conns, pumps)).await;
+                    return Box::pin(Replica::run_from_leader(
+                        replica, address, coords, max_conns, pumps,
+                    ))
+                    .await;
                 }
                 _ => {
                     return Ok(());
@@ -524,7 +532,6 @@ impl Leader {
             }
         }
     }
-
 
     #[cfg(test)]
     pub fn test_get_id(&self) -> u64 {
@@ -539,32 +546,101 @@ impl Leader {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        thread::{self, JoinHandle},
+        time::Duration,
+    };
+    use tokio::task;
+
+    fn spawn_leader_in_thread(leader_addr: SocketAddr) -> JoinHandle<()> {
+        thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    task::spawn(async move {
+                        tokio::time::timeout(
+                            Duration::from_secs(1),
+                            Leader::start(leader_addr, (0.0, 0.0), 10, 1),
+                        )
+                        .await
+                        .unwrap()
+                        .unwrap()
+                    })
+                    .await
+                    .unwrap()
+                });
+        })
+    }
 
     #[tokio::test]
     #[ignore = "se queda en timeout ya que no hay replica corriendo"]
     async fn test_leader_sends_log_msg_when_handling_a_request() {
         let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12362);
-        let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12363);
-        let replica_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12364);
-
-        Leader::start(leader_addr, (0.0, 0.0), 1, 1).await.unwrap();
-
-        let mut client = Connection::start(client_addr, 1).await.unwrap();
+        let replica_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12363);
+        let _leader_handle = spawn_leader_in_thread(leader_addr);
+        thread::sleep(Duration::from_secs(1)); // fuerzo context switch
         let mut replica = Connection::start(replica_addr, 1).await.unwrap();
-
         replica
             .send(Message::Join { addr: replica_addr }, &leader_addr)
             .await
             .unwrap();
 
-        let op = Operation::Charge {
-            account_id: 13,
-            card_id: 14,
-            amount: 1500.5,
-            from_offline_station: false,
+        let received = replica.recv().await.unwrap();
+        let expected = Message::ClusterView {
+            members: vec![
+                (get_id_given_addr(leader_addr), leader_addr),
+                (get_id_given_addr(replica_addr), replica_addr),
+            ],
         };
+        // FIXME: este test a veces falla porq las addr vienen al revés, comparar sets
+        assert_eq!(received, expected);
+    }
 
+    #[tokio::test]
+    async fn test_leader_sends_log_to_two_replicas_when_receiving_a_request() {
+        // init del test (sí, muy largo :(  )
+        let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12364);
+        let replica1_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12365);
+        let replica2_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12366);
+        let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12367);
+        let _leader_handle = spawn_leader_in_thread(leader_addr);
+        thread::sleep(Duration::from_secs(1)); // fuerzo context switch
+        let mut replica1 = Connection::start(replica1_addr, 1).await.unwrap();
+        let mut replica2 = Connection::start(replica2_addr, 1).await.unwrap();
+        // joineo las reps
+        replica1
+            .send(
+                Message::Join {
+                    addr: replica1_addr,
+                },
+                &leader_addr,
+            )
+            .await
+            .unwrap();
+        // vuelo los msjs de cluster view
+        let _ = replica1.recv().await.unwrap();
+        thread::sleep(Duration::from_secs(1));
+        replica2
+            .send(
+                Message::Join {
+                    addr: replica2_addr,
+                },
+                &leader_addr,
+            )
+            .await
+            .unwrap();
+        let _ = replica2.recv().await.unwrap();
+        // ahora la salsa dea
+        let op = Operation::Charge {
+            account_id: 10,
+            card_id: 1500,
+            amount: 134989.5,
+            from_offline_station: false,
+        }; //  op random
+        let mut client = Connection::start(client_addr, 1).await.unwrap();
         client
             .send(
                 Message::Request {
@@ -575,12 +651,16 @@ mod test {
                 &leader_addr,
             )
             .await
-            .unwrap();
-
-        let expected = Message::Log { op_id: 0, op };
-        let received = replica.recv().await.unwrap();
-        assert_eq!(received, expected);
+            .unwrap(); // request al líder
+        let expected_log = Message::Log { op_id: 0, op };
+        assert_eq!(replica1.recv().await.unwrap(), expected_log);
+        assert_eq!(replica2.recv().await.unwrap(), expected_log);
+        // ahora la response
+        /* let op_result = OperationResult::Charge(ChargeResult::Ok);
+        let expected_response = Message::Response {
+            req_id: 0,
+            op_result,
+        };
+        assert_eq!(client.recv().await.unwrap(), expected_response); */
     }
-
-
 }

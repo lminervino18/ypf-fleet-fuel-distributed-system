@@ -1,3 +1,3 @@
 mod deserialization;
-mod protocol;
+pub mod protocol;
 mod serialization;

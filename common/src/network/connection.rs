@@ -1,10 +1,10 @@
-use super::{Message, acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler};
+use super::{acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler, Message};
 use crate::errors::{AppError, AppResult};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
     sync::{
-        Mutex,
         mpsc::{self, Receiver, Sender},
+        Mutex,
     },
     task::JoinHandle,
 };
@@ -14,8 +14,8 @@ const MSG_BUFF_SIZE: usize = 1600;
 pub struct Connection {
     active: Arc<Mutex<HashMap<SocketAddr, Handler>>>,
     acceptor_handle: JoinHandle<()>,
-    messages_tx: Arc<Sender<Message>>, // sólo para pasarle a quienes me mandan (Receiver)
-    messages_rx: Receiver<Message>,
+    messages_tx: Arc<Sender<AppResult<Message>>>, // sólo para pasarle a quienes me mandan (Receiver)
+    messages_rx: Receiver<AppResult<Message>>,
     max_conns: usize,
 }
 
@@ -42,7 +42,7 @@ impl Connection {
     pub async fn send(&mut self, msg: Message, address: &SocketAddr) -> AppResult<()> {
         let mut guard = self.active.lock().await;
         if !guard.contains_key(address) {
-            let handler = Handler::start(address, self.messages_tx.clone()).await?;
+            let handler = Handler::start(*address, self.messages_tx.clone()).await?;
             add_handler_from(&mut guard, handler, self.max_conns);
         }
 
@@ -51,7 +51,15 @@ impl Connection {
     }
 
     pub async fn recv(&mut self) -> AppResult<Message> {
-        self.messages_rx.recv().await.ok_or(AppError::ChannelClosed)
+        // NOTE: acá si todos los handlers están abajo tiro ConnectionLost, o sea
+        // asumimos que perdimos la conexión **nosotros** pero el tema es que no
+        // deberíamos hacer entonces nunca un recv sin antes haber instanciado alguna
+        // conexión y eso no sé si está ok... o sea de entrada todos los nodos mandan
+        // join por ej pero habrá que ver
+        self.messages_rx
+            .recv()
+            .await
+            .ok_or(AppError::ConnectionLost)?
     }
 }
 
@@ -64,11 +72,17 @@ impl Drop for Connection {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
-    use tokio::task;
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        time::Duration,
+    };
+    use tokio::{
+        task::{self},
+        time::sleep,
+    };
 
     #[tokio::test]
-    async fn test_successful_send_and_recv_between_connections() {
+    async fn test00_successful_send_and_recv_between_connections() {
         let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12354);
         let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12355);
         let message = Message::Ack { op_id: 1 };
@@ -85,7 +99,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_sending_messages_to_different_addresses_with_only_one_conn_max() {
+    async fn test01_sending_messages_to_different_addresses_with_only_one_conn_max() {
         let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12356);
         let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12357);
         let address3 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12358);
@@ -110,7 +124,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_receiving_messages_from_different_addresses_with_only_one_conn_max() {
+    async fn test02_receiving_messages_from_different_addresses_with_only_one_conn_max() {
         let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12359);
         let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12360);
         let address3 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12361);
@@ -132,5 +146,49 @@ mod test {
         let received3 = connection1.recv().await.unwrap();
         assert_eq!(received3, message);
         handle.await.unwrap();
+    }
+
+    // en los próximos dos te das cuenta si **a alguien se le cayó la conexión**
+    #[tokio::test]
+    async fn test03_send_results_in_connection_lost_with_if_peer_is_down() {
+        let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12368);
+        let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12369);
+        let connection1 = Connection::start(address1, 1).await.unwrap();
+        let mut connection2 = Connection::start(address2, 1).await.unwrap();
+        let result1 = connection2.send(Message::Ack { op_id: 0 }, &address1).await;
+        assert_eq!(result1, Ok(()));
+        drop(connection1);
+        sleep(Duration::from_secs(3)).await;
+        let result2 = connection2.send(Message::Ack { op_id: 0 }, &address1).await;
+        assert_eq!(
+            result2,
+            Err(AppError::ConnectionLostWith { address: address1 })
+        );
+    }
+
+    #[ignore = "este test falla por el comentario que puse en `acceptor.rs`"]
+    #[tokio::test]
+    async fn test04_recv_results_in_connection_lost_with_with_if_peer_is_down() {
+        let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12370);
+        let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12371);
+        let mut connection1 = Connection::start(address1, 1).await.unwrap();
+        let mut connection2 = Connection::start(address2, 1).await.unwrap();
+        let msg = Message::Ack { op_id: 0 };
+        connection1.send(msg.clone(), &address2).await.unwrap();
+        let result1 = connection2.recv().await;
+        assert_eq!(result1, Ok(msg));
+        drop(connection1);
+        sleep(Duration::from_secs(3)).await;
+        let result2 = connection2.recv().await;
+        assert_eq!(
+            result2,
+            Err(AppError::ConnectionLostWith { address: address1 })
+        );
+    }
+
+    // cómo sabés que se te cayó a vos la conexión? ...
+    // #[tokio::test]
+    async fn test05_send_and_recv_result_in_connection_lost_if_all_peers_are_down() {
+        // TODO
     }
 }
