@@ -6,7 +6,7 @@ use crate::node::node::RoleChange;
 use crate::{errors::AppResult, node::utils::get_id_given_addr};
 use common::operation::Operation;
 use common::operation_result::{ChargeResult, OperationResult};
-use common::{AppError, Connection, Message, NodeToStationMsg, Station};
+use common::{Connection, Message, NodeToStationMsg, Station};
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
@@ -83,7 +83,7 @@ impl Node for Leader {
     async fn handle_connection_lost_with(
         &mut self,
         _connection: &mut Connection,
-        _address: SocketAddr,
+        address: SocketAddr,
     ) -> AppResult<RoleChange> {
 
         if let(Some(_)) = self.cluster.values().find(|&&addr| addr == _address) {
@@ -272,8 +272,9 @@ impl Node for Leader {
         Ok(RoleChange::None)
     }
 
-    async fn handle_election_ok(&mut self, _connection: &mut Connection, _responder_id: u64) {
-        todo!("leader received election_ok");
+    async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
+        let mut b = self.bully.lock().await;
+        b.on_election_ok(responder_id);
     }
 
     async fn handle_coordinator(
@@ -282,21 +283,25 @@ impl Node for Leader {
         leader_id: u64,
         leader_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
-        if leader_id > self.id {
-            return Ok(RoleChange::DemoteToReplica {
-                new_leader_addr: leader_addr,
-            });
+        let mut b = self.bully.lock().await;
+        b.on_coordinator(leader_id, leader_addr);
+        drop(b); // release lock
+
+        // Check if we should demote to replica (another node became leader)
+        if leader_id >= self.id {
+            println!("[LEADER {}] Demoting to REPLICA, new leader is {}", self.id, leader_id);
+            return Ok(RoleChange::DemoteToReplica { new_leader_addr: leader_addr });
         }
 
-        connection
-            .send(
-                Message::Coordinator {
-                    leader_id: self.id,
-                    leader_addr: self.address,
-                },
-                &leader_addr,
-            )
-            .await?;
+        // connection
+        //     .send(
+        //         Message::Coordinator {
+        //             leader_id: self.id,
+        //             leader_addr: self.address,
+        //         },
+        //         &leader_addr,
+        //     )
+        //     .await?;
         Ok(RoleChange::None)
     }
 
@@ -319,6 +324,11 @@ impl Node for Leader {
         )
         .await; */
         todo!("leader start_election was called");
+}
+
+    async fn poll_election_timeout(&mut self, _connection: &mut Connection) -> AppResult<RoleChange> {
+        // Leader no hace bully timeout.
+        Ok(RoleChange::None)
     }
 
     /// Called when we receive a `Message::Join` through the generic
@@ -500,6 +510,8 @@ impl Leader {
         let self_id = get_id_given_addr(address);
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
         members.insert(self_id, address);
+
+        println!("[LEADER {}] Starting leader node with address={}", self_id, address);
 
         // Start the TCP ConnectionManager for this node.
         let connection = Connection::start(address, max_conns).await?;

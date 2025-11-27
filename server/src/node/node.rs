@@ -189,7 +189,7 @@ pub trait Node {
                 Ok(RoleChange::None)
             }
             StationToNodeMsg::ConnectNode => {
-                self.handle_connect_node(connection).await;
+                self.handle_connect_node(connection).await?;
                 Ok(RoleChange::None)
             }
         }
@@ -215,6 +215,9 @@ pub trait Node {
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
+
+    /// Checks if the bully deadline has passed and applies the role change.
+    async fn poll_election_timeout(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
     // === Cluster membership hooks (Join / ClusterView) ===
 
@@ -253,7 +256,7 @@ pub trait Node {
                 RoleChange::None
             }
             Message::Log { op_id, op } => {
-                self.handle_log(connection, db, op_id, op).await;
+                self.handle_log(connection, db, op_id, op).await?;
                 RoleChange::None
             }
             Message::Ack { op_id } => {
@@ -283,7 +286,7 @@ pub trait Node {
                 RoleChange::None
             }
             Message::ClusterView { members } => {
-                self.handle_cluster_view(connection, db, members).await;
+                self.handle_cluster_view(connection, db, members).await?;
                 RoleChange::None
             }
             Message::ClusterUpdate { new_member } => {
@@ -338,11 +341,15 @@ pub trait Node {
         mut db: Database,
         mut station: Station,
     ) -> AppResult<RoleChange> {
+        // Intervalo para chequeos periódicos de timeout de elección
+        let mut election_check_interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        
         loop {
             let mut result = Ok(RoleChange::None);
             select! {
                 // node messages
                 node_msg = connection.recv() => {
+                    println!("[NODE] !!!Received node message: {:?}", node_msg);
                     match node_msg {
                         Ok(msg) => {
                             result = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await;
@@ -362,6 +369,16 @@ pub trait Node {
                     match actor_evt {
                         Some(evt) => {self.handle_actor_event(&mut connection, &mut station, evt).await;},
                         None => panic!("[FATAL] database went down"),
+                    }
+                }
+                // chequeo periódico de deadline de elección
+                _ = election_check_interval.tick() => {
+                    match self.poll_election_timeout(&mut connection).await? {
+                        RoleChange::PromoteToLeader => return Ok(RoleChange::PromoteToLeader),
+                        RoleChange::DemoteToReplica { new_leader_addr } => {
+                            return Ok(RoleChange::DemoteToReplica { new_leader_addr })
+                        }
+                        RoleChange::None => {}
                     }
                 }
             }

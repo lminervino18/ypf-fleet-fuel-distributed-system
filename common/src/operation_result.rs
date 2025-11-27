@@ -1,5 +1,4 @@
 use crate::VerifyError;
-use std::collections::HashMap;
 
 /// Resultado de una operación de alto nivel.
 ///
