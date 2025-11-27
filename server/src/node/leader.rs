@@ -1,9 +1,9 @@
 use super::database::{Database, DatabaseCmd}; // use the Database abstraction
-use super::node::Node;
-use super::pending_operatoin::PendingOperation;
+use super::node::{Node, NodeRuntime, RoleChange, run_node_runtime};
+use super::pending_operation::PendingOperation;
 use super::replica::Replica;
-use crate::node::node::RoleChange;
-use crate::{errors::AppResult, node::utils::get_id_given_addr};
+use super::utils::get_id_given_addr;
+use crate::errors::AppResult;
 use common::operation::Operation;
 use common::operation_result::{ChargeResult, OperationResult};
 use common::{Connection, Message, NodeToStationMsg, Station};
@@ -70,7 +70,7 @@ impl Node for Leader {
         self.is_offline
     }
 
-    async fn get_status(&self) -> String{
+    async fn get_status(&self) -> String {
         //give mi cluster and leader, only that
         format!("Cluster: {:?}, Leader: {:?}", self.cluster.len(), self.address)
     }
@@ -154,6 +154,10 @@ impl Node for Leader {
         client_addr: SocketAddr,
     ) -> AppResult<()> {
         // Store the operation locally.
+        println!(
+            "[LEADER {}] Handling request_id={} from client at {}: {:?}",
+            self.id, req_id, client_addr, op
+        );
         self.operations.insert(
             self.current_op_id,
             PendingOperation::new(op.clone(), client_addr, req_id),
@@ -215,12 +219,18 @@ impl Node for Leader {
     }
 
     // CHANGED SIGNATURE: now receives `db: &mut Database`
-    async fn handle_ack(&mut self, _connection: &mut Connection, db: &mut Database, op_id: u32) {
+    async fn handle_ack(
+        &mut self,
+        _connection: &mut Connection,
+        db: &mut Database,
+        op_id: u32,
+    ) {
         let Some(pending) = self.operations.get_mut(&op_id) else {
             return; // TODO: handle this case (unknown op_id).
         };
 
         pending.ack_count += 1;
+        
         if pending.ack_count != (self.cluster.len() - 1) / 2 && self.cluster.len() - 1 != 1 {
             return;
         }
@@ -472,7 +482,6 @@ impl Node for Leader {
         _new_member: (u64, SocketAddr),
     ) {
         // only leaders send cluster updates
-        todo!();
     }
 
     /// Called when we receive a `Message::ClusterView` through the
@@ -562,63 +571,14 @@ impl Leader {
         }
     }
 
-    /// Continue running as Leader after being promoted from Replica.
-    /// Reuses existing state from the replica.
-    pub async fn run_from_replica(
-        mut leader: Leader,
-        address: SocketAddr,
-        coords: (f64, f64),
-        max_conns: usize,
-        pumps: usize,
-    ) -> AppResult<()> {
-        // Recreate resources that were consumed by replica.run()
-        let db = super::database::Database::start().await?;
-        let station = Station::start(pumps).await?;
-        let mut connection = Connection::start(address, max_conns).await?;
-
-        // Announce ourselves as the new coordinator to all members
-        let coordinator_msg = Message::Coordinator {
-            leader_id: leader.id,
-            leader_addr: leader.address,
-        };
-        for (peer_id, peer_addr) in &leader.cluster {
-            if *peer_id != leader.id {
-                if let Err(e) = connection.send(coordinator_msg.clone(), peer_addr).await {
-                    println!(
-                        "[LEADER {}] Failed to send Coordinator (run_from_replica) to {:?}: {:?}",
-                        leader.id, peer_addr, e
-                    );
-                }
-            }
-        }
-
-        // Loop para manejar cambios de rol
-        loop {
-            let role_change = leader.run(connection, db, station).await?;
-
-            match role_change {
-                RoleChange::DemoteToReplica { new_leader_addr } => {
-                    println!("[LEADER] Converting to Replica...");
-                    let replica = leader.into_replica(new_leader_addr);
-                    return Box::pin(Replica::run_from_leader(
-                        replica, address, coords, max_conns, pumps,
-                    ))
-                    .await;
-                }
-                _ => {
-                    return Ok(());
-                }
-            }
-        }
-    }
-
     /// Start a Leader node:
     ///
     /// - boots the ConnectionManager (TCP),
     /// - boots the actor system wrapped in `Database` (Actix in a dedicated thread),
     /// - starts the Station abstraction (which internally spawns the pump simulator),
     /// - seeds the cluster membership with self (other nodes will join dynamically),
-    /// - then enters the main async event loop.
+    /// - y delega el loop principal a `run_node_runtime`, que maneja cambios de rol
+    ///   reutilizando Connection/Database/Station por referencia.
     pub async fn start(
         address: SocketAddr,
         coords: (f64, f64),
@@ -626,10 +586,13 @@ impl Leader {
         pumps: usize,
     ) -> AppResult<()> {
         // Start the actor-based "database" subsystem (ActorRouter + Actix system).
-        let db = super::database::Database::start().await?;
+        let mut db = super::database::Database::start().await?;
 
         // Start the shared Station abstraction (stdin-based simulator).
-        let station = Station::start(pumps).await?;
+        let mut station = Station::start(pumps).await?;
+
+        // Start the TCP ConnectionManager for this node.
+        let mut connection = Connection::start(address, max_conns).await?;
 
         // Seed membership: leader only. Other members will be
         // registered via Join / ClusterView messages.
@@ -642,10 +605,7 @@ impl Leader {
             self_id, address
         );
 
-        // Start the TCP ConnectionManager for this node.
-        let connection = Connection::start(address, max_conns).await?;
-
-        let mut leader = Self {
+        let leader = Self {
             id: self_id,
             current_op_id: 0,
             coords,
@@ -658,24 +618,8 @@ impl Leader {
             election_start: None,
         };
 
-        // Loop para manejar cambios de rol
-        loop {
-            let role_change = leader.run(connection, db, station).await?;
-
-            match role_change {
-                RoleChange::DemoteToReplica { new_leader_addr } => {
-                    println!("[LEADER] Converting to Replica...");
-                    let replica = leader.into_replica(new_leader_addr);
-                    return Box::pin(Replica::run_from_leader(
-                        replica, address, coords, max_conns, pumps,
-                    ))
-                    .await;
-                }
-                _ => {
-                    return Ok(());
-                }
-            }
-        }
+        let runtime = NodeRuntime::Leader(leader);
+        run_node_runtime(runtime, &mut connection, &mut db, &mut station).await
     }
 
     #[cfg(test)]

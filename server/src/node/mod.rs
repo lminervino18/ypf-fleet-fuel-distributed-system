@@ -2,7 +2,7 @@ mod actors;
 mod database;
 mod leader;
 mod node;
-mod pending_operatoin;
+mod pending_operation;
 mod replica;
 mod test;
 mod utils;

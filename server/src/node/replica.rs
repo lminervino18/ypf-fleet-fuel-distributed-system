@@ -1,19 +1,15 @@
 use super::{
     database::{Database, DatabaseCmd},
     leader::Leader,
-    node::Node,
+    node::{Node, NodeRuntime, RoleChange, run_node_runtime},
     utils::get_id_given_addr,
 };
-use crate::{
-    errors::AppResult,
-    node::node::RoleChange,
-};
+use crate::errors::AppResult;
 use common::{
     operation::Operation,
     operation_result::{ChargeResult, OperationResult},
     AppError, Connection, Message, NodeToStationMsg, Station,
 };
-
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
@@ -71,11 +67,15 @@ impl Node for Replica {
         self.is_offline
     }
 
-    async fn get_status(&self) -> String{
+    async fn get_status(&self) -> String {
         //give mi cluster and leader, only that
-        format!("Cluster: {:?}, Leader: {:?}", self.cluster.len(), self.leader_addr)
+        format!(
+            "Cluster: {:?}, Leader: {:?}",
+            self.cluster.len(),
+            self.leader_addr
+        )
     }
-    
+
     fn log_offline_operation(&mut self, op: Operation) {
         self.offline_queue.push_back(op);
     }
@@ -84,33 +84,33 @@ impl Node for Replica {
         self.address
     }
 
-    /// Handle a lost connection to a peer.
     async fn handle_connection_lost_with(
-        &mut self,
-        connection: &mut Connection,
-        lost_address: SocketAddr,
-    ) -> AppResult<RoleChange> {
+    &mut self,
+    connection: &mut Connection,
+    lost_address: SocketAddr,
+) -> AppResult<RoleChange> {
+    let lost_id = get_id_given_addr(lost_address);
 
-        // Si se cayó el líder (o algún miembro del cluster), arrancamos elección
-        if lost_address == self.leader_addr
-        {
-            println!(
-                "[REPLICA {}] Leader/peer {:?} is DOWN, starting election",
-                self.id, lost_address
-            );
-            return self.start_election(connection).await;
-        }
-
-        if self.cluster.contains_key(&get_id_given_addr(lost_address)) {
-            println!(
-                "[REPLICA {}] Peer {:?} is DOWN, removing from cluster",
-                self.id, lost_address
-            );
-            self.cluster.retain(|_, &mut addr| addr != lost_address);
-        }
-
-        Ok(RoleChange::None)
+    if self.cluster.contains_key(&lost_id) {
+        println!(
+            "[REPLICA {}] Peer {:?} is DOWN, removing from cluster",
+            self.id, lost_address
+        );
+        self.cluster.retain(|_, &mut addr| addr != lost_address);
     }
+
+    // Si era el líder, además disparo la elección
+    if lost_address == self.leader_addr {
+        println!(
+            "[REPLICA {}] Lost connection with LEADER {:?}, starting election",
+            self.id, lost_address
+        );
+        return self.start_election(connection).await;
+    }
+
+    Ok(RoleChange::None)
+}
+
 
     async fn handle_disconnect_node(&mut self, connection: &mut Connection) {
         self.is_offline = true;
@@ -252,6 +252,10 @@ impl Node for Replica {
     ) -> AppResult<()> {
         // Igual que antes: cuando termina la operación en la réplica,
         // mandamos un Ack al líder.
+        println!(
+            "[REPLICA {}] Operation {} committed, sending Ack to leader at {}",
+            self.id, op_id, self.leader_addr
+        );
         connection
             .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
             .await
@@ -346,7 +350,12 @@ impl Node for Replica {
         self.commit_operation(db, op_id - 1).await
     }
 
-    async fn handle_ack(&mut self, _connection: &mut Connection, _db: &mut Database, _id: u32) {
+    async fn handle_ack(
+        &mut self,
+        _connection: &mut Connection,
+        _db: &mut Database,
+        _id: u32,
+    ) {
         // Replicas no deberían recibir ACKs.
         todo!();
     }
@@ -521,8 +530,6 @@ impl Replica {
     /// Convert this Replica into a Leader.
     /// Consumes self and returns a Leader.
     pub fn into_leader(self) -> Leader {
-        use super::leader::Leader;
-
         // When promoting, we use the replica's last op_id as current_op_id
         let current_op_id = self.operations.keys().max().copied().unwrap_or(0);
 
@@ -578,46 +585,13 @@ impl Replica {
         Ok(())
     }
 
-    /// Continue running as Replica after being demoted from Leader.
-    /// Reuses existing state from the leader.
-    pub async fn run_from_leader(
-        mut replica: Replica,
-        address: SocketAddr,
-        coords: (f64, f64),
-        max_conns: usize,
-        pumps: usize,
-    ) -> AppResult<()> {
-        // Recreate resources that were consumed by leader.run()
-        let db = super::database::Database::start().await?;
-        let station = Station::start(pumps).await?;
-        let connection = Connection::start(address, max_conns).await?;
-
-        // Loop para manejar cambios de rol
-        loop {
-            let role_change = replica.run(connection, db, station).await?;
-            match role_change {
-                RoleChange::PromoteToLeader => {
-                    let leader = replica.into_leader();
-                    return Box::pin(Leader::run_from_replica(
-                        leader, address, coords, max_conns, pumps,
-                    ))
-                    .await;
-                }
-                x => {
-                    println!("unknown result: {x:?}");
-                    return Ok(());
-                }
-            }
-        }
-    }
-
     /// - boots the ConnectionManager (TCP),
     /// - boots the actor system wrapped in `Database` (Actix in a dedicated thread),
     /// - starts the Station abstraction (which internally spawns the simulator with `pumps` pumps on stdin),
     /// - seeds the cluster membership (self + leader),
-    /// - sends an initial Join message to the leader,
-    /// - then evalúa Bully (puede autoproclamarse líder),
-    /// - y entra al loop principal como Replica o como Leader.
+    /// - envía un Join inicial al líder,
+    /// - luego delega el loop principal a `run_node_runtime`, que maneja
+    ///   cambios de rol y reutiliza Connection/Database/Station por referencia.
     pub async fn start(
         address: SocketAddr,
         leader_addr: SocketAddr,
@@ -626,10 +600,10 @@ impl Replica {
         pumps: usize,
     ) -> AppResult<()> {
         // Start the actor-based "database" subsystem (ActorRouter + Actix system hidden inside).
-        let db = super::database::Database::start().await?;
+        let mut db = super::database::Database::start().await?;
 
         // Start the reusable Station abstraction (stdin-based simulator runs inside it).
-        let station = Station::start(pumps).await?;
+        let mut station = Station::start(pumps).await?;
 
         // Start network connection.
         let mut connection = Connection::start(address, max_conns).await?;
@@ -646,7 +620,7 @@ impl Replica {
         let leader_id = get_id_given_addr(leader_addr);
         members.insert(leader_id, leader_addr);
 
-        let mut replica = Self {
+        let replica = Self {
             id,
             coords,
             address,
@@ -663,32 +637,13 @@ impl Replica {
         // Join inicial contra el líder para que rebroadcastée el ClusterView.
         let _ = connection
             .send(
-                Message::Join {
-                    addr: replica.address,
-                },
+                Message::Join { addr: replica.address },
                 &replica.leader_addr,
             )
             .await;
 
-        // para cambios de rol
-        // Usamos el loop genérico de `Node::run`, igual que el Leader:
-        loop {
-            let role_change = replica.run(connection, db, station).await?;
-            match role_change {
-                RoleChange::PromoteToLeader => {
-                    println!("[REPLICA] Converting to Leader...");
-                    let leader = replica.into_leader();
-                    return Box::pin(Leader::run_from_replica(
-                        leader, address, coords, max_conns, pumps,
-                    ))
-                    .await;
-                }
-                _ => {
-                    // if there's no role change, it means run() ended for another reason
-                    return Ok(());
-                }
-            }
-        }
+        let runtime = NodeRuntime::Replica(replica);
+        run_node_runtime(runtime, &mut connection, &mut db, &mut station).await
     }
 
     /// Test helpers to access private fields.
