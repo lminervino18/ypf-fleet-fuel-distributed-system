@@ -10,9 +10,8 @@ use common::{Connection, Message, NodeToStationMsg, Station};
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
-    sync::Arc,
+    time::{Duration, Instant},
 };
-use tokio::sync::Mutex;
 
 /// Leader node.
 ///
@@ -57,7 +56,10 @@ pub struct Leader {
     operations: HashMap<u32, PendingOperation>,
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
-    // NOTE: we no longer store Database here; it is owned by `run()`.
+
+    // Estado de elección Bully (mismo concepto que en Replica)
+    election_in_progress: bool,
+    election_start: Option<Instant>,
 }
 
 // ==========================================================
@@ -68,6 +70,11 @@ impl Node for Leader {
         self.is_offline
     }
 
+    async fn get_status(&self) -> String{
+        //give mi cluster and leader, only that
+        format!("Cluster: {:?}, Leader: {:?}", self.cluster.len(), self.address)
+    }
+
     fn log_offline_operation(&mut self, op: Operation) {
         self.offline_queue.push_back(op);
     }
@@ -76,8 +83,29 @@ impl Node for Leader {
         self.address
     }
 
-    async fn anounce_coordinator(&mut self, _connection: &mut Connection) -> AppResult<RoleChange> {
-        todo!("leader anounce coordinator was called")
+    async fn anounce_coordinator(
+        &mut self,
+        connection: &mut Connection,
+    ) -> AppResult<RoleChange> {
+        let msg = Message::Coordinator {
+            leader_id: self.id,
+            leader_addr: self.address,
+        };
+
+        for (peer_id, peer_addr) in &self.cluster {
+            if *peer_id == self.id {
+                continue;
+            }
+            if let Err(e) = connection.send(msg.clone(), peer_addr).await {
+                println!(
+                    "[LEADER {}] Failed to send Coordinator to {:?}: {:?}",
+                    self.id, peer_addr, e
+                );
+            }
+        }
+
+        // Ya soy líder; no hay cambio de rol.
+        Ok(RoleChange::None)
     }
 
     async fn handle_connection_lost_with(
@@ -85,13 +113,12 @@ impl Node for Leader {
         _connection: &mut Connection,
         address: SocketAddr,
     ) -> AppResult<RoleChange> {
-
-        if let(Some(_)) = self.cluster.values().find(|&&addr| addr == _address) {
-            println!("[LEADER] Connection lost with {:?} that is a REPLICA", _address);
+        if let Some(_) = self.cluster.values().find(|&&addr| addr == address) {
+            println!("[LEADER] Connection lost with {:?} that is a REPLICA", address);
         } else {
             println!(
                 "[LEADER] Connection lost with {:?}, but it was a client",
-                _address
+                address
             );
         }
         Ok(RoleChange::None)
@@ -199,9 +226,6 @@ impl Node for Leader {
         }
 
         // Mayoría alcanzada → ejecutar la operación en el mundo de actores.
-        //
-        // Instead of talking directly to ActorRouter / RouterCmd, we now
-        // send a high-level DatabaseCmd to the Database abstraction.
         db.send(DatabaseCmd::Execute {
             op_id,
             operation: pending.op.clone(),
@@ -261,74 +285,137 @@ impl Node for Leader {
         candidate_id: u64,
         candidate_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
-        if true {
-            // if i'm higher, reply OK
+        if self.id > candidate_id {
+            println!(
+                "[LEADER {}] Received Election from {}. Replying ElectionOk and starting own election",
+                self.id,
+                get_id_given_addr(candidate_addr)
+            );
             let reply = Message::ElectionOk {
                 responder_id: self.id,
             };
-            connection.send(reply, &candidate_addr).await?;
-        }
+            if let Err(e) = connection.send(reply, &candidate_addr).await {
+                println!(
+                    "[LEADER {}] Failed to send ElectionOk to {:?}: {:?}",
+                    self.id, candidate_addr, e
+                );
+            }
 
-        Ok(RoleChange::None)
+            // Igual que una réplica, corro mi propia elección (podría haber otro mayor).
+            self.start_election(connection).await
+        } else {
+            println!(
+                "[LEADER {}] Received Election from {} with >= id. Not replying.",
+                self.id,
+                get_id_given_addr(candidate_addr)
+            );
+            Ok(RoleChange::None)
+        }
     }
 
-    async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
-        let mut b = self.bully.lock().await;
-        b.on_election_ok(responder_id);
+    async fn handle_election_ok(
+        &mut self,
+        _connection: &mut Connection,
+        responder_id: u64,
+    ) {
+        println!(
+            "[LEADER {}] Received ElectionOk from {}. Waiting for Coordinator...",
+            self.id, responder_id
+        );
+        // Sabemos que hay alguien más grande vivo; esperamos Coordinator.
+        self.election_in_progress = false;
+        self.election_start = None;
     }
 
     async fn handle_coordinator(
         &mut self,
-        connection: &mut Connection,
+        _connection: &mut Connection,
         leader_id: u64,
         leader_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
-        let mut b = self.bully.lock().await;
-        b.on_coordinator(leader_id, leader_addr);
-        drop(b); // release lock
+        // Resetear estado de elección (ya hay coordinador)
+        self.election_in_progress = false;
+        self.election_start = None;
 
-        // Check if we should demote to replica (another node became leader)
+        // Si alguien (con ID >= al mío) anuncia que es líder, me demoto a réplica.
         if leader_id >= self.id {
-            println!("[LEADER {}] Demoting to REPLICA, new leader is {}", self.id, leader_id);
-            return Ok(RoleChange::DemoteToReplica { new_leader_addr: leader_addr });
+            println!(
+                "[LEADER {}] Demoting to REPLICA, new leader is {} at {}",
+                self.id, leader_id, leader_addr
+            );
+            return Ok(RoleChange::DemoteToReplica {
+                new_leader_addr: leader_addr,
+            });
         }
 
-        // connection
-        //     .send(
-        //         Message::Coordinator {
-        //             leader_id: self.id,
-        //             leader_addr: self.address,
-        //         },
-        //         &leader_addr,
-        //     )
-        //     .await?;
+        // Si leader_id < self.id, ignoramos (no debería pasar en Bully correcto).
+        println!(
+            "[LEADER {}] Received Coordinator from id {} but I'm higher. Ignoring.",
+            self.id, leader_id
+        );
         Ok(RoleChange::None)
     }
 
-    async fn start_election(&mut self, _connection: &mut Connection) -> AppResult<RoleChange> {
-        /*         // Build peer_ids map from the current membership (excluding self).
-        let mut peer_ids = HashMap::new();
-        for (peer_id, addr) in &self.cluster {
-            if *peer_id == self.id {
-                continue;
-            }
-            peer_ids.insert(*peer_id, *addr);
+    /// Igual lógica que en Replica, pero si no hay ID mayor y gano,
+    /// simplemente reafirmo liderazgo (sin RoleChange).
+    async fn start_election(
+        &mut self,
+        connection: &mut Connection,
+    ) -> AppResult<RoleChange> {
+        if self.election_in_progress {
+            println!(
+                "[LEADER {}] start_election called but election already in progress",
+                self.id
+            );
+            return Ok(RoleChange::None);
         }
 
-        crate::node::election::bully::conduct_election(
-            &self.bully,
-            connection,
-            peer_ids,
-            self.id,
-            self.address,
-        )
-        .await; */
-        todo!("leader start_election was called");
-}
+        println!(
+            "[LEADER {}] Starting election, checking for higher-ID nodes...",
+            self.id
+        );
 
-    async fn poll_election_timeout(&mut self, _connection: &mut Connection) -> AppResult<RoleChange> {
-        // Leader no hace bully timeout.
-        Ok(RoleChange::None)
+        let mut sent_any = false;
+
+        for (&node_id, addr) in &self.cluster {
+            if node_id > self.id {
+                sent_any = true;
+                println!(
+                    "[LEADER {}] -> sending Election to {:?} (id={})",
+                    self.id, addr, node_id
+                );
+                if let Err(e) = connection
+                    .send(
+                        Message::Election {
+                            candidate_id: self.id,
+                            candidate_addr: self.address,
+                        },
+                        addr,
+                    )
+                    .await
+                {
+                    println!(
+                        "[LEADER {}] Failed to send Election to {:?}: {:?}",
+                        self.id, addr, e
+                    );
+                }
+            }
+        }
+
+        if sent_any {
+            self.election_in_progress = true;
+            self.election_start = Some(Instant::now());
+            Ok(RoleChange::None)
+        } else {
+            println!(
+                "[LEADER {}] No higher-ID nodes found. Reasserting myself as COORDINATOR",
+                self.id
+            );
+            self.election_in_progress = false;
+            self.election_start = None;
+            // Reafirmo liderazgo; no hay RoleChange.
+            self.anounce_coordinator(connection).await
+        }
     }
 
     /// Called when we receive a `Message::Join` through the generic
@@ -341,7 +428,11 @@ impl Node for Leader {
         let node_id = get_id_given_addr(addr); // gracias ale :)
         self.cluster.insert(node_id, addr);
         let view_msg = Message::ClusterView {
-            members: self.cluster.iter().map(|(id, addr)| (*id, *addr)).collect(),
+            members: self
+                .cluster
+                .iter()
+                .map(|(id, addr)| (*id, *addr))
+                .collect(),
         };
         // le mandamos el clúster view al que entró
         connection.send(view_msg, &addr).await?;
@@ -360,12 +451,18 @@ impl Node for Leader {
                 )
                 .await?;
         }
+
+        if node_id > self.id {
+            println!(
+                "[LEADER {}] New node with higher ID ({}) joined. Starting election.",
+                self.id, node_id
+            );
+            self.start_election(connection).await?;
+        }
+
         println!("[LEADER] New node joined: (ID={node_id})");
         println!("[LEADER] Current cluster members: {:?}", self.cluster.len());
-        /* if node_id > self.id {
-            self.start_election(connection).await;
-        } */
-        // TODO
+        // NOTA: el nuevo nodo corre Bully desde Replica::start.
         Ok(())
     }
 
@@ -387,6 +484,33 @@ impl Node for Leader {
         _members: Vec<(u64, SocketAddr)>,
     ) -> AppResult<()> {
         Ok(()) // leaders don't receive cluster view
+    }
+
+    /// Timeout de elección para Leader: si no hay ElectionOk en 2s
+    /// y la elección seguía viva, reafirmo que sigo siendo líder.
+    async fn handle_election_timeout(
+        &mut self,
+        connection: &mut Connection,
+    ) -> AppResult<RoleChange> {
+        if !self.election_in_progress {
+            return Ok(RoleChange::None);
+        }
+
+        let Some(start) = self.election_start else {
+            return Ok(RoleChange::None);
+        };
+
+        if start.elapsed() >= Duration::from_secs(2) {
+            println!(
+                "[LEADER {}] Election timeout exceeded. No higher node responded → reasserting myself as COORDINATOR",
+                self.id
+            );
+            self.election_in_progress = false;
+            self.election_start = None;
+            self.anounce_coordinator(connection).await?;
+        }
+
+        Ok(RoleChange::None)
     }
 }
 
@@ -421,12 +545,8 @@ impl Leader {
         is_offline: bool,
         offline_queue: VecDeque<Operation>,
     ) -> Self {
-        // Convert Replica's operations (HashMap<u32, Operation>) to Leader's format
-        // (HashMap<u32, PendingOperation>). Since we're promoting, we don't have
-        // client_addr or ack_count info for these operations, so we use defaults.
         let operations = HashMap::new();
-        // Note: operations_from_replica are old replicated logs; as a new leader,
-        // we start fresh with pending operations. Old committed ops are in the actor system.
+        // Old committed ops ya están en el actor system.
 
         Self {
             id,
@@ -437,6 +557,8 @@ impl Leader {
             operations,
             is_offline,
             offline_queue,
+            election_in_progress: false,
+            election_start: None,
         }
     }
 
@@ -461,7 +583,12 @@ impl Leader {
         };
         for (peer_id, peer_addr) in &leader.cluster {
             if *peer_id != leader.id {
-                let _ = connection.send(coordinator_msg.clone(), peer_addr).await;
+                if let Err(e) = connection.send(coordinator_msg.clone(), peer_addr).await {
+                    println!(
+                        "[LEADER {}] Failed to send Coordinator (run_from_replica) to {:?}: {:?}",
+                        leader.id, peer_addr, e
+                    );
+                }
             }
         }
 
@@ -470,10 +597,9 @@ impl Leader {
             let role_change = leader.run(connection, db, station).await?;
 
             match role_change {
-                super::node::RoleChange::DemoteToReplica { new_leader_addr } => {
+                RoleChange::DemoteToReplica { new_leader_addr } => {
                     println!("[LEADER] Converting to Replica...");
                     let replica = leader.into_replica(new_leader_addr);
-                    //
                     return Box::pin(Replica::run_from_leader(
                         replica, address, coords, max_conns, pumps,
                     ))
@@ -511,7 +637,10 @@ impl Leader {
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
         members.insert(self_id, address);
 
-        println!("[LEADER {}] Starting leader node with address={}", self_id, address);
+        println!(
+            "[LEADER {}] Starting leader node with address={}",
+            self_id, address
+        );
 
         // Start the TCP ConnectionManager for this node.
         let connection = Connection::start(address, max_conns).await?;
@@ -525,6 +654,8 @@ impl Leader {
             operations: HashMap::new(),
             is_offline: false,
             offline_queue: VecDeque::new(),
+            election_in_progress: false,
+            election_start: None,
         };
 
         // Loop para manejar cambios de rol
@@ -532,7 +663,7 @@ impl Leader {
             let role_change = leader.run(connection, db, station).await?;
 
             match role_change {
-                super::node::RoleChange::DemoteToReplica { new_leader_addr } => {
+                RoleChange::DemoteToReplica { new_leader_addr } => {
                     println!("[LEADER] Converting to Replica...");
                     let replica = leader.into_replica(new_leader_addr);
                     return Box::pin(Replica::run_from_leader(
@@ -615,7 +746,7 @@ mod test {
 
     #[tokio::test]
     async fn test_leader_sends_log_to_two_replicas_when_receiving_a_request() {
-        // init del test (sí, muy largo :(  )
+        // init del test
         let leader_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12364);
         let replica1_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12365);
         let replica2_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12366);
@@ -647,13 +778,13 @@ mod test {
             .await
             .unwrap();
         let _ = replica2.recv().await.unwrap();
-        // ahora la salsa dea
+        // ahora la salsa
         let op = Operation::Charge {
             account_id: 10,
             card_id: 1500,
-            amount: 134989.5,
+            amount: 134_989.5,
             from_offline_station: false,
-        }; //  op random
+        };
         let mut client = Connection::start(client_addr, 1).await.unwrap();
         client
             .send(
@@ -669,12 +800,5 @@ mod test {
         let expected_log = Message::Log { op_id: 0, op };
         assert_eq!(replica1.recv().await.unwrap(), expected_log);
         assert_eq!(replica2.recv().await.unwrap(), expected_log);
-        // ahora la response
-        /* let op_result = OperationResult::Charge(ChargeResult::Ok);
-        let expected_response = Message::Response {
-            req_id: 0,
-            op_result,
-        };
-        assert_eq!(client.recv().await.unwrap(), expected_response); */
     }
 }

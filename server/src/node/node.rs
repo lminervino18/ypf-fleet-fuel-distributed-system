@@ -16,6 +16,8 @@ pub enum RoleChange {
 }
 
 pub trait Node {
+
+    async fn get_status(&self) -> String;
     // messages from connection
     async fn handle_request(
         &mut self,
@@ -214,15 +216,23 @@ pub trait Node {
 
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
-    async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
-
-    /// Checks if the bully deadline has passed and applies the role change.
-    async fn poll_election_timeout(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
+    /// Inicia una elección Bully.
+    /// Devuelve:
+    /// - `RoleChange::None` si solo arranca/continúa elección.
+    /// - `RoleChange::PromoteToLeader` si se autoproclama líder (era réplica).
+    /// - `RoleChange::None` si se autoproclama líder pero ya era Leader.
+    async fn start_election(
+        &mut self,
+        connection: &mut Connection,
+    ) -> AppResult<RoleChange>;
 
     // === Cluster membership hooks (Join / ClusterView) ===
 
-    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr)
-        -> AppResult<()>;
+    async fn handle_join(
+        &mut self,
+        connection: &mut Connection,
+        addr: SocketAddr,
+    ) -> AppResult<()>;
 
     async fn handle_cluster_view(
         &mut self,
@@ -243,7 +253,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
-        db: &mut Database, // CHANGED: pass Database down so Ack / Log can use it
+        db: &mut Database, // pass Database down so Ack / Log can use it
         msg: Message,
     ) -> AppResult<RoleChange> {
         let role_change = match msg {
@@ -278,8 +288,13 @@ pub trait Node {
                 leader_id,
                 leader_addr,
             } => {
-                self.handle_coordinator(connection, leader_id, leader_addr)
-                    .await?
+
+                let a = self.handle_coordinator(connection, leader_id, leader_addr)
+                    .await?;
+                println!("{}", self.get_status().await);
+                a
+
+                
             }
             Message::Join { addr } => {
                 self.handle_join(connection, addr).await?;
@@ -321,16 +336,20 @@ pub trait Node {
                     .await?;
                 match role_change {
                     RoleChange::None => Ok(RoleChange::None),
-                    RoleChange::PromoteToLeader => {
-                        Ok(role_change)
-                    }
-                    RoleChange::DemoteToReplica { new_leader_addr: _ } => {
-                        Ok(role_change)
-                    }
+                    RoleChange::PromoteToLeader => Ok(role_change),
+                    RoleChange::DemoteToReplica { .. } => Ok(role_change),
                 }
             }
             Err(e) => Err(e)?,
         }
+    }
+
+    /// Hook de timeout de elección (por defecto, no hace nada).
+    async fn handle_election_timeout(
+        &mut self,
+        _connection: &mut Connection,
+    ) -> AppResult<RoleChange> {
+        Ok(RoleChange::None)
     }
 
     /// Main async event loop for any node role (Leader / Replica / Station-backed node).
@@ -342,44 +361,45 @@ pub trait Node {
         mut station: Station,
     ) -> AppResult<RoleChange> {
         // Intervalo para chequeos periódicos de timeout de elección
-        let mut election_check_interval = tokio::time::interval(std::time::Duration::from_millis(100));
-        
+        let mut election_check_interval =
+            tokio::time::interval(std::time::Duration::from_millis(1000));
+
         loop {
             let mut result = Ok(RoleChange::None);
+
             select! {
                 // node messages
                 node_msg = connection.recv() => {
-                    println!("[NODE] !!!Received node message: {:?}", node_msg);
                     match node_msg {
                         Ok(msg) => {
                             result = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await;
                         }
-                        Err(e) => {result = Err(e);},
+                        Err(e) => {
+                            result = Err(e);
+                        },
                     }
                 }
                 // station messages
                 pump_msg = station.recv() => {
                     match pump_msg {
-                        Some(msg) => { result = self.handle_station_msg(&mut connection, &mut station,&mut db, msg).await; },
+                        Some(msg) => {
+                            result = self.handle_station_msg(&mut connection, &mut station, &mut db, msg).await;
+                        }
                         None => panic!("[FATAL] station went down"),
                     }
                 }
                 // database events
                 actor_evt = db.recv() => {
                     match actor_evt {
-                        Some(evt) => {self.handle_actor_event(&mut connection, &mut station, evt).await;},
+                        Some(evt) => {
+                            self.handle_actor_event(&mut connection, &mut station, evt).await;
+                        }
                         None => panic!("[FATAL] database went down"),
                     }
                 }
-                // chequeo periódico de deadline de elección
+                // chequeo periódico de timeout de elección
                 _ = election_check_interval.tick() => {
-                    match self.poll_election_timeout(&mut connection).await? {
-                        RoleChange::PromoteToLeader => return Ok(RoleChange::PromoteToLeader),
-                        RoleChange::DemoteToReplica { new_leader_addr } => {
-                            return Ok(RoleChange::DemoteToReplica { new_leader_addr })
-                        }
-                        RoleChange::None => {}
-                    }
+                    result = self.handle_election_timeout(&mut connection).await;
                 }
             }
 
@@ -406,7 +426,7 @@ pub trait Node {
                 Err(AppError::ConnectionLost) => {
                     continue;
                 }
-                Err(AppError::ConnectionRefused { address }) => {
+                Err(AppError::ConnectionRefused { address: _ }) => {
                     continue;
                 }
                 x => {

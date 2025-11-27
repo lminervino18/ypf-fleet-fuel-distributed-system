@@ -324,4 +324,16 @@ mod test {
         let msg = msg_srl.try_into();
         assert_eq!(msg, expected);
     }
+
+    #[test]
+    fn test_deserialize_coordinator_message() {
+        let msg = Message::Coordinator {
+            leader_id: 15388,
+            leader_addr: SocketAddr::from(([127, 0, 0, 1], 12346)),
+        };
+        let msg_srl: Vec<u8> = msg.clone().into();
+        let expected = Ok(msg);
+        let msg = msg_srl.try_into();
+        assert_eq!(msg, expected);
+    }
 }
