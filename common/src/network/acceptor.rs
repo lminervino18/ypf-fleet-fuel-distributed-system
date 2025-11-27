@@ -51,7 +51,6 @@ impl Acceptor {
 
     async fn run(&mut self, messages_tx: Arc<Sender<AppResult<Message>>>) {
         while let Ok((stream, _)) = self.listener.accept().await {
-            println!("[ACCEPTOR] accepted stream");
             let mut guard = self.active.lock().await;
             let Ok(handler) = Handler::start_from(stream, messages_tx.clone()).await else {
                 continue;

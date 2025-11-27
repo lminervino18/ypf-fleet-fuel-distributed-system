@@ -319,11 +319,9 @@ pub trait Node {
                 match role_change {
                     RoleChange::None => Ok(RoleChange::None),
                     RoleChange::PromoteToLeader => {
-                        println!("[NODE] Role change detected: {:?}", role_change);
                         Ok(role_change)
                     }
                     RoleChange::DemoteToReplica { new_leader_addr: _ } => {
-                        println!("[NODE] Role change detected: {:?}", role_change);
                         Ok(role_change)
                     }
                 }
@@ -392,7 +390,6 @@ pub trait Node {
                     continue;
                 }
                 Err(AppError::ConnectionRefused { address }) => {
-                    println!("[NODE] connection refused: {}", address);
                     continue;
                 }
                 x => {

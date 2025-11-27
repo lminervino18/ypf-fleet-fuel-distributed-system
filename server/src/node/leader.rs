@@ -1,5 +1,4 @@
 use super::database::{Database, DatabaseCmd}; // use the Database abstraction
-use super::election::bully::Bully;
 use super::node::Node;
 use super::pending_operatoin::PendingOperation;
 use super::replica::Replica;
@@ -55,7 +54,6 @@ pub struct Leader {
     coords: (f64, f64),
     address: SocketAddr,
     cluster: HashMap<u64, SocketAddr>,
-    bully: Arc<Mutex<Bully>>,
     operations: HashMap<u32, PendingOperation>,
     is_offline: bool,
     offline_queue: VecDeque<Operation>,
@@ -87,15 +85,15 @@ impl Node for Leader {
         _connection: &mut Connection,
         _address: SocketAddr,
     ) -> AppResult<RoleChange> {
-        /* if let Some(_dead_member) = self.cluster.remove(&get_id_given_addr(address)) {
-            println!("[LEADER] Se cayó {:?}, sacándolo del cluster", address);
+
+        if let(Some(_)) = self.cluster.values().find(|&&addr| addr == _address) {
+            println!("[LEADER] Connection lost with {:?} that is a REPLICA", _address);
         } else {
             println!(
-                "[LEADER] Se cayó {:?}, pero no estaba en el cluster",
-                address
+                "[LEADER] Connection lost with {:?}, but it was a client",
+                _address
             );
-        } */
-
+        }
         Ok(RoleChange::None)
     }
 
@@ -129,16 +127,11 @@ impl Node for Leader {
         client_addr: SocketAddr,
     ) -> AppResult<()> {
         // Store the operation locally.
-        println!(
-            "[LEADER] Handling new request from {:?}: {:?}",
-            client_addr, op
-        );
         self.operations.insert(
             self.current_op_id,
             PendingOperation::new(op.clone(), client_addr, req_id),
         );
         if self.cluster.len() == 1 {
-            println!("[LEADER] Only member in cluster, executing operation directly.");
             db.send(DatabaseCmd::Execute {
                 op_id: self.current_op_id,
                 operation: op.clone(),
@@ -176,7 +169,6 @@ impl Node for Leader {
         connection: &mut Connection,
         addr: SocketAddr,
     ) -> AppResult<()> {
-        println!("[LEADER] Received role query from {:?}", addr);
         let role_msg = Message::RoleResponse {
             node_id: get_id_given_addr(self.address),
             role: common::NodeRole::Leader,
@@ -201,18 +193,11 @@ impl Node for Leader {
             return; // TODO: handle this case (unknown op_id).
         };
 
-        println!("[LEADER] Received ACK for op_id {op_id}");
         pending.ack_count += 1;
         if pending.ack_count != (self.cluster.len() - 1) / 2 && self.cluster.len() - 1 != 1 {
             return;
         }
 
-        println!(
-            "[LEADER] Majority ACKs reached for op_id {} ({} / {})",
-            op_id,
-            pending.ack_count,
-            self.cluster.len()
-        );
         // Mayoría alcanzada → ejecutar la operación en el mundo de actores.
         //
         // Instead of talking directly to ActorRouter / RouterCmd, we now
@@ -276,11 +261,7 @@ impl Node for Leader {
         candidate_id: u64,
         candidate_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
-        let should_reply = {
-            let b = self.bully.lock().await;
-            b.should_reply_ok(candidate_id)
-        };
-        if should_reply {
+        if true {
             // if i'm higher, reply OK
             let reply = Message::ElectionOk {
                 responder_id: self.id,
@@ -369,8 +350,8 @@ impl Node for Leader {
                 )
                 .await?;
         }
-        println!("[LEADER] New node joined: {addr:?} (ID={node_id})");
-        println!("[LEADER] Current members: {:?}", self.cluster.len());
+        println!("[LEADER] New node joined: (ID={node_id})");
+        println!("[LEADER] Current cluster members: {:?}", self.cluster.len());
         /* if node_id > self.id {
             self.start_election(connection).await;
         } */
@@ -413,7 +394,6 @@ impl Leader {
             self.address,
             new_leader_addr,
             self.cluster,
-            self.bully,
             operations,
             self.is_offline,
             self.offline_queue,
@@ -427,7 +407,6 @@ impl Leader {
         coords: (f64, f64),
         address: SocketAddr,
         members: HashMap<u64, SocketAddr>,
-        bully: Arc<Mutex<Bully>>,
         _operations_from_replica: HashMap<u32, Operation>,
         is_offline: bool,
         offline_queue: VecDeque<Operation>,
@@ -445,7 +424,6 @@ impl Leader {
             coords,
             address,
             cluster: members,
-            bully,
             operations,
             is_offline,
             offline_queue,
@@ -532,17 +510,10 @@ impl Leader {
             coords,
             address,
             cluster: members,
-            bully: Arc::new(Mutex::new(Bully::new(self_id, address))),
             operations: HashMap::new(),
             is_offline: false,
             offline_queue: VecDeque::new(),
         };
-
-        // Mark self as coordinator in bully state
-        {
-            let mut b = leader.bully.lock().await;
-            b.mark_coordinator();
-        }
 
         // Loop para manejar cambios de rol
         loop {

@@ -78,17 +78,12 @@ impl Administrator {
             addr: self.bind_addr,
         };
 
-        println!(
-            "[administrator] sending Request to {} with req_id={req_id}",
-            self.target_node
-        );
         self.connection.send(msg, &self.target_node).await?;
 
         loop {
             let msg = self.connection.recv().await?;
             match msg {
                 Message::Response { req_id: r, op_result } if r == req_id => {
-                    println!("[administrator] received Response for req_id={r}");
                     self.handle_op_result(op_result);
                     break;
                 }

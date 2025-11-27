@@ -52,19 +52,12 @@ impl Connection {
 
         let mut guard = self.active.lock().await;
         if !guard.contains_key(address) {
-            println!(
-                "[CONNECTION] no tengo el address {}, la creo y mando",
-                address
-            );
             let handler = Handler::start(self.address, *address, self.messages_tx.clone()).await?;
             add_handler_from(&mut guard, handler, self.max_conns);
         }
-
-        println!("[CONNECTION] tengo {} handlers", guard.len());
         match guard.get_mut(address).unwrap().send(msg).await {
             Ok(_) => Ok(()),
             Err(e) => {
-                println!("[CONNECTION] handler {} errored, removing it", address);
                 guard.remove(address);
                 Err(e)
             }

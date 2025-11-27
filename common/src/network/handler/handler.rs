@@ -43,9 +43,6 @@ impl Handler {
         peer_addr: SocketAddr,
         receiver_tx: Arc<Sender<AppResult<Message>>>,
     ) -> AppResult<Self> {
-        println!("[HANDLER] starting active handler with address: {}", {
-            peer_addr
-        });
         let mut stream =
             TcpStream::connect(peer_addr)
                 .await
@@ -63,9 +60,7 @@ impl Handler {
         receiver_tx: Arc<Sender<AppResult<Message>>>,
     ) -> AppResult<Self> {
         let address = read_handler_first_message(&mut stream).await?;
-        println!("[HANDLER] starting pasive handler with address: {}", {
-            address
-        });
+
         let (messages_tx, sender_rx) = mpsc::channel(MSG_BUFF_SIZE);
         Handler::new(stream, messages_tx, sender_rx, receiver_tx, address).await
     }
@@ -147,7 +142,6 @@ impl Handler {
                     Ok(()) => {}
                     Err(AppError::ChannelClosed) => break,
                     Err(AppError::ConnectionLostWith { address }) => {
-                        println!("[HANDLER] connection lost with: {}", address);
                         receiver.write_connection_lost().await?;
                         break;
                         // return Err(AppError::ConnectionLostWith { address });
@@ -157,7 +151,6 @@ impl Handler {
                 // cada vez que hice alguna de las tres cosas anteriores me fijo si hay timeout del
                 // heartbeat
                 if Instant::now() - last_seen > HEARTBEAT_TIMEOUT {
-                    println!("[HANDLER] heartbeat timeout, writting connection lost");
                     receiver.write_connection_lost().await?;
                     break;
                     // return Err(AppError::ConnectionLostWith { address });
