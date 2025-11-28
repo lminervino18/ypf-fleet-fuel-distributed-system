@@ -55,6 +55,7 @@ impl Connection {
             let handler = Handler::start(self.address, *address, self.messages_tx.clone()).await?;
             add_handler_from(&mut guard, handler, self.max_conns);
         }
+
         match guard.get_mut(address).unwrap().send(msg).await {
             Ok(_) => Ok(()),
             Err(e) => {

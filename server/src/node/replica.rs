@@ -1,7 +1,7 @@
 use super::{
     database::{Database, DatabaseCmd},
     leader::Leader,
-    node::{Node, NodeRuntime, RoleChange, run_node_runtime},
+    node::{run_node_runtime, Node, NodeRuntime, RoleChange},
     utils::get_id_given_addr,
 };
 use crate::errors::AppResult;
@@ -85,32 +85,31 @@ impl Node for Replica {
     }
 
     async fn handle_connection_lost_with(
-    &mut self,
-    connection: &mut Connection,
-    lost_address: SocketAddr,
-) -> AppResult<RoleChange> {
-    let lost_id = get_id_given_addr(lost_address);
+        &mut self,
+        connection: &mut Connection,
+        lost_address: SocketAddr,
+    ) -> AppResult<RoleChange> {
+        let lost_id = get_id_given_addr(lost_address);
 
-    if self.cluster.contains_key(&lost_id) {
-        println!(
-            "[REPLICA {}] Peer {:?} is DOWN, removing from cluster",
-            self.id, lost_address
-        );
-        self.cluster.retain(|_, &mut addr| addr != lost_address);
+        if self.cluster.contains_key(&lost_id) {
+            println!(
+                "[REPLICA {}] Peer {:?} is DOWN, removing from cluster",
+                self.id, lost_address
+            );
+            self.cluster.retain(|_, &mut addr| addr != lost_address);
+        }
+
+        // Si era el líder, además disparo la elección
+        if lost_address == self.leader_addr {
+            println!(
+                "[REPLICA {}] Lost connection with LEADER {:?}, starting election",
+                self.id, lost_address
+            );
+            return self.start_election(connection).await;
+        }
+
+        Ok(RoleChange::None)
     }
-
-    // Si era el líder, además disparo la elección
-    if lost_address == self.leader_addr {
-        println!(
-            "[REPLICA {}] Lost connection with LEADER {:?}, starting election",
-            self.id, lost_address
-        );
-        return self.start_election(connection).await;
-    }
-
-    Ok(RoleChange::None)
-}
-
 
     async fn handle_disconnect_node(&mut self, connection: &mut Connection) {
         self.is_offline = true;
@@ -120,27 +119,24 @@ impl Node for Replica {
     async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()> {
         self.is_offline = false;
         connection.reconnect().await?;
-        match connection
-            .send(Message::Join { addr: self.address }, &self.leader_addr)
-            .await
-        {
-            Err(AppError::ConnectionLostWith {
-                address: _leader_addr,
-            }) => {
-                connection
-                    .send(Message::Join { addr: self.address }, &self.leader_addr)
-                    .await?
+        for node_addr in self.cluster.values() {
+            if node_addr == &self.address {
+                continue;
             }
-            x => x?,
+
+            if connection
+                .send(Message::Join { addr: self.address }, node_addr)
+                .await
+                .is_ok()
+            {
+                break;
+            }
         }
 
         Ok(())
     }
 
-    async fn anounce_coordinator(
-        &mut self,
-        connection: &mut Connection,
-    ) -> AppResult<RoleChange> {
+    async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         // Broadcast de Coordinator a todo el cluster
         println!("mi cluster is {:?}", self.cluster);
         for (node, addr) in &self.cluster {
@@ -178,10 +174,7 @@ impl Node for Replica {
     /// Bully election:
     /// - si hay IDs mayores, mando Election y arranco timeout
     /// - si NO hay IDs mayores, me proclamo líder directo.
-    async fn start_election(
-        &mut self,
-        connection: &mut Connection,
-    ) -> AppResult<RoleChange> {
+    async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         if self.election_in_progress {
             println!(
                 "[REPLICA {}] start_election called but election already in progress",
@@ -350,12 +343,7 @@ impl Node for Replica {
         self.commit_operation(db, op_id - 1).await
     }
 
-    async fn handle_ack(
-        &mut self,
-        _connection: &mut Connection,
-        _db: &mut Database,
-        _id: u32,
-    ) {
+    async fn handle_ack(&mut self, _connection: &mut Connection, _db: &mut Database, _id: u32) {
         // Replicas no deberían recibir ACKs.
         todo!();
     }
@@ -399,11 +387,7 @@ impl Node for Replica {
         }
     }
 
-    async fn handle_election_ok(
-        &mut self,
-        _connection: &mut Connection,
-        responder_id: u64,
-    ) {
+    async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
         println!(
             "[REPLICA {}] Received ElectionOk from {}. Waiting for Coordinator...",
             self.id, responder_id
@@ -451,6 +435,10 @@ impl Node for Replica {
         connection: &mut Connection,
         addr: SocketAddr,
     ) -> AppResult<()> {
+        println!(
+            "[REPLICA] me llegó join de {}, lo reenvío al líder {}",
+            addr, self.leader_addr
+        );
         connection
             .send(Message::Join { addr }, &self.leader_addr)
             .await
@@ -637,7 +625,9 @@ impl Replica {
         // Join inicial contra el líder para que rebroadcastée el ClusterView.
         let _ = connection
             .send(
-                Message::Join { addr: replica.address },
+                Message::Join {
+                    addr: replica.address,
+                },
                 &replica.leader_addr,
             )
             .await;

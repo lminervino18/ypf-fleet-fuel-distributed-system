@@ -87,9 +87,9 @@ pub trait Node {
                 result,
                 ..
             } => {
-                if let Err(e) =
-                    self.handle_operation_result(connection, station, op_id, operation, result)
-                        .await
+                if let Err(e) = self
+                    .handle_operation_result(connection, station, op_id, operation, result)
+                    .await
                 {
                     eprintln!("[NODE] error handling actor event: {e:?}");
                 }
@@ -228,18 +228,12 @@ pub trait Node {
     /// - `RoleChange::None` si solo arranca/continúa elección.
     /// - `RoleChange::PromoteToLeader` si se autoproclama líder (era réplica).
     /// - `RoleChange::None` si se autoproclama líder pero ya era Leader.
-    async fn start_election(
-        &mut self,
-        connection: &mut Connection,
-    ) -> AppResult<RoleChange>;
+    async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
     // === Cluster membership hooks (Join / ClusterView) ===
 
-    async fn handle_join(
-        &mut self,
-        connection: &mut Connection,
-        addr: SocketAddr,
-    ) -> AppResult<()>;
+    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr)
+        -> AppResult<()>;
 
     async fn handle_cluster_view(
         &mut self,
@@ -418,10 +412,7 @@ pub trait Node {
                     }
                 },
                 Err(AppError::ConnectionLostWith { address }) => {
-                    match self
-                        .handle_connection_lost_with(connection, address)
-                        .await
-                    {
+                    match self.handle_connection_lost_with(connection, address).await {
                         Ok(RoleChange::PromoteToLeader) => return Ok(RoleChange::PromoteToLeader),
                         Ok(RoleChange::DemoteToReplica { new_leader_addr }) => {
                             return Ok(RoleChange::DemoteToReplica { new_leader_addr })

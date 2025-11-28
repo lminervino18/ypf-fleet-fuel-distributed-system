@@ -87,6 +87,45 @@ impl Node for Leader {
         self.address
     }
 
+    async fn handle_disconnect_node(&mut self, connection: &mut Connection) {
+        self.is_offline = true;
+        connection.disconnect().await;
+    }
+
+    async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()> {
+        println!("[LEADER] reconnecting!");
+        self.is_offline = false;
+        connection.reconnect().await?;
+        for node_addr in self.cluster.values() {
+            if node_addr == &self.address {
+                continue;
+            }
+
+            match connection
+                .send(Message::Join { addr: self.address }, node_addr)
+                .await
+            {
+                Ok(_) => {
+                    println!("[LEADER] could send join msg to {}", node_addr);
+                    break;
+                }
+                Err(e) => {
+                    println!(
+                        "[LEADER] could not send join msg to {} because of {}",
+                        node_addr, e
+                    );
+                    // este retry de acá lo hacmos para no tocar el handle de connection lost with,
+                    // lo correcto claramente es handlear eso pero ahí removemos al fallen member
+                    let _ = connection
+                        .send(Message::Join { addr: self.address }, node_addr)
+                        .await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         let msg = Message::Coordinator {
             leader_id: self.id,
@@ -127,27 +166,6 @@ impl Node for Leader {
             address
         );
         Ok(RoleChange::None)
-    }
-
-    async fn handle_disconnect_node(&mut self, connection: &mut Connection) {
-        self.is_offline = true;
-        connection.disconnect().await;
-    }
-
-    async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()> {
-        self.is_offline = false;
-        connection.reconnect().await?;
-        for node in self.cluster.values() {
-            if connection
-                .send(Message::Join { addr: self.address }, node)
-                .await
-                .is_err()
-            {
-                continue;
-            }
-        }
-
-        Ok(())
     }
 
     async fn handle_request(
@@ -434,7 +452,7 @@ impl Node for Leader {
         connection: &mut Connection,
         addr: SocketAddr,
     ) -> AppResult<()> {
-        let node_id = get_id_given_addr(addr); // gracias ale :)
+        let node_id = get_id_given_addr(addr);
         self.cluster.insert(node_id, addr);
         let view_msg = Message::ClusterView {
             members: self.cluster.iter().map(|(id, addr)| (*id, *addr)).collect(),
@@ -443,7 +461,7 @@ impl Node for Leader {
         connection.send(view_msg, &addr).await?;
         // le mandamos el update a las réplicas
         for replica_addr in self.cluster.values() {
-            if *replica_addr == self.address || *replica_addr == addr {
+            if replica_addr == &self.address || replica_addr == &addr {
                 continue;
             }
 
