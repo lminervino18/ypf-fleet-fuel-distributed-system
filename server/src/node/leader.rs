@@ -1,5 +1,5 @@
 use super::database::{Database, DatabaseCmd}; // use the Database abstraction
-use super::node::{Node, NodeRuntime, RoleChange, run_node_runtime};
+use super::node::{run_node_runtime, Node, NodeRuntime, RoleChange};
 use super::pending_operation::PendingOperation;
 use super::replica::Replica;
 use super::utils::get_id_given_addr;
@@ -72,7 +72,11 @@ impl Node for Leader {
 
     async fn get_status(&self) -> String {
         //give mi cluster and leader, only that
-        format!("Cluster: {:?}, Leader: {:?}", self.cluster.len(), self.address)
+        format!(
+            "Cluster: {:?}, Leader: {:?}",
+            self.cluster.len(),
+            self.address
+        )
     }
 
     fn log_offline_operation(&mut self, op: Operation) {
@@ -83,10 +87,7 @@ impl Node for Leader {
         self.address
     }
 
-    async fn anounce_coordinator(
-        &mut self,
-        connection: &mut Connection,
-    ) -> AppResult<RoleChange> {
+    async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         let msg = Message::Coordinator {
             leader_id: self.id,
             leader_addr: self.address,
@@ -113,14 +114,18 @@ impl Node for Leader {
         _connection: &mut Connection,
         address: SocketAddr,
     ) -> AppResult<RoleChange> {
-        if let Some(_) = self.cluster.values().find(|&&addr| addr == address) {
-            println!("[LEADER] Connection lost with {:?} that is a REPLICA", address);
-        } else {
+        let Some(_removed) = self.cluster.remove(&get_id_given_addr(address)) else {
             println!(
                 "[LEADER] Connection lost with {:?}, but it was a client",
                 address
             );
-        }
+            return Ok(RoleChange::None);
+        };
+
+        println!(
+            "[LEADER] Connection lost with {:?} that is a REPLICA",
+            address
+        );
         Ok(RoleChange::None)
     }
 
@@ -219,19 +224,20 @@ impl Node for Leader {
     }
 
     // CHANGED SIGNATURE: now receives `db: &mut Database`
-    async fn handle_ack(
-        &mut self,
-        _connection: &mut Connection,
-        db: &mut Database,
-        op_id: u32,
-    ) {
+    async fn handle_ack(&mut self, _connection: &mut Connection, db: &mut Database, op_id: u32) {
         let Some(pending) = self.operations.get_mut(&op_id) else {
             return; // TODO: handle this case (unknown op_id).
         };
 
         pending.ack_count += 1;
-        
-        if pending.ack_count != (self.cluster.len() - 1) / 2 && self.cluster.len() - 1 != 1 {
+        println!(
+            "[LEADER] got ack, new ack count is {}, need {}",
+            pending.ack_count,
+            (self.cluster.len() - 1) / 2
+        );
+        if pending.ack_count != ((self.cluster.len() as f32 - 1f32) / 2f32).round() as usize
+            && self.cluster.len() - 1 != 1
+        {
             return;
         }
 
@@ -323,11 +329,7 @@ impl Node for Leader {
         }
     }
 
-    async fn handle_election_ok(
-        &mut self,
-        _connection: &mut Connection,
-        responder_id: u64,
-    ) {
+    async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
         println!(
             "[LEADER {}] Received ElectionOk from {}. Waiting for Coordinator...",
             self.id, responder_id
@@ -368,10 +370,7 @@ impl Node for Leader {
 
     /// Igual lógica que en Replica, pero si no hay ID mayor y gano,
     /// simplemente reafirmo liderazgo (sin RoleChange).
-    async fn start_election(
-        &mut self,
-        connection: &mut Connection,
-    ) -> AppResult<RoleChange> {
+    async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         if self.election_in_progress {
             println!(
                 "[LEADER {}] start_election called but election already in progress",
@@ -438,11 +437,7 @@ impl Node for Leader {
         let node_id = get_id_given_addr(addr); // gracias ale :)
         self.cluster.insert(node_id, addr);
         let view_msg = Message::ClusterView {
-            members: self
-                .cluster
-                .iter()
-                .map(|(id, addr)| (*id, *addr))
-                .collect(),
+            members: self.cluster.iter().map(|(id, addr)| (*id, *addr)).collect(),
         };
         // le mandamos el clúster view al que entró
         connection.send(view_msg, &addr).await?;
