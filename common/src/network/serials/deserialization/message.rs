@@ -1,4 +1,5 @@
 use super::deserialize_socket_address_srl;
+use super::helpers::deserialize_vec_len;
 use crate::Message;
 use crate::Message::*;
 use crate::errors::AppError;
@@ -141,13 +142,7 @@ fn deserialize_join_message(payload: &[u8]) -> AppResult<Message> {
 
 fn deserialize_cluster_view_message(payload: &[u8]) -> AppResult<Message> {
     let mut ptr = 0;
-    let members_len =
-        usize::from_be_bytes(payload[ptr..MEMBERS_LEN_SRL_LEN].try_into().map_err(|e| {
-            AppError::InvalidProtocol {
-                details: format!("failed to deserialize members_len in cluster_view message: {e}"),
-            }
-        })?);
-
+    let members_len = deserialize_vec_len(&payload[ptr..])?;
     if payload.len() < MEMBER_SRL_LEN * members_len {
         return Err(AppError::InvalidProtocol {
             details: "not enough bytes to deserialize all members in cluster_view message"
@@ -155,7 +150,7 @@ fn deserialize_cluster_view_message(payload: &[u8]) -> AppResult<Message> {
         });
     }
 
-    ptr += MEMBERS_LEN_SRL_LEN;
+    ptr += VEC_LEN;
     let mut members = vec![];
     for _ in 0..members_len {
         members.push(deserialize_member(&payload[ptr..])?);

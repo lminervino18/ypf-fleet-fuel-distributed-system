@@ -1,6 +1,16 @@
 use crate::{AppError, AppResult, network::serials::protocol::*};
 use std::net::SocketAddr;
 
+pub fn deserialize_vec_len(payload: &[u8]) -> AppResult<usize> {
+    Ok(usize::from_be_bytes(
+        payload[0..VEC_LEN]
+            .try_into()
+            .map_err(|e| AppError::InvalidProtocol {
+                details: format!("failed to deserialize members_len in cluster_view message: {e}"),
+            })?,
+    ))
+}
+
 pub fn deserialize_account_id(payload: &[u8]) -> AppResult<u64> {
     Ok(u64::from_be_bytes(
         payload[0..ACC_ID_SRL_LEN]

@@ -68,7 +68,8 @@ pub const OFFLINE_SRL_LEN: usize = size_of::<u8>();
 
 pub const NODE_ID_SRL_LEN: usize = size_of::<u64>(); // está así en todos lados, pero 64 bytes???
 pub const MEMBER_SRL_LEN: usize = NODE_ID_SRL_LEN + SOCKET_ADDR_LEN;
-pub const MEMBERS_LEN_SRL_LEN: usize = size_of::<usize>();
+// lenght de los bytes que indican el length de un vector
+pub const VEC_LEN_LEN: usize = size_of::<usize>();
 
 pub const PER_CARD_SPENT_LEN: usize = size_of::<usize>();
 pub const CARD_SPENT_LEN: usize = CARD_ID_SRL_LEN + AMOUNT_SRL_LEN;
