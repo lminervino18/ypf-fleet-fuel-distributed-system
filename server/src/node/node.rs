@@ -1,11 +1,14 @@
 use super::actors::ActorEvent;
 use super::database::Database;
 use crate::errors::AppResult;
-use common::operation::Operation;
+use common::operation::{DatabaseSnapshot, Operation};
 use common::operation_result::OperationResult;
 use common::{AppError, Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
 use std::net::SocketAddr;
 use tokio::select;
+
+// Para el runtime de cambio de rol
+use super::{leader::Leader, replica::Replica};
 
 /// Signal to indicate if a role change should occur.
 #[derive(Debug, Clone)]
@@ -16,6 +19,8 @@ pub enum RoleChange {
 }
 
 pub trait Node {
+    async fn get_status(&self) -> String;
+
     // messages from connection
     async fn handle_request(
         &mut self,
@@ -60,6 +65,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         _station: &mut Station,
+        database: &mut Database,
         op_id: u32,
         _operation: Operation,
         _result: OperationResult,
@@ -73,6 +79,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
+        database: &mut Database,
         event: ActorEvent,
     ) {
         match event {
@@ -82,8 +89,12 @@ pub trait Node {
                 result,
                 ..
             } => {
-                self.handle_operation_result(connection, station, op_id, operation, result)
-                    .await;
+                if let Err(e) = self
+                    .handle_operation_result(connection, station, database, op_id, operation, result)
+                    .await
+                {
+                    eprintln!("[NODE] error handling actor event: {e:?}");
+                }
             }
             ActorEvent::Debug(msg) => {
                 let _ = msg;
@@ -117,7 +128,7 @@ pub trait Node {
                 allowed: true,
                 error: None,
             };
-            if let Err(_e) = station.send(msg).await {}
+            let _ = station.send(msg).await;
             return Ok(RoleChange::None);
         }
 
@@ -214,21 +225,29 @@ pub trait Node {
 
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
+    /// Inicia una elección Bully.
+    /// Devuelve:
+    /// - `RoleChange::None` si solo arranca/continúa elección.
+    /// - `RoleChange::PromoteToLeader` si se autoproclama líder (era réplica).
+    /// - `RoleChange::None` si se autoproclama líder pero ya era Leader.
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
-
-    /// Checks if the bully deadline has passed and applies the role change.
-    async fn poll_election_timeout(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
     // === Cluster membership hooks (Join / ClusterView) ===
 
-    async fn handle_join(&mut self, connection: &mut Connection, addr: SocketAddr)
-        -> AppResult<()>;
+    async fn handle_join(
+        &mut self,
+        connection: &mut Connection,
+        database: &mut Database,
+        addr: SocketAddr,
+    ) -> AppResult<()>;
 
     async fn handle_cluster_view(
         &mut self,
         connection: &mut Connection,
         database: &mut Database,
         members: Vec<(u64, SocketAddr)>,
+        leader_addr: SocketAddr,
+        snapshot: DatabaseSnapshot,
     ) -> AppResult<()>;
 
     async fn handle_cluster_update(
@@ -243,7 +262,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
-        db: &mut Database, // CHANGED: pass Database down so Ack / Log can use it
+        db: &mut Database, // pass Database down so Ack / Log can use it
         msg: Message,
     ) -> AppResult<RoleChange> {
         let role_change = match msg {
@@ -278,15 +297,23 @@ pub trait Node {
                 leader_id,
                 leader_addr,
             } => {
-                self.handle_coordinator(connection, leader_id, leader_addr)
-                    .await?
+                let rc = self
+                    .handle_coordinator(connection, leader_id, leader_addr)
+                    .await?;
+                println!("{}", self.get_status().await);
+                rc
             }
             Message::Join { addr } => {
-                self.handle_join(connection, addr).await?;
+                self.handle_join(connection, db, addr).await?;
                 RoleChange::None
             }
-            Message::ClusterView { members } => {
-                self.handle_cluster_view(connection, db, members).await?;
+            Message::ClusterView {
+                members,
+                leader_addr,
+                database,
+            } => {
+                self.handle_cluster_view(connection, db, members, leader_addr, database)
+                    .await?;
                 RoleChange::None
             }
             Message::ClusterUpdate { new_member } => {
@@ -321,67 +348,73 @@ pub trait Node {
                     .await?;
                 match role_change {
                     RoleChange::None => Ok(RoleChange::None),
-                    RoleChange::PromoteToLeader => {
-                        println!("[NODE] Role change detected: {:?}", role_change);
-                        Ok(role_change)
-                    }
-                    RoleChange::DemoteToReplica { new_leader_addr: _ } => {
-                        println!("[NODE] Role change detected: {:?}", role_change);
-                        Ok(role_change)
-                    }
+                    RoleChange::PromoteToLeader => Ok(role_change),
+                    RoleChange::DemoteToReplica { .. } => Ok(role_change),
                 }
             }
             Err(e) => Err(e)?,
         }
     }
 
+    /// Hook de timeout de elección (por defecto, no hace nada).
+    async fn handle_election_timeout(
+        &mut self,
+        _connection: &mut Connection,
+    ) -> AppResult<RoleChange> {
+        Ok(RoleChange::None)
+    }
+
     /// Main async event loop for any node role (Leader / Replica / Station-backed node).
-    /// Returns a RoleChange signal if the node should switch roles.
+    /// Ahora recibe referencias a Connection / Database / Station y devuelve
+    /// un RoleChange si hay que cambiar de rol.
     async fn run(
         &mut self,
-        mut connection: Connection,
-        mut db: Database,
-        mut station: Station,
+        connection: &mut Connection,
+        db: &mut Database,
+        station: &mut Station,
     ) -> AppResult<RoleChange> {
-        // Intervalo para chequeos periódicos de timeout de elección
-        let mut election_check_interval = tokio::time::interval(std::time::Duration::from_millis(100));
+
         
+        // Intervalo para chequeos periódicos de timeout de elección
+        let mut election_check_interval =
+            tokio::time::interval(std::time::Duration::from_millis(500));
+
         loop {
-            let mut result = Ok(RoleChange::None);
+            let mut result: AppResult<RoleChange> = Ok(RoleChange::None);
+
             select! {
                 // node messages
                 node_msg = connection.recv() => {
-                    println!("[NODE] !!!Received node message: {:?}", node_msg);
                     match node_msg {
                         Ok(msg) => {
-                            result = self.handle_node_msg(&mut connection, &mut station, &mut db, msg).await;
+                            result = self.handle_node_msg(connection, station, db, msg).await;
                         }
-                        Err(e) => {result = Err(e);},
+                        Err(e) => {
+                            result = Err(e);
+                        },
                     }
                 }
                 // station messages
                 pump_msg = station.recv() => {
                     match pump_msg {
-                        Some(msg) => { result = self.handle_station_msg(&mut connection, &mut station,&mut db, msg).await; },
+                        Some(msg) => {
+                            result = self.handle_station_msg(connection, station, db, msg).await;
+                        }
                         None => panic!("[FATAL] station went down"),
                     }
                 }
                 // database events
                 actor_evt = db.recv() => {
                     match actor_evt {
-                        Some(evt) => {self.handle_actor_event(&mut connection, &mut station, evt).await;},
+                        Some(evt) => {
+                            self.handle_actor_event(connection, station, db, evt).await;
+                        }
                         None => panic!("[FATAL] database went down"),
                     }
                 }
-                // chequeo periódico de deadline de elección
+                // chequeo periódico de timeout de elección
                 _ = election_check_interval.tick() => {
-                    match self.poll_election_timeout(&mut connection).await? {
-                        RoleChange::PromoteToLeader => return Ok(RoleChange::PromoteToLeader),
-                        RoleChange::DemoteToReplica { new_leader_addr } => {
-                            return Ok(RoleChange::DemoteToReplica { new_leader_addr })
-                        }
-                        RoleChange::None => {}
-                    }
+                    result = self.handle_election_timeout(connection).await;
                 }
             }
 
@@ -394,10 +427,7 @@ pub trait Node {
                     }
                 },
                 Err(AppError::ConnectionLostWith { address }) => {
-                    match self
-                        .handle_connection_lost_with(&mut connection, address)
-                        .await
-                    {
+                    match self.handle_connection_lost_with(connection, address).await {
                         Ok(RoleChange::PromoteToLeader) => return Ok(RoleChange::PromoteToLeader),
                         Ok(RoleChange::DemoteToReplica { new_leader_addr }) => {
                             return Ok(RoleChange::DemoteToReplica { new_leader_addr })
@@ -408,14 +438,76 @@ pub trait Node {
                 Err(AppError::ConnectionLost) => {
                     continue;
                 }
-                Err(AppError::ConnectionRefused { address }) => {
-                    println!("[NODE] connection refused: {}", address);
+                Err(AppError::ConnectionRefused { address: _ }) => {
                     continue;
                 }
                 x => {
                     println!("[NODE] stopping run beacause of: {x:?}");
                     return x;
                 }
+            }
+        }
+    }
+}
+
+/// Runtime que puede estar corriendo como Leader o Replica.
+pub enum NodeRuntime {
+    Leader(Leader),
+    Replica(Replica),
+}
+
+/// Loop que mantiene vivo el nodo y maneja cambios de rol
+/// reutilizando SIEMPRE las mismas Connection / Database / Station.
+///
+/// - Se crea una sola vez `Connection`, `Database`, `Station`.
+/// - `Leader` y `Replica` se recrean al volar de rol, pero con las
+///   mismas referencias a esos recursos.
+pub async fn run_node_runtime(
+    mut node: NodeRuntime,
+    connection: &mut Connection,
+    db: &mut Database,
+    station: &mut Station,
+) -> AppResult<()> {
+    loop {
+        let rc = match &mut node {
+            NodeRuntime::Leader(leader) => leader.run(connection, db, station).await?,
+            NodeRuntime::Replica(replica) => replica.run(connection, db, station).await?,
+        };
+
+        match rc {
+            RoleChange::None => {
+                // El run interno terminó "normalmente": apagamos el nodo.
+                return Ok(());
+            }
+            RoleChange::PromoteToLeader => {
+                node = match node {
+                    NodeRuntime::Replica(replica) => {
+                        println!("[RUNTIME] Promoting Replica to Leader");
+                        NodeRuntime::Leader(replica.into_leader())
+                    }
+                    NodeRuntime::Leader(leader) => {
+                        // Ya somos líder; no cambiamos nada.
+                        NodeRuntime::Leader(leader)
+                    }
+                };
+            }
+            RoleChange::DemoteToReplica { new_leader_addr } => {
+                node = match node {
+                    NodeRuntime::Leader(leader) => {
+                        println!(
+                            "[RUNTIME] Demoting Leader to Replica with new leader at {}",
+                            new_leader_addr
+                        );
+                        NodeRuntime::Replica(leader.into_replica(new_leader_addr))
+                    }
+                    NodeRuntime::Replica(replica) => {
+                        // No debería pasar, pero por si acaso dejamos la réplica como está.
+                        println!(
+                            "[RUNTIME] DemoteToReplica received while already Replica; ignoring"
+                        );
+                        NodeRuntime::Replica(replica)
+                    }
+                };
             }
         }
     }

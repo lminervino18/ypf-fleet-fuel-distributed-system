@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 /// High-level operation the system can perform.
 ///
 /// Used between:
@@ -55,6 +57,19 @@ pub enum Operation {
         account_id: u64,
         period: Option<String>,
     },
+
+    /// Pedir un snapshot completo de la base de datos local (accounts + cards).
+    ///
+    /// `addr` es la dirección del nodo que hizo el pedido, y vuelve dentro del
+    /// snapshot para que el Node sepa a quién reenviar/usar.
+    GetDatabase {
+        addr: SocketAddr,
+    },
+
+    /// Reemplazar la base de datos local usando un snapshot recibido previamente.
+    ReplaceDatabase {
+        snapshot: DatabaseSnapshot,
+    },
 }
 
 /// Scope of a limit (card or account), useful for logging
@@ -63,4 +78,35 @@ pub enum Operation {
 pub enum LimitScope {
     Card,
     Account,
+}
+
+/// Snapshot del estado de una cuenta, para replicación / sync de DB.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountSnapshot {
+    pub account_id: u64,
+    pub limit: Option<f32>,
+    pub consumed: f32,
+}
+
+/// Snapshot del estado de una tarjeta, para replicación / sync de DB.
+///
+/// `account_id` es la cuenta a la que pertenece la tarjeta.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardSnapshot {
+    pub account_id: u64,
+    pub card_id: u64,
+    pub limit: Option<f32>,
+    pub consumed: f32,
+}
+
+/// Snapshot completo de la base de datos del nodo.
+///
+/// - `addr`: dirección del nodo que generó / pidió el snapshot.
+/// - `accounts`: snapshot de todas las cuentas.
+/// - `cards`: snapshot de todas las tarjetas.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatabaseSnapshot {
+    pub addr: SocketAddr,
+    pub accounts: Vec<AccountSnapshot>,
+    pub cards: Vec<CardSnapshot>,
 }

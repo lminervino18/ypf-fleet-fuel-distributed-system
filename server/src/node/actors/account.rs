@@ -4,6 +4,7 @@ use actix::prelude::*;
 use super::actor_router::ActorRouter;
 use super::messages::{AccountChargeReply, AccountMsg, RouterInternalMsg};
 use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
+use common::operation::AccountSnapshot;
 
 /// Estado interno de un query/bill de cuenta en curso.
 #[derive(Debug)]
@@ -246,6 +247,30 @@ impl Handler<AccountMsg> for AccountActor {
                         per_card_spent,
                     });
                 }
+            }
+
+            AccountMsg::GetSnapshot { op_id } => {
+                // Construimos el snapshot actual de esta cuenta
+                let snapshot = AccountSnapshot {
+                    account_id: self.account_id,
+                    limit: self.account_limit,
+                    consumed: self.account_consumed,
+                };
+
+                self.send_internal(RouterInternalMsg::AccountSnapshotCollected {
+                    op_id,
+                    snapshot,
+                });
+            }
+
+            AccountMsg::ReplaceState {
+                new_limit,
+                new_consumed,
+            } => {
+                // Reemplazamos el estado interno con los valores del snapshot.
+                // No se emite OperationCompleted ni se toca pending_query.
+                self.account_limit = new_limit;
+                self.account_consumed = new_consumed;
             }
         }
     }

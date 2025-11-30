@@ -1,4 +1,5 @@
 use super::deserialize_socket_address_srl;
+use super::helpers::deserialize_vec_len;
 use crate::Message;
 use crate::Message::*;
 use crate::errors::AppError;
@@ -141,13 +142,7 @@ fn deserialize_join_message(payload: &[u8]) -> AppResult<Message> {
 
 fn deserialize_cluster_view_message(payload: &[u8]) -> AppResult<Message> {
     let mut ptr = 0;
-    let members_len =
-        usize::from_be_bytes(payload[ptr..MEMBERS_LEN_SRL_LEN].try_into().map_err(|e| {
-            AppError::InvalidProtocol {
-                details: format!("failed to deserialize members_len in cluster_view message: {e}"),
-            }
-        })?);
-
+    let members_len = deserialize_vec_len(&payload[ptr..])?;
     if payload.len() < MEMBER_SRL_LEN * members_len {
         return Err(AppError::InvalidProtocol {
             details: "not enough bytes to deserialize all members in cluster_view message"
@@ -155,14 +150,22 @@ fn deserialize_cluster_view_message(payload: &[u8]) -> AppResult<Message> {
         });
     }
 
-    ptr += MEMBERS_LEN_SRL_LEN;
+    ptr += VEC_LEN_LEN;
     let mut members = vec![];
     for _ in 0..members_len {
         members.push(deserialize_member(&payload[ptr..])?);
         ptr += MEMBER_SRL_LEN;
     }
 
-    Ok(ClusterView { members })
+    let leader_addr = deserialize_socket_address_srl(&payload[ptr..])?;
+    ptr += SOCKET_ADDR_LEN;
+    // este to_vec está feo
+    let database = payload[ptr..].to_vec().try_into()?;
+    Ok(ClusterView {
+        members,
+        leader_addr,
+        database,
+    })
 }
 
 fn deserialize_op_id(payload: &[u8]) -> AppResult<u32> {
@@ -184,7 +187,7 @@ mod test {
     use super::*;
     use crate::{
         network::serials::deserialization::helpers::deserialize_socket_address_srl,
-        operation::Operation,
+        operation::{AccountSnapshot, CardSnapshot, DatabaseSnapshot, Operation},
         operation_result::{ChargeResult, OperationResult},
     };
 
@@ -270,6 +273,47 @@ mod test {
                 (8534, SocketAddr::from(([127, 0, 0, 1], 12346))),
                 (12, SocketAddr::from(([127, 0, 0, 1], 12347))),
             ],
+            leader_addr: SocketAddr::from(([127, 0, 0, 1], 12346)),
+            database: DatabaseSnapshot {
+                addr: SocketAddr::from(([127, 0, 0, 1], 12346)),
+                accounts: vec![
+                    AccountSnapshot {
+                        account_id: 235,
+                        limit: Some(13249998f32),
+                        consumed: 9500345f32,
+                    },
+                    AccountSnapshot {
+                        account_id: 864,
+                        limit: Some(1000f32),
+                        consumed: 500f32,
+                    },
+                    AccountSnapshot {
+                        account_id: 1,
+                        limit: Some(123457f32),
+                        consumed: 123456f32,
+                    },
+                ],
+                cards: vec![
+                    CardSnapshot {
+                        account_id: 1,
+                        card_id: 1523,
+                        limit: Some(13249998f32),
+                        consumed: 9500345f32,
+                    },
+                    CardSnapshot {
+                        account_id: 864,
+                        card_id: 999,
+                        limit: Some(1000f32),
+                        consumed: 500f32,
+                    },
+                    CardSnapshot {
+                        account_id: 1000,
+                        card_id: 3945,
+                        limit: Some(123457f32),
+                        consumed: 123456f32,
+                    },
+                ],
+            },
         };
         let msg_srl: Vec<u8> = msg.clone().into();
         let expected = Ok(msg);
@@ -318,6 +362,18 @@ mod test {
     fn test_deserialize_election_ok_message() {
         let msg = Message::ElectionOk {
             responder_id: 15388,
+        };
+        let msg_srl: Vec<u8> = msg.clone().into();
+        let expected = Ok(msg);
+        let msg = msg_srl.try_into();
+        assert_eq!(msg, expected);
+    }
+
+    #[test]
+    fn test_deserialize_coordinator_message() {
+        let msg = Message::Coordinator {
+            leader_id: 15388,
+            leader_addr: SocketAddr::from(([127, 0, 0, 1], 12346)),
         };
         let msg_srl: Vec<u8> = msg.clone().into();
         let expected = Ok(msg);

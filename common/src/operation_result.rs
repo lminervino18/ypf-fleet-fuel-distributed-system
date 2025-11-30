@@ -1,4 +1,4 @@
-use crate::VerifyError;
+use crate::{VerifyError, operation::DatabaseSnapshot};
 
 /// Resultado de una operación de alto nivel.
 ///
@@ -7,6 +7,8 @@ use crate::VerifyError;
 /// - `LimitAccount`     → `OperationResult::LimitAccount(LimitResult)`
 /// - `LimitCard`        → `OperationResult::LimitCard(LimitResult)`
 /// - `AccountQuery`     → `OperationResult::AccountQuery(AccountQueryResult)`
+/// - `GetDatabase`      → `OperationResult::DatabaseSnapshot(DatabaseSnapshot)`
+/// - `ReplaceDatabase`  → `OperationResult::ReplaceDatabase`
 #[derive(Debug, Clone, PartialEq)]
 pub enum OperationResult {
     /// Resultado de un `Operation::Charge`.
@@ -18,8 +20,17 @@ pub enum OperationResult {
     /// Resultado de un `Operation::LimitCard`.
     LimitCard(LimitResult),
 
-    /// Resultado de un `Operation::AccountQuery`.
+    /// Resultado de un `Operation::AccountQuery` o `Bill`.
     AccountQuery(AccountQueryResult),
+
+    /// Resultado de un `Operation::GetDatabase`.
+    ///
+    /// Contiene el snapshot completo (incluye el `addr` embebido en
+    /// `snapshot.addr`).
+    DatabaseSnapshot(DatabaseSnapshot),
+
+    /// Ack de `Operation::ReplaceDatabase`.
+    ReplaceDatabase,
 }
 
 /// Resultado específico de un `Charge`.

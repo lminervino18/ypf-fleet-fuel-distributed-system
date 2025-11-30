@@ -1,7 +1,7 @@
 use actix::prelude::*;
 
 use crate::errors::VerifyError;
-use common::operation::Operation;
+use common::operation::{Operation, AccountSnapshot, CardSnapshot};
 use common::operation_result::OperationResult;
 
 /// Events sent by the ActorRouter to the Node.
@@ -63,6 +63,24 @@ pub enum AccountMsg {
         card_id: u64,
         consumed: f32,
     },
+
+    /// Pedirle al AccountActor un snapshot completo de su estado
+    /// (límite + consumo), para construir la DatabaseSnapshot.
+    ///
+    /// El resultado vuelve al Router como
+    /// `RouterInternalMsg::AccountSnapshotCollected { .. }`.
+    GetSnapshot {
+        op_id: u32,
+    },
+
+    /// Reemplazar el estado interno de la cuenta según un snapshot.
+    ///
+    /// - `new_limit`: nuevo límite de cuenta (o None si sin límite).
+    /// - `new_consumed`: nuevo consumo acumulado de la cuenta.
+    ReplaceState {
+        new_limit: Option<f32>,
+        new_consumed: f32,
+    },
 }
 
 /// Reply from AccountActor back to CardActor for a specific charge.
@@ -100,6 +118,24 @@ pub enum CardMsg {
         reset_after_report: bool,
     },
 
+    /// Pedirle al CardActor un snapshot completo de su estado
+    /// (límite + consumo), para construir la DatabaseSnapshot.
+    ///
+    /// El resultado vuelve al Router como
+    /// `RouterInternalMsg::CardSnapshotCollected { .. }`.
+    GetSnapshot {
+        op_id: u32,
+    },
+
+    /// Reemplazar el estado interno de la tarjeta según un snapshot.
+    ///
+    /// - `new_limit`: nuevo límite de tarjeta (o None si sin límite).
+    /// - `new_consumed`: nuevo consumo acumulado de la tarjeta.
+    ReplaceState {
+        new_limit: Option<f32>,
+        new_consumed: f32,
+    },
+
     /// Generic debug / diagnostic for the card.
     Debug(String),
 }
@@ -124,6 +160,20 @@ pub enum RouterInternalMsg {
         account_id: u64,
         total_spent: f32,
         per_card_spent: Vec<(u64, f32)>,
+    },
+
+    /// Snapshot de una cuenta, para construir la DatabaseSnapshot
+    /// en respuesta a `Operation::GetDatabase`.
+    AccountSnapshotCollected {
+        op_id: u32,
+        snapshot: AccountSnapshot,
+    },
+
+    /// Snapshot de una tarjeta, para construir la DatabaseSnapshot
+    /// en respuesta a `Operation::GetDatabase`.
+    CardSnapshotCollected {
+        op_id: u32,
+        snapshot: CardSnapshot,
     },
 
     /// Internal debug / diagnostics.

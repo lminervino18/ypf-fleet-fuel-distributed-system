@@ -1,11 +1,6 @@
-use common::errors::{AppResult, VerifyError, LimitCheckError, LimitUpdateError};
+use common::errors::{AppResult, LimitCheckError, LimitUpdateError, VerifyError};
 use common::operation::Operation;
-use common::operation_result::{
-    OperationResult,
-    ChargeResult,
-    LimitResult,
-    AccountQueryResult,
-};
+use common::operation_result::{AccountQueryResult, ChargeResult, LimitResult, OperationResult};
 use common::{Connection, Message};
 
 use std::net::SocketAddr;
@@ -78,31 +73,25 @@ impl Administrator {
             addr: self.bind_addr,
         };
 
-        println!(
-            "[administrator] sending Request to {} with req_id={req_id}",
-            self.target_node
-        );
         self.connection.send(msg, &self.target_node).await?;
 
         loop {
             let msg = self.connection.recv().await?;
             match msg {
-                Message::Response { req_id: r, op_result } if r == req_id => {
-                    println!("[administrator] received Response for req_id={r}");
+                Message::Response {
+                    req_id: r,
+                    op_result,
+                } if r == req_id => {
                     self.handle_op_result(op_result);
                     break;
                 }
                 Message::Response { req_id: other, .. } => {
                     // Response for a different request id (unexpected for this simple admin).
-                    eprintln!(
-                        "[administrator] ignoring Response for unexpected req_id={other}"
-                    );
+                    eprintln!("[administrator] ignoring Response for unexpected req_id={other}");
                 }
                 other => {
                     // The admin is not part of Raft / election / etc. Ignore all that.
-                    eprintln!(
-                        "[administrator] ignoring unexpected message from node: {other:?}"
-                    );
+                    eprintln!("[administrator] ignoring unexpected message from node: {other:?}");
                 }
             }
         }
@@ -152,38 +141,32 @@ impl Administrator {
     /// Print a simple, stdout-friendly summary of the `OperationResult`.
     fn handle_op_result(&self, op_result: OperationResult) {
         match op_result {
-            OperationResult::Charge(res) => {
-                match res {
-                    ChargeResult::Ok => {
-                        println!("CHARGE: OK");
-                    }
-                    ChargeResult::Failed(err) => {
-                        println!("CHARGE: ERROR - {}", describe_verify_error(&err));
-                    }
+            OperationResult::Charge(res) => match res {
+                ChargeResult::Ok => {
+                    println!("CHARGE: OK");
                 }
-            }
+                ChargeResult::Failed(err) => {
+                    println!("CHARGE: ERROR - {}", describe_verify_error(&err));
+                }
+            },
 
-            OperationResult::LimitAccount(res) => {
-                match res {
-                    LimitResult::Ok => {
-                        println!("LIMIT_ACCOUNT: OK");
-                    }
-                    LimitResult::Failed(err) => {
-                        println!("LIMIT_ACCOUNT: ERROR - {}", describe_verify_error(&err));
-                    }
+            OperationResult::LimitAccount(res) => match res {
+                LimitResult::Ok => {
+                    println!("LIMIT_ACCOUNT: OK");
                 }
-            }
+                LimitResult::Failed(err) => {
+                    println!("LIMIT_ACCOUNT: ERROR - {}", describe_verify_error(&err));
+                }
+            },
 
-            OperationResult::LimitCard(res) => {
-                match res {
-                    LimitResult::Ok => {
-                        println!("LIMIT_CARD: OK");
-                    }
-                    LimitResult::Failed(err) => {
-                        println!("LIMIT_CARD: ERROR - {}", describe_verify_error(&err));
-                    }
+            OperationResult::LimitCard(res) => match res {
+                LimitResult::Ok => {
+                    println!("LIMIT_CARD: OK");
                 }
-            }
+                LimitResult::Failed(err) => {
+                    println!("LIMIT_CARD: ERROR - {}", describe_verify_error(&err));
+                }
+            },
 
             OperationResult::AccountQuery(AccountQueryResult {
                 account_id,
@@ -204,6 +187,11 @@ impl Administrator {
                         println!("  card_id={} spent={:.2}", card_id, spent);
                     }
                 }
+            }
+
+            _ => {
+                // no le puede venir op result de base de datos
+                panic!("[FATAL] Unknown operation result");
             }
         }
     }

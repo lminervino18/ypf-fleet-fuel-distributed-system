@@ -313,9 +313,9 @@ impl NodeClient {
                     break;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[node_client] failed to send request_id={request_id} to {target}: {e:?}"
-                    );
+                    // eprintln!(
+                    //     "[node_client] failed to send request_id={request_id} to {target}: {e:?}"
+                    // );
                     // Try next node in the list.
                 }
             }

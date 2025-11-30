@@ -1,4 +1,5 @@
 use crate::network::serials::protocol::*;
+use crate::operation::DatabaseSnapshot;
 use crate::operation_result::OperationResult::*;
 use crate::operation_result::*;
 
@@ -9,8 +10,25 @@ impl From<OperationResult> for Vec<u8> {
             LimitAccount(result) => serialize_limit_account_result(result),
             LimitCard(result) => serialize_limit_card_result(result),
             AccountQuery(result) => serialize_account_query_result(result),
+            DatabaseSnapshot(result) => serialize_database_snapshot_result(result),
+            ReplaceDatabase => serialize_replace_database_result(),
         }
     }
+}
+
+fn serialize_replace_database_result() -> Vec<u8> {
+    let type_srl = REPLACE_DATABASE;
+    let srl = vec![type_srl];
+    srl
+}
+
+fn serialize_database_snapshot_result(result: DatabaseSnapshot) -> Vec<u8> {
+    let type_srl = DATABASE_SNAPSHOT;
+    let database_srl: Vec<u8> = result.into();
+    let mut srl = vec![];
+    srl.push(type_srl);
+    srl.extend(database_srl);
+    srl
 }
 
 fn serialize_card_spent(card_spent: (u64, f32)) -> Vec<u8> {
