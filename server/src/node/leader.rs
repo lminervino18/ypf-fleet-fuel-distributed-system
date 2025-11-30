@@ -7,6 +7,7 @@ use crate::errors::AppResult;
 use common::operation::{DatabaseSnapshot, Operation};
 use common::operation_result::{ChargeResult, OperationResult};
 use common::{Connection, Message, NodeToStationMsg, Station};
+use std::f32::consts::E;
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
@@ -142,6 +143,10 @@ impl Node for Leader {
                     self.id, peer_addr, e
                 );
             }
+            println!(
+                "[LEADER {}] Sent Coordinator to {:?}",
+                self.id, peer_addr
+            );
         }
 
         // Ya soy líder; no hay cambio de rol.
@@ -177,15 +182,22 @@ impl Node for Leader {
         client_addr: SocketAddr,
     ) -> AppResult<()> {
         // Store the operation locally.
+
+    
         println!(
             "[LEADER {}] Handling request_id={} from client at {}: {:?}",
             self.id, req_id, client_addr, op
         );
+        println!("The cluster is {:?}", self.cluster);
+        println!("Self current op id is {}", self.current_op_id);
+
+    
         self.operations.insert(
             self.current_op_id,
             PendingOperation::new(op.clone(), client_addr, req_id),
         );
-        if self.cluster.len() == 1 {
+
+        if self.cluster.len() == 1 {    
             db.send(DatabaseCmd::Execute {
                 op_id: self.current_op_id,
                 operation: op.clone(),
@@ -205,6 +217,7 @@ impl Node for Leader {
         }
 
         self.current_op_id += 1;
+
         Ok(())
     }
 
@@ -243,6 +256,7 @@ impl Node for Leader {
 
     // CHANGED SIGNATURE: now receives `db: &mut Database`
     async fn handle_ack(&mut self, _connection: &mut Connection, db: &mut Database, op_id: u32) {
+        println!("llego ack de la operacion {}", op_id);   
         let Some(pending) = self.operations.get_mut(&op_id) else {
             return; // TODO: handle this case (unknown op_id).
         };
@@ -271,25 +285,52 @@ impl Node for Leader {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
+        database: &mut Database,
         op_id: u32,
         operation: Operation,
         result: OperationResult,
     ) -> AppResult<()> {
-        let pending = self
+
+        let pending;
+
+        if op_id != 0{
+            pending = self
             .operations
             .remove(&op_id)
             .expect("leader received the result of an unexisting operation");
+        } else{
+            println!("La operacion {:?} tiene ID: 0 (Es una interna)", operation);
+            pending = PendingOperation{
+                op: operation.clone(),
+                client_addr: self.address,
+                request_id: 0,
+                ack_count: 0,
+            };
+        };
+        
 
         match operation {
             Operation::GetDatabase { addr } => {
                 // Este OperationResult viene del ActorRouter como DatabaseSnapshot.
                 if let OperationResult::DatabaseSnapshot(snapshot) = result {
+                    println!(
+                        "[LEADER {}] Sending DatabaseSnapshot to new node at {}",
+                        self.id, addr
+                    );
                     let msg = Message::ClusterView {
                         members: self.cluster.clone().into_iter().collect(),
                         leader_addr: self.address,
                         database: snapshot.clone(),
                     };
-                    connection.send(msg, &addr).await
+                    if let Err(e) =  connection.send(msg.clone(), &addr).await{
+                        connection.send(msg, &addr).await
+                        
+                       
+                    }
+                    else{
+                        Ok(())
+                    }
+                    
                 } else {
                     Ok(())
                 }
@@ -477,13 +518,16 @@ impl Node for Leader {
         database: &mut Database,
         addr: SocketAddr,
     ) -> AppResult<()> {
+
+
+        println!("Mandamos para obtener snapshot de la base de datos al nuevo nodo");
+        database.send(DatabaseCmd::Execute { op_id: 0, operation: Operation::GetDatabase { addr } });
+    
         let node_id = get_id_given_addr(addr);
         self.cluster.insert(node_id, addr);
 
-        // TODO: esto lo dejo así para q compile porque no encuentro
-        // el DatabaseCmd::GetDatabase, borrar en el merge
-        // database.send(DatabaseCmd::GetDatabase { addr });
-
+        
+        println!("mandamos el cluster update a los nodos");
         // le mandamos el update a las réplicas
         for replica_addr in self.cluster.values() {
             if replica_addr == &self.address || replica_addr == &addr {
@@ -500,14 +544,6 @@ impl Node for Leader {
                 .await?;
         }
 
-        if node_id > self.id {
-            println!(
-                "[LEADER {}] New node with higher ID ({}) joined. Starting election.",
-                self.id, node_id
-            );
-            self.start_election(connection).await?;
-        }
-
         println!("[LEADER] New node joined: (ID={node_id})");
         println!("[LEADER] Current cluster members: {:?}", self.cluster.len());
         // NOTA: el nuevo nodo corre Bully desde Replica::start.
@@ -522,16 +558,44 @@ impl Node for Leader {
         // only leaders send cluster updates
     }
 
-    /// Called when we receive a `Message::ClusterView` through the
     async fn handle_cluster_view(
         &mut self,
-        _connection: &mut Connection,
-        _database: &mut Database,
-        _members: Vec<(u64, SocketAddr)>,
-        _leader_addr: SocketAddr,
-        _snapshot: DatabaseSnapshot,
+        connection: &mut Connection,
+        database: &mut Database,
+        members: Vec<(u64, SocketAddr)>,
+        leader_addr: SocketAddr,
+        snapshot: DatabaseSnapshot,
     ) -> AppResult<()> {
-        Ok(()) // leaders don't receive cluster view
+
+        println!(
+            "[LEADER {}] Received ClusterView with {} members and leader at {} and DatabaseSnapshot {:?}",
+            self.id,
+            members.len(),
+            leader_addr,
+            snapshot
+        );
+
+        database.send(DatabaseCmd::Execute {
+            op_id: 0,
+            operation: Operation::ReplaceDatabase {
+                snapshot: snapshot,
+            },
+        });
+    
+
+        self.cluster.clear();
+        for (id, addr) in members {
+            self.cluster.insert(id, addr);
+        }
+
+        println!(
+            "[LEADER {}] Cluster Update, Cluster Members: {:?} and Leader: {:?}",
+            self.id, self.cluster, leader_addr
+        );
+        
+        self.start_election(connection).await?;
+
+        Ok(())
     }
 
     /// Timeout de elección para Leader: si no hay ElectionOk en 2s
@@ -646,7 +710,7 @@ impl Leader {
 
         let leader = Self {
             id: self_id,
-            current_op_id: 0,
+            current_op_id: 1,
             coords,
             address,
             cluster: members,

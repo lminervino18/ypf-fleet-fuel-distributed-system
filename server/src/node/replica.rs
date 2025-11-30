@@ -119,6 +119,7 @@ impl Node for Replica {
     async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()> {
         self.is_offline = false;
         connection.reconnect().await?;
+
         for node_addr in self.cluster.values() {
             if node_addr == &self.address {
                 continue;
@@ -130,6 +131,8 @@ impl Node for Replica {
                 .is_ok()
             {
                 break;
+            } else{
+                connection.send(Message::Join { addr: self.address }, node_addr).await?;
             }
         }
 
@@ -239,12 +242,17 @@ impl Node for Replica {
         &mut self,
         connection: &mut Connection,
         _station: &mut Station,
+        database: &mut Database,
         op_id: u32,
         operation: Operation,
         _result: OperationResult,
     ) -> AppResult<()> {
         // Si esta operación era un ReplaceDatabase, no mandamos ningún Ack al líder.
         if let Operation::ReplaceDatabase { .. } = operation {
+             while let Some(op) = self.offline_queue.pop_front() {
+                self.handle_request(connection, database, 0, op, self.address)
+                    .await?
+        }
             return Ok(());
         }
 
@@ -338,9 +346,11 @@ impl Node for Replica {
     ) -> AppResult<()> {
         // Guardamos el log y commiteamos la operación anterior.
         self.operations.insert(op_id, new_op);
-        if op_id == 0 {
+
+        if op_id == 1 {
+            println!("Es la primera operacion! mando ack instantaeamntee");
             return connection
-                .send(Message::Ack { op_id: 0 }, &self.leader_addr)
+                .send(Message::Ack { op_id: 1 }, &self.leader_addr)
                 .await;
         }
 
@@ -469,25 +479,49 @@ impl Node for Replica {
         connection: &mut Connection,
         database: &mut Database,
         members: Vec<(u64, SocketAddr)>,
-        _leader_addr: SocketAddr,
-        _snapshot: DatabaseSnapshot,
+        leader_addr: SocketAddr,
+        snapshot: DatabaseSnapshot,
     ) -> AppResult<()> {
-        while let Some(op) = self.offline_queue.pop_front() {
-            self.handle_request(connection, database, 0, op, self.address)
-                .await?
-        }
+
+        println!(
+            "[REPLICA {}] Received ClusterView with {} members and leader at {} and DatabaseSnapshot {:?}",
+            self.id,
+            members.len(),
+            leader_addr,
+            snapshot
+        );
+
+        database.send(DatabaseCmd::Execute {
+            op_id: 0,
+            operation: Operation::ReplaceDatabase {
+                snapshot: snapshot,
+            },
+        });
+    
 
         self.cluster.clear();
         for (id, addr) in members {
             self.cluster.insert(id, addr);
         }
 
+        self.leader_addr = leader_addr;
+
         println!(
-            "[REPLICA {}] Cluster Update, Cluster Members: {:?}",
-            self.id, self.cluster
+            "[REPLICA {}] Cluster Update, Cluster Members: {:?} and Leader: {:?}",
+            self.id, self.cluster, leader_addr
         );
+        
+        if get_id_given_addr(leader_addr) > self.id {
+            println!(
+                "[REPLICA {}] New node with higher ID ({}) joined. Starting election.",
+                self.id, leader_addr
+            );
+            self.start_election(connection).await?;
+        }
+
         Ok(())
     }
+
 
     /// Timeout handler: si pasó el tiempo y nadie respondió con ElectionOk,
     /// nos auto-proclamamos líder (Bully).
@@ -527,7 +561,7 @@ impl Replica {
     /// Consumes self and returns a Leader.
     pub fn into_leader(self) -> Leader {
         // When promoting, we use the replica's last op_id as current_op_id
-        let current_op_id = self.operations.keys().max().copied().unwrap_or(0);
+        let current_op_id = self.operations.keys().max().copied().unwrap_or(1);
 
         Leader::from_existing(
             self.id,

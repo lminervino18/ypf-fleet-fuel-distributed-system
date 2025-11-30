@@ -65,6 +65,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         _station: &mut Station,
+        database: &mut Database,
         op_id: u32,
         _operation: Operation,
         _result: OperationResult,
@@ -78,6 +79,7 @@ pub trait Node {
         &mut self,
         connection: &mut Connection,
         station: &mut Station,
+        database: &mut Database,
         event: ActorEvent,
     ) {
         match event {
@@ -88,7 +90,7 @@ pub trait Node {
                 ..
             } => {
                 if let Err(e) = self
-                    .handle_operation_result(connection, station, op_id, operation, result)
+                    .handle_operation_result(connection, station, database, op_id, operation, result)
                     .await
                 {
                     eprintln!("[NODE] error handling actor event: {e:?}");
@@ -371,6 +373,8 @@ pub trait Node {
         db: &mut Database,
         station: &mut Station,
     ) -> AppResult<RoleChange> {
+
+        
         // Intervalo para chequeos periódicos de timeout de elección
         let mut election_check_interval =
             tokio::time::interval(std::time::Duration::from_millis(500));
@@ -403,7 +407,7 @@ pub trait Node {
                 actor_evt = db.recv() => {
                     match actor_evt {
                         Some(evt) => {
-                            self.handle_actor_event(connection, station, evt).await;
+                            self.handle_actor_event(connection, station, db, evt).await;
                         }
                         None => panic!("[FATAL] database went down"),
                     }
