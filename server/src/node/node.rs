@@ -1,8 +1,7 @@
 use super::actors::ActorEvent;
 use super::database::Database;
 use crate::errors::AppResult;
-use crate::node::database;
-use common::operation::{Operation};
+use common::operation::{DatabaseSnapshot, Operation};
 use common::operation_result::OperationResult;
 use common::{AppError, Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
 use std::net::SocketAddr;
@@ -219,8 +218,12 @@ pub trait Node {
 
     // === Cluster membership hooks (Join / ClusterView) ===
 
-    async fn handle_join(&mut self, connection: &mut Connection, database: &mut Database,addr: SocketAddr)
-        -> AppResult<()>;
+    async fn handle_join(
+        &mut self,
+        connection: &mut Connection,
+        database: &mut Database,
+        addr: SocketAddr,
+    ) -> AppResult<()>;
 
     async fn handle_cluster_view(
         &mut self,
@@ -228,8 +231,10 @@ pub trait Node {
         database: &mut Database,
         members: Vec<(u64, SocketAddr)>,
         leader_addr: SocketAddr,
-        database: DatabaseSnapshot,
-    );
+        snapshot: DatabaseSnapshot,
+    ) {
+        //
+    }
 
     async fn handle_cluster_update(
         &mut self,
@@ -282,11 +287,16 @@ pub trait Node {
                     .await?
             }
             Message::Join { addr } => {
-                self.handle_join(connection, addr).await?;
+                self.handle_join(connection, db, addr).await?;
                 RoleChange::None
             }
-            Message::ClusterView { members , leader_addr, database } => {
-                self.handle_cluster_view(connection, db, members, leader_addr, database).await;
+            Message::ClusterView {
+                members,
+                leader_addr,
+                database,
+            } => {
+                self.handle_cluster_view(connection, db, members, leader_addr, database)
+                    .await;
                 RoleChange::None
             }
             Message::ClusterUpdate { new_member } => {

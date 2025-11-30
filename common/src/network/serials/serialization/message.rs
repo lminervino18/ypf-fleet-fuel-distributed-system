@@ -1,5 +1,6 @@
 use super::serialize_socket_address;
 use crate::network::serials::protocol::*;
+use crate::operation::DatabaseSnapshot;
 use crate::operation_result::OperationResult;
 use crate::{Message, operation::Operation};
 use crate::{Message::*, NodeRole};
@@ -16,7 +17,11 @@ impl From<Message> for Vec<u8> {
             Log { op_id, op } => serialize_log_message(op_id, op),
             Ack { op_id } => serialize_ack_message(op_id),
             Join { addr } => serialize_join_message(addr),
-            ClusterView { members } => serialize_cluster_view_message(members),
+            ClusterView {
+                members,
+                leader_addr,
+                database,
+            } => serialize_cluster_view_message(members, leader_addr, database),
             ClusterUpdate { new_member } => serialize_cluster_update_message(new_member),
             Response { req_id, op_result } => serialize_response_message(req_id, op_result),
             RoleQuery { addr } => serialize_role_query_message(addr),
@@ -143,9 +148,15 @@ fn serialize_join_message(addr: SocketAddr) -> Vec<u8> {
     srl
 }
 
-fn serialize_cluster_view_message(members: Vec<(u64, SocketAddr)>) -> Vec<u8> {
+fn serialize_cluster_view_message(
+    members: Vec<(u64, SocketAddr)>,
+    leader_addr: SocketAddr,
+    database: DatabaseSnapshot,
+) -> Vec<u8> {
     let type_srl = [MSG_TYPE_CLUSTER_VIEW];
     let members_len_srl = members.len().to_be_bytes();
+    let leader_addr_srl = serialize_socket_address(leader_addr);
+    let database_srl: Vec<u8> = database.into();
     let mut srl = vec![];
     srl.extend(type_srl);
     srl.extend(members_len_srl);
@@ -153,6 +164,8 @@ fn serialize_cluster_view_message(members: Vec<(u64, SocketAddr)>) -> Vec<u8> {
         srl.extend(serialize_member(member));
     }
 
+    srl.extend(leader_addr_srl);
+    srl.extend(database_srl);
     srl
 }
 

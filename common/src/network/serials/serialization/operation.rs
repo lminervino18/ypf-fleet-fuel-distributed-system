@@ -1,6 +1,8 @@
+use super::serialize_socket_address;
 use crate::network::serials::protocol::*;
-use crate::operation::Operation;
 use crate::operation::Operation::*;
+use crate::operation::{DatabaseSnapshot, Operation};
+use std::net::SocketAddr;
 
 impl From<Operation> for Vec<u8> {
     fn from(op: Operation) -> Self {
@@ -22,8 +24,28 @@ impl From<Operation> for Vec<u8> {
             } => serialize_limit_card_operation(account_id, card_id, new_limit),
             AccountQuery { account_id } => serialize_query_account_operation(account_id),
             Bill { account_id, period } => serialize_bill_operation(account_id, period),
+            GetDatabase { addr } => serialize_get_database_operation(addr),
+            ReplaceDatabase { snapshot } => serialize_replace_database_operation(snapshot),
         }
     }
+}
+
+fn serialize_replace_database_operation(snapshot: DatabaseSnapshot) -> Vec<u8> {
+    let type_srl = OP_REPLACE_DATABASE;
+    let snapshot_srl: Vec<u8> = snapshot.into();
+    let mut srl = vec![];
+    srl.push(type_srl);
+    srl.extend(snapshot_srl);
+    srl
+}
+
+fn serialize_get_database_operation(addr: SocketAddr) -> Vec<u8> {
+    let type_srl = OP_GET_DATABASE;
+    let addr_srl = serialize_socket_address(addr);
+    let mut srl = vec![];
+    srl.push(type_srl);
+    srl.extend(addr_srl);
+    srl
 }
 
 fn serialize_charge_operation(
