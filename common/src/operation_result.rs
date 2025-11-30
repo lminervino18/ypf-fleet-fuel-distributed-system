@@ -1,7 +1,4 @@
-use crate::VerifyError;
-use std::net::SocketAddr;
-
-use crate::operation::{AccountSnapshot, CardSnapshot, DatabaseSnapshot};
+use crate::{VerifyError, operation::DatabaseSnapshot};
 
 /// Resultado de una operación de alto nivel.
 ///

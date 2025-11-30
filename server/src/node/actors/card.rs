@@ -13,6 +13,7 @@ use common::operation::CardSnapshot; // <- desde common::operation
 #[derive(Debug, Clone, Copy)]
 struct CardChargeOp {
     op_id: u32,
+    #[allow(dead_code)]
     account_id: u64,
     amount: f32,
     /// Whether this charge originates from a previously OFFLINE station.

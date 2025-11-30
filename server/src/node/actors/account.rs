@@ -1,6 +1,5 @@
 //! AccountActor: manages one account and account-wide state.
 use actix::prelude::*;
-use std::collections::HashMap;
 
 use super::actor_router::ActorRouter;
 use super::messages::{AccountChargeReply, AccountMsg, RouterInternalMsg};

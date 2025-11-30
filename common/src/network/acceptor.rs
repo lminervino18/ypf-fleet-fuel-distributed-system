@@ -51,14 +51,12 @@ impl Acceptor {
 
     async fn run(&mut self, messages_tx: Arc<Sender<AppResult<Message>>>) {
         while let Ok((stream, _)) = self.listener.accept().await {
-            println!("[ACCEPTOR] accepted stream");
-            println!("[ACCEPTOR] locking guard");
             let mut guard = self.active.lock().await;
-            let handler = Handler::start_from(stream, messages_tx.clone())
-                .await
-                .unwrap();
+            let Ok(handler) = Handler::start_from(stream, messages_tx.clone()).await else {
+                continue;
+            };
+
             add_handler_from(&mut guard, handler, self.max_conns);
-            println!("[ACCEPTOR] droping guard");
         }
     }
 }
