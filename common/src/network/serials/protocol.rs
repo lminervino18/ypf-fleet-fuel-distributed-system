@@ -32,12 +32,16 @@ pub const OP_TYPE_QUERY_ACCOUNT: u8 = 0x03;
 pub const OP_TYPE_QUERY_CARDS: u8 = 0x04;
 pub const OP_TYPE_QUERY_CARD: u8 = 0x05;
 pub const OP_TYPE_BILL: u8 = 0x06;
+pub const OP_GET_DATABASE: u8 = 0x07;
+pub const OP_REPLACE_DATABASE: u8 = 0x08;
 
 // operation result types
 pub const CHARGE_RESULT: u8 = 0x00;
 pub const LIMIT_ACCOUNT_RESULT: u8 = 0x02;
 pub const LIMIT_CARD_RESULT: u8 = 0x03;
 pub const ACC_QUERY_RESULT: u8 = 0x04;
+pub const DATABASE_SNAPSHOT: u8 = 0x05;
+pub const REPLACE_DATABASE: u8 = 0x06;
 
 // verify error types
 pub const LIMIT_UPDATE_ERR: u8 = 0x00;
@@ -79,3 +83,8 @@ pub const CHARGE_SRL_LEN: usize =
     ACC_ID_SRL_LEN + CARD_ID_SRL_LEN + AMOUNT_SRL_LEN + OFFLINE_SRL_LEN;
 pub const LIMIT_ACC_SRL_LEN: usize = ACC_ID_SRL_LEN + AMOUNT_SRL_LEN;
 pub const LIMIT_CARD_SRL_LEN: usize = ACC_ID_SRL_LEN + CARD_ID_SRL_LEN + AMOUNT_SRL_LEN;
+
+// lengths of snapshot serials
+pub const ACC_SNAPSHOT_SRL_LEN: usize = ACC_ID_SRL_LEN + AMOUNT_SRL_LEN + AMOUNT_SRL_LEN;
+pub const CARD_SNAPSHOT_SRL_LEN: usize =
+    ACC_ID_SRL_LEN + CARD_ID_SRL_LEN + AMOUNT_SRL_LEN + AMOUNT_SRL_LEN;

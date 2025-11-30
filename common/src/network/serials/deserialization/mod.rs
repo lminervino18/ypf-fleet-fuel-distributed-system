@@ -1,3 +1,4 @@
+mod database_snapshot;
 mod helpers;
 mod message;
 mod operation;

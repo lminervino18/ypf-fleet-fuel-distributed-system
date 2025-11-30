@@ -150,14 +150,22 @@ fn deserialize_cluster_view_message(payload: &[u8]) -> AppResult<Message> {
         });
     }
 
-    ptr += VEC_LEN;
+    ptr += VEC_LEN_LEN;
     let mut members = vec![];
     for _ in 0..members_len {
         members.push(deserialize_member(&payload[ptr..])?);
         ptr += MEMBER_SRL_LEN;
     }
 
-    Ok(ClusterView { members })
+    let leader_addr = deserialize_socket_address_srl(&payload[ptr..])?;
+    ptr += SOCKET_ADDR_LEN;
+    // este to_vec está feo
+    let database = payload[ptr..].to_vec().try_into()?;
+    Ok(ClusterView {
+        members,
+        leader_addr,
+        database,
+    })
 }
 
 fn deserialize_op_id(payload: &[u8]) -> AppResult<u32> {
@@ -179,7 +187,7 @@ mod test {
     use super::*;
     use crate::{
         network::serials::deserialization::helpers::deserialize_socket_address_srl,
-        operation::Operation,
+        operation::{AccountSnapshot, CardSnapshot, DatabaseSnapshot, Operation},
         operation_result::{ChargeResult, OperationResult},
     };
 
@@ -265,6 +273,47 @@ mod test {
                 (8534, SocketAddr::from(([127, 0, 0, 1], 12346))),
                 (12, SocketAddr::from(([127, 0, 0, 1], 12347))),
             ],
+            leader_addr: SocketAddr::from(([127, 0, 0, 1], 12346)),
+            database: DatabaseSnapshot {
+                addr: SocketAddr::from(([127, 0, 0, 1], 12346)),
+                accounts: vec![
+                    AccountSnapshot {
+                        account_id: 235,
+                        limit: Some(13249998f32),
+                        consumed: 9500345f32,
+                    },
+                    AccountSnapshot {
+                        account_id: 864,
+                        limit: Some(1000f32),
+                        consumed: 500f32,
+                    },
+                    AccountSnapshot {
+                        account_id: 1,
+                        limit: Some(123457f32),
+                        consumed: 123456f32,
+                    },
+                ],
+                cards: vec![
+                    CardSnapshot {
+                        account_id: 1,
+                        card_id: 1523,
+                        limit: Some(13249998f32),
+                        consumed: 9500345f32,
+                    },
+                    CardSnapshot {
+                        account_id: 864,
+                        card_id: 999,
+                        limit: Some(1000f32),
+                        consumed: 500f32,
+                    },
+                    CardSnapshot {
+                        account_id: 1000,
+                        card_id: 3945,
+                        limit: Some(123457f32),
+                        consumed: 123456f32,
+                    },
+                ],
+            },
         };
         let msg_srl: Vec<u8> = msg.clone().into();
         let expected = Ok(msg);

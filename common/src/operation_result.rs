@@ -33,9 +33,6 @@ pub enum OperationResult {
     DatabaseSnapshot(DatabaseSnapshot),
 
     /// Ack de `Operation::ReplaceDatabase`.
-    ///
-    /// Si en el futuro querés propagar errores de validación del snapshot,
-    /// podés cambiar este tipo por un enum con Ok / Failed.
     ReplaceDatabase,
 }
 

@@ -1,4 +1,7 @@
-use super::helpers::{deserialize_account_id, deserialize_amount, deserialize_card_id};
+use super::{
+    deserialize_socket_address_srl,
+    helpers::{deserialize_account_id, deserialize_amount, deserialize_card_id, deserialize_limit},
+};
 use crate::{
     errors::{AppError, AppResult},
     network::serials::protocol::*,
@@ -15,6 +18,8 @@ impl TryFrom<&[u8]> for Operation {
             OP_TYPE_LIMIT_CARD => deserialize_limit_card_operation(&payload[1..]),
             OP_TYPE_QUERY_ACCOUNT => deserialize_query_account_operation(&payload[1..]),
             OP_TYPE_BILL => deserialize_bill_operation(&payload[1..]),
+            OP_GET_DATABASE => deserialize_get_database_operation(&payload[1..]),
+            OP_REPLACE_DATABASE => deserialize_replace_database_operation(&payload[1..]),
             _ => Err(AppError::InvalidProtocol {
                 details: format!("unknown operation type {:?}", payload[0]),
             }),
@@ -22,15 +27,18 @@ impl TryFrom<&[u8]> for Operation {
     }
 }
 
-// attribute deserialization
-fn deserialize_limit(payload: &[u8]) -> AppResult<Option<f32>> {
-    let limit = deserialize_amount(payload)?;
-    Ok(match limit {
-        NO_LIMIT => None,
-        _ => Some(limit),
-    })
+fn deserialize_replace_database_operation(payload: &[u8]) -> AppResult<Operation> {
+    // mismo este to_vec está feo
+    let snapshot = payload.to_vec().try_into()?;
+    Ok(Operation::ReplaceDatabase { snapshot })
 }
 
+fn deserialize_get_database_operation(payload: &[u8]) -> AppResult<Operation> {
+    let addr = deserialize_socket_address_srl(payload)?;
+    Ok(Operation::GetDatabase { addr })
+}
+
+// attribute deserialization
 fn deserialize_from_offline_station(payload: &[u8]) -> AppResult<bool> {
     Ok(match payload[0..OFFLINE_SRL_LEN] {
         [TRUE] => true,
