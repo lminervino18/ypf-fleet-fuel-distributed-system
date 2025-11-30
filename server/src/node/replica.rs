@@ -10,7 +10,7 @@ use crate::{
     node::{database, node::RoleChange},
 };
 use common::{
-    operation::Operation,
+    operation::{DatabaseSnapshot, Operation},
     operation_result::{ChargeResult, OperationResult},
     AppError, Connection, Message, NodeToStationMsg, Station, StationToNodeMsg,
 };
@@ -177,25 +177,24 @@ impl Node for Replica {
     }
 
     async fn handle_operation_result(
-    &mut self,
-    connection: &mut Connection,
-    _station: &mut Station,
-    op_id: u32,
-    operation: Operation,
-    _result: OperationResult,
-) -> AppResult<()> {
-    // Si esta operación era un ReplaceDatabase, no mandamos ningún Ack al líder.
-    if let Operation::ReplaceDatabase { .. } = operation {
-        return Ok(());
+        &mut self,
+        connection: &mut Connection,
+        _station: &mut Station,
+        op_id: u32,
+        operation: Operation,
+        _result: OperationResult,
+    ) -> AppResult<()> {
+        // Si esta operación era un ReplaceDatabase, no mandamos ningún Ack al líder.
+        if let Operation::ReplaceDatabase { .. } = operation {
+            return Ok(());
+        }
+
+        // Igual que antes: cuando termina la operación "normal" en la réplica,
+        // mandamos un Ack al líder.
+        connection
+            .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
+            .await
     }
-
-    // Igual que antes: cuando termina la operación "normal" en la réplica,
-    // mandamos un Ack al líder.
-    connection
-        .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
-        .await
-}
-
 
     async fn handle_request(
         &mut self,
@@ -361,6 +360,7 @@ impl Node for Replica {
     async fn handle_join(
         &mut self,
         connection: &mut Connection,
+        _database: &mut Database,
         addr: SocketAddr,
     ) -> AppResult<()> {
         connection
@@ -384,14 +384,15 @@ impl Node for Replica {
         database: &mut Database,
         members: Vec<(u64, SocketAddr)>,
         leader_addr: SocketAddr,
-        database: DatabaseSnapshot,
+        snapshot: DatabaseSnapshot,
     ) {
         // Si llega el cluster_view es porque nosotros mandamos el join, así que está ok.
 
         //inserto bdd nueva
-        database
-            .send(DatabaseCmd::ReplaceDatabase { snapshot: database })
-            .await;
+        // TODO: para q compile, no encuentro la impl del cmd
+        /* database
+        .send(DatabaseCmd::ReplaceDatabase { snapshot: database })
+        .await; */
 
         while let Some(op) = self.offline_queue.pop_front() {
             self.handle_request(connection, database, 0, op, self.address)
