@@ -1,16 +1,36 @@
+//! Node runtime and trait definitions.
+//!
+//! This module defines the `Node` trait implemented by concrete roles
+//! (`Leader`, `Replica`) and provides the generic runtime that drives a node.
+//!
+//! The node coordinates three subsystems:
+//! - the network layer (`Connection`) for inter-node and client communication,
+//! - the actor-based logical database (`Database`) for business logic,
+//! - the local station simulator (`Station`) for pump interactions.
+//!
+//! The core event loop (in `Node::run`) multiplexes:
+//! - messages from other nodes (`Message`),
+//! - messages from the local station (`StationToNodeMsg`),
+//! - actor events produced by `Database` (`ActorEvent`).
+//!
+//! Role transitions (promote/demote) are signalled via `RoleChange` and handled
+//! by `run_node_runtime`, which reuses the same `Connection` / `Database` / `Station`
+//! while swapping role state objects.
+
 use super::actors::ActorEvent;
 use super::database::Database;
 use crate::errors::AppResult;
+use crate::node::utils::get_id_given_addr;
 use common::operation::{DatabaseSnapshot, Operation};
 use common::operation_result::OperationResult;
 use common::{AppError, Connection, Message, NodeToStationMsg, Station, StationToNodeMsg};
 use std::net::SocketAddr;
 use tokio::select;
 
-// Para el runtime de cambio de rol
+// Runtime role types
 use super::{leader::Leader, replica::Replica};
 
-/// Signal to indicate if a role change should occur.
+/// Signal to indicate whether a role change should occur.
 #[derive(Debug, Clone)]
 pub enum RoleChange {
     None,
@@ -18,11 +38,17 @@ pub enum RoleChange {
     DemoteToReplica { new_leader_addr: SocketAddr },
 }
 
+/// Node behaviour abstraction.
+///
+/// Implement this trait for different roles (Leader, Replica). The trait
+/// encapsulates handlers for incoming messages, station events and actor events.
 pub trait Node {
     #[allow(dead_code)]
     async fn get_status(&self) -> String;
 
-    // messages from connection
+    // -----------------------
+    // Messages coming from the network (Connection)
+    // -----------------------
     async fn handle_request(
         &mut self,
         connection: &mut Connection,
@@ -48,8 +74,8 @@ pub trait Node {
 
     /// Handle a replicated log entry.
     ///
-    /// `db` is passed so implementations (e.g., Replica) can commit the
-    /// operation into the actor-based "database" without owning Database.
+    /// `db` is provided so implementations (e.g., Replica) can commit the
+    /// operation into the actor-based "database" without taking ownership.
     async fn handle_log(
         &mut self,
         connection: &mut Connection,
@@ -60,8 +86,7 @@ pub trait Node {
 
     async fn handle_ack(&mut self, connection: &mut Connection, db: &mut Database, op_id: u32);
 
-    /// Resultado de una operación que ya pasó por el mundo de actores
-    /// (Router + Account + Card) y volvió como OperationResult.
+    /// Handle the result of an operation that returned from the actor world.
     async fn handle_operation_result(
         &mut self,
         connection: &mut Connection,
@@ -72,9 +97,9 @@ pub trait Node {
         _result: OperationResult,
     ) -> AppResult<()>;
 
-    /// Default dispatcher for Actor events.
+    /// Default dispatcher for actor events.
     ///
-    /// Ahora saca el `OperationResult` del ActorEvent y se lo pasa al
+    /// Extracts `OperationResult` from `ActorEvent` and forwards it to
     /// `handle_operation_result`.
     async fn handle_actor_event(
         &mut self,
@@ -91,7 +116,9 @@ pub trait Node {
                 ..
             } => {
                 if let Err(e) = self
-                    .handle_operation_result(connection, station, database, op_id, operation, result)
+                    .handle_operation_result(
+                        connection, station, database, op_id, operation, result,
+                    )
                     .await
                 {
                     eprintln!("[NODE] error handling actor event: {e:?}");
@@ -107,6 +134,12 @@ pub trait Node {
     fn log_offline_operation(&mut self, op: Operation);
     fn get_address(&self) -> SocketAddr;
 
+    /// Handle a charge request originating from the local station (pump).
+    ///
+    /// Default behaviour:
+    /// - If the node is offline, enqueue the operation and immediately
+    ///   acknowledge the station (allowed = true).
+    /// - Otherwise build a `Charge` operation and forward it to `handle_request`.
     async fn handle_charge_request(
         &mut self,
         connection: &mut Connection,
@@ -155,28 +188,28 @@ pub trait Node {
         address: SocketAddr,
     ) -> AppResult<RoleChange>;
 
-    /// Default OFFLINE transition handler.
+    /// Handle transition to OFFLINE mode.
     ///
-    /// Concrete nodes (Leader / Replica) override this to:
-    /// - flip their `is_offline` flag,
-    /// - emit debug messages to the Station,
-    /// - adjust cluster behavior.
+    /// Concrete roles (Leader / Replica) override this to:
+    /// - flip internal offline flags,
+    /// - emit diagnostics to the station,
+    /// - adapt cluster behaviour as needed.
     async fn handle_disconnect_node(&mut self, connection: &mut Connection);
 
-    /// Default ONLINE transition handler.
+    /// Handle transition back to ONLINE mode.
     ///
-    /// Concrete nodes (Leader / Replica) override this to:
-    /// - flip their `is_offline` flag,
+    /// Concrete roles override this to:
+    /// - flip internal offline flags,
     /// - replay queued offline operations into the actor layer,
-    /// - notify the Station via debug messages.
+    /// - notify the station with debug messages.
     async fn handle_connect_node(&mut self, connection: &mut Connection) -> AppResult<()>;
 
-    /// Default handler for high-level Station messages.
+    /// Default handler for station-originated messages.
     ///
     /// Dispatches:
-    /// - `ChargeRequest` into `handle_charge_request`,
-    /// - `DisconnectNode` into `handle_disconnect_node`,
-    /// - `ConnectNode` into `handle_connect_node`.
+    /// - `ChargeRequest` → `handle_charge_request`
+    /// - `DisconnectNode` → `handle_disconnect_node`
+    /// - `ConnectNode` → `handle_connect_node`
     async fn handle_station_msg(
         &mut self,
         connection: &mut Connection,
@@ -226,15 +259,15 @@ pub trait Node {
 
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
-    /// Inicia una elección Bully.
-    /// Devuelve:
-    /// - `RoleChange::None` si solo arranca/continúa elección.
-    /// - `RoleChange::PromoteToLeader` si se autoproclama líder (era réplica).
-    /// - `RoleChange::None` si se autoproclama líder pero ya era Leader.
+    /// Start a Bully election.
+    ///
+    /// Returns:
+    /// - `RoleChange::None` if the election is started/ongoing,
+    /// - `RoleChange::PromoteToLeader` if this node should promote itself,
+    /// - `RoleChange::None` if already leader and reaffirming leadership.
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange>;
 
     // === Cluster membership hooks (Join / ClusterView) ===
-
     async fn handle_join(
         &mut self,
         connection: &mut Connection,
@@ -257,8 +290,9 @@ pub trait Node {
         new_member: (u64, SocketAddr),
     );
 
-    /// Default handler for any node-to-node Message.
-    /// Returns RoleChange to signal if a role transition should occur.
+    /// Default handler for any node-to-node `Message`.
+    ///
+    /// Returns `RoleChange` to indicate if a role transition should occur.
     async fn handle_node_msg(
         &mut self,
         connection: &mut Connection,
@@ -335,9 +369,7 @@ pub trait Node {
         Ok(role_change)
     }
 
-   
-
-    /// Hook de timeout de elección (por defecto, no hace nada).
+    /// Election timeout hook (default: no-op).
     async fn handle_election_timeout(
         &mut self,
         _connection: &mut Connection,
@@ -345,18 +377,17 @@ pub trait Node {
         Ok(RoleChange::None)
     }
 
-    /// Main async event loop for any node role (Leader / Replica / Station-backed node).
-    /// Ahora recibe referencias a Connection / Database / Station y devuelve
-    /// un RoleChange si hay que cambiar de rol.
+    /// Main async event loop for any node role (Leader / Replica).
+    ///
+    /// Receives references to Connection / Database / Station and returns a
+    /// `RoleChange` when a role transition is required.
     async fn run(
         &mut self,
         connection: &mut Connection,
         db: &mut Database,
         station: &mut Station,
     ) -> AppResult<RoleChange> {
-
-        
-        // Intervalo para chequeos periódicos de timeout de elección
+        // Interval for periodic election timeout checks.
         let mut election_check_interval =
             tokio::time::interval(std::time::Duration::from_millis(500));
 
@@ -393,7 +424,7 @@ pub trait Node {
                         None => panic!("[FATAL] database went down"),
                     }
                 }
-                // chequeo periódico de timeout de elección
+                // periodic election timeout check
                 _ = election_check_interval.tick() => {
                     result = self.handle_election_timeout(connection).await;
                 }
@@ -423,7 +454,7 @@ pub trait Node {
                     continue;
                 }
                 x => {
-                    println!("[NODE] stopping run beacause of: {x:?}");
+                    println!("[NODE] stopping run because of: {x:?}");
                     return x;
                 }
             }
@@ -431,18 +462,18 @@ pub trait Node {
     }
 }
 
-/// Runtime que puede estar corriendo como Leader o Replica.
+/// Runtime that may be operating as Leader or Replica.
 pub enum NodeRuntime {
     Leader(Leader),
     Replica(Replica),
 }
 
-/// Loop que mantiene vivo el nodo y maneja cambios de rol
-/// reutilizando SIEMPRE las mismas Connection / Database / Station.
+/// Top-level loop that maintains the node and handles role changes,
+/// reusing the same Connection / Database / Station resources.
 ///
-/// - Se crea una sola vez `Connection`, `Database`, `Station`.
-/// - `Leader` y `Replica` se recrean al volar de rol, pero con las
-///   mismas referencias a esos recursos.
+/// - Create `Connection`, `Database`, `Station` once.
+/// - Swap `Leader` / `Replica` state objects on role change while keeping
+///   the same shared resources.
 pub async fn run_node_runtime(
     mut node: NodeRuntime,
     connection: &mut Connection,
@@ -457,16 +488,17 @@ pub async fn run_node_runtime(
 
         match rc {
             RoleChange::None => {
-                // El run interno terminó "normalmente": apagamos el nodo.
+                // The internal run finished normally: stop the node.
                 return Ok(());
             }
             RoleChange::PromoteToLeader => {
                 node = match node {
                     NodeRuntime::Replica(replica) => {
+                        println!("[LEADER] Now I am LEADER");
                         NodeRuntime::Leader(replica.into_leader())
-                    }
+                    },
                     NodeRuntime::Leader(leader) => {
-                        // Ya somos líder; no cambiamos nada.
+                        // Already leader; keep it.
                         NodeRuntime::Leader(leader)
                     }
                 };
@@ -474,10 +506,11 @@ pub async fn run_node_runtime(
             RoleChange::DemoteToReplica { new_leader_addr } => {
                 node = match node {
                     NodeRuntime::Leader(leader) => {
+                        println!("[REPLICA] Now I am REPLICA with Leader {}", get_id_given_addr(new_leader_addr));
                         NodeRuntime::Replica(leader.into_replica(new_leader_addr))
                     }
                     NodeRuntime::Replica(replica) => {
-                        // No debería pasar, pero por si acaso dejamos la réplica como está.
+                        // Shouldn't normally happen; keep the existing replica.
                         NodeRuntime::Replica(replica)
                     }
                 };

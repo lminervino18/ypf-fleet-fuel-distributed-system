@@ -1,15 +1,23 @@
-// client/src/node_client/node_client.rs
-
-//! Thin client node:
-//! - exposes a local Station (pumps on stdin),
-//! - when ONLINE: forwards each ChargeRequest to one known distributed node
-//!   and returns the real cluster result to the Station,
-//!   trying nodes in order and falling back to OFFLINE behavior if none work.
-//! - when OFFLINE: answers OK locally and enqueues charges to replay later,
-//! - on CONNECT: flushes the offline queue to the cluster with
-//!   `from_offline_station = true`, trying nodes in order and keeping
-//!   entries that still cannot be sent,
-//! - does NOT participate in elections or actor-based logic.
+//! Thin client node.
+//!
+//! This module implements a lightweight forwarding node that sits between a
+//! local `Station` (pump simulator) and a set of known cluster nodes. The
+//! behaviour is intentionally simple and does not participate in consensus or
+//! actor-based logic.
+//!
+//! Features:
+//! - Expose a local `Station` (pumps on stdin).
+//! - When ONLINE:
+//!     - Forward each `ChargeRequest` to one known distributed node,
+//!       trying nodes in order as fallbacks.
+//!     - Return the real cluster result to the `Station`.
+//!     - If no node accepts the request, fall back to OFFLINE behaviour.
+//! - When OFFLINE:
+//!     - Answer OK locally and enqueue charges to replay later.
+//! - On CONNECT:
+//!     - Flush the offline queue to the cluster with `from_offline_station = true`.
+//!     - Try nodes in order and keep entries that still cannot be sent.
+//! - Do not participate in elections or actor-based processing.
 
 use common::errors::AppResult;
 use common::operation::Operation;
@@ -33,8 +41,10 @@ struct QueuedCharge {
     amount: f32,
 }
 
-/// Simple hash function to derive a u64 ID from a SocketAddr based on its IP and port.
-/// That way we have a unique and consistent ID for each node based on its address.
+/// Compute a stable u64 identifier for a `SocketAddr`.
+///
+/// The result is derived from the IP and port via a default hasher. The
+/// returned value is in the range 1..=max where `max = 100000`.
 pub fn get_id_given_addr(addr: SocketAddr) -> u64 {
     let mut hasher = DefaultHasher::new();
     addr.ip().hash(&mut hasher);
@@ -47,6 +57,7 @@ pub fn get_id_given_addr(addr: SocketAddr) -> u64 {
 /// Forwarding client node.
 ///
 /// It sits between a local Station (pumps) and the distributed cluster:
+///
 /// - On each `StationToNodeMsg::ChargeRequest`:
 ///     * if ONLINE: builds an `Operation::Charge` (`from_offline_station = false`)
 ///       and sends a `Message::Request` to one known node (trying them in order).
@@ -56,14 +67,18 @@ pub fn get_id_given_addr(addr: SocketAddr) -> u64 {
 ///     * if OFFLINE: immediately sends a local `ChargeResult` OK to the Station
 ///       and enqueues the charge to be replayed later.
 /// - On CONNECT: replays all queued offline charges with `from_offline_station = true`
-///   and ignores their responses (they are mainly for the cluster state).
+///   and ignores their responses (these are primarily to update cluster state).
+///
+/// The NodeClient intentionally does not implement cluster protocols such as
+/// elections or actor interactions; it only forwards requests and manages a
+/// local offline queue.
 pub struct NodeClient {
     /// Local address used by this node (only to populate `addr` in Request).
     bind_addr: SocketAddr,
 
     /// Cluster nodes that this client knows about and can forward to.
     ///
-    /// We try them in order as fallbacks.
+    /// Nodes are tried in-order as fallbacks.
     known_nodes: Vec<SocketAddr>,
 
     /// Simple round-robin index over `known_nodes` (kept for potential future use).
@@ -81,13 +96,12 @@ pub struct NodeClient {
 
     /// Synthetic request id for replaying OFFLINE charges to the cluster.
     ///
-    /// We never send these ids back to the Station; they are only used
-    /// between this client and the cluster.
+    /// These ids are internal to the client and are not forwarded back to the Station.
     next_replay_req_id: u32,
 }
 
 impl NodeClient {
-    /// Create a new NodeClient with the given local address and known nodes.
+    /// Create a new `NodeClient` with the given local address and known nodes.
     ///
     /// The client starts in ONLINE mode by default.
     pub fn new(bind_addr: SocketAddr, known_nodes: Vec<SocketAddr>) -> Self {
@@ -104,7 +118,7 @@ impl NodeClient {
 
     /// (Optional) pick a single remote node using round-robin.
     ///
-    /// Currently unused: we always try nodes in `known_nodes` order.
+    /// Currently unused: the implementation tries nodes in `known_nodes` order.
     #[allow(dead_code)]
     fn pick_next_node(&mut self) -> SocketAddr {
         let idx = self.next_node_idx % self.known_nodes.len();
@@ -113,9 +127,10 @@ impl NodeClient {
         addr
     }
 
-    /// Main event loop:
-    /// - multiplexes Station messages and node messages with `tokio::select!`,
-    /// - never touches the actor world.
+    /// Main event loop.
+    ///
+    /// Multiplex `Station` messages and network messages using `tokio::select!`.
+    /// This client never touches the actor world.
     pub async fn run(mut self, mut connection: Connection, mut station: Station) -> AppResult<()> {
         loop {
             select! {
@@ -155,11 +170,13 @@ impl NodeClient {
         Ok(())
     }
 
-    /// Handle high-level Station messages:
-    /// - ChargeRequest → if ONLINE, forward with fallback between known nodes;
-    ///                   if OFFLINE, answer locally and enqueue.
-    /// - DisconnectNode → switch to OFFLINE mode.
-    /// - ConnectNode → switch back to ONLINE mode and flush offline queue.
+    /// Handle messages coming from the local `Station`.
+    ///
+    /// Behaviour:
+    /// - `ChargeRequest` → if ONLINE, forward with fallback between known nodes;
+    ///   if OFFLINE, answer locally and enqueue.
+    /// - `DisconnectNode` → switch to OFFLINE mode.
+    /// - `ConnectNode` → switch to ONLINE mode and flush offline queue.
     async fn handle_station_msg(
         &mut self,
         connection: &mut Connection,
@@ -206,10 +223,11 @@ impl NodeClient {
         Ok(())
     }
 
-    /// Decide what to do with a new charge:
-    /// - If we have no known nodes, treat it as OFFLINE and enqueue.
-    /// - If OFFLINE, enqueue and answer locally.
-    /// - If ONLINE, forward to one of the known nodes with fallback.
+    /// Decide what to do with a new charge.
+    ///
+    /// - If there are no known nodes, treat the request as OFFLINE and enqueue.
+    /// - If OFFLINE, enqueue and reply OK locally.
+    /// - If ONLINE, forward to known nodes with fallback.
     async fn forward_or_enqueue_charge(
         &mut self,
         connection: &mut Connection,
@@ -219,7 +237,7 @@ impl NodeClient {
         amount: f32,
         request_id: u32,
     ) -> AppResult<()> {
-        // If we don't know any cluster node, we effectively behave as OFFLINE.
+        // If we don't know any cluster node, behave as OFFLINE.
         if self.known_nodes.is_empty() {
             let _ = station
                 .send(NodeToStationMsg::Debug(
@@ -245,9 +263,10 @@ impl NodeClient {
             .await
     }
 
-    /// OFFLINE path:
-    /// - Send a local `ChargeResult` OK so the pump can continue,
-    /// - Enqueue the charge to replay later with `from_offline_station = true`.
+    /// OFFLINE handling:
+    ///
+    /// - Send a local `ChargeResult::Ok` so the pump can continue.
+    /// - Enqueue the charge for later replay with `from_offline_station = true`.
     async fn enqueue_offline_charge(
         &mut self,
         station: &mut Station,
@@ -274,13 +293,12 @@ impl NodeClient {
         Ok(())
     }
 
-    /// ONLINE path:
-    /// - Build an `Operation::Charge` with `from_offline_station = false`,
-    /// - Try to send a `Message::Request` to one of the known nodes in order,
-    /// - If at least one send succeeds, track `request_id` in `active_online_requests`
-    ///   so we know we must return that response to the Station.
-    /// - If ALL sends fail, fall back to OFFLINE behavior:
-    ///   answer OK locally and enqueue the charge for replay.
+    /// ONLINE forwarding:
+    ///
+    /// - Build an `Operation::Charge` with `from_offline_station = false`.
+    /// - Try to send a `Message::Request` to known nodes in order.
+    /// - If a send succeeds, track `request_id` so the response is forwarded to the Station.
+    /// - If all sends fail, fall back to OFFLINE behaviour (local OK + enqueue).
     async fn forward_online_charge(
         &mut self,
         connection: &mut Connection,
@@ -313,9 +331,6 @@ impl NodeClient {
                     break;
                 }
                 Err(_) => {
-                    // eprintln!(
-                    //     "[node_client] failed to send request_id={request_id} to {target}: {e:?}"
-                    // );
                     // Try next node in the list.
                 }
             }
@@ -338,11 +353,11 @@ impl NodeClient {
 
     /// Flush all queued offline charges to the cluster.
     ///
-    /// - Tries all known nodes for each charge (in order),
-    /// - Uses synthetic `req_id`s (starting from `next_replay_req_id`),
-    /// - Sets `from_offline_station = true`,
-    /// - Does NOT send any result back to the Station,
-    /// - If it cannot send a given charge to ANY node, it re-enqueues that charge.
+    /// - Try all known nodes for each charge (in order).
+    /// - Use synthetic request ids (starting from `next_replay_req_id`).
+    /// - Set `from_offline_station = true`.
+    /// - Do not send any result back to the Station.
+    /// - Re-enqueue charges that cannot be sent to any node.
     async fn flush_offline_queue(&mut self, connection: &mut Connection) -> AppResult<()> {
         if self.offline_queue.is_empty() {
             return Ok(());
@@ -393,7 +408,7 @@ impl NodeClient {
             }
 
             if !sent {
-                // Could not send this charge to ANY node; keep it in the queue.
+                // Could not send this charge to any node; keep it in the queue.
                 still_pending.push(queued);
             }
         }
@@ -408,10 +423,9 @@ impl NodeClient {
 
     /// Handle any `Message` coming from remote nodes.
     ///
-    /// For this client we only expect:
+    /// Expected messages include:
     /// - `Message::Response { req_id, op_result }`.
-    ///   Responses for replayed offline charges will *not* be forwarded back
-    ///   to the Station (we never registered those ids in `active_online_requests`).
+    ///   Responses for replayed offline charges are ignored at the Station level.
     async fn handle_node_msg(
         &mut self,
         connection: &mut Connection,
@@ -439,8 +453,8 @@ impl NodeClient {
                 connection.send(role_msg, &addr).await?;
             }
             other => {
-                // This forwarding client is not part of the cluster protocol,
-                // so all other message types are unexpected and ignored.
+                // This forwarding client is not part of the cluster protocol.
+                // Ignore other message types and log for debugging.
                 eprintln!("[node_client] unexpected message from node: {other:?}");
             }
         }
@@ -475,7 +489,7 @@ impl NodeClient {
             }
 
             other => {
-                // For now, we only use Charge operations coming from pumps.
+                // For now, only Charge responses are relevant to pumps.
                 let _ = station
                     .send(NodeToStationMsg::Debug(format!(
                         "[node_client] ignoring non-charge response for req_id {req_id}: {other:?}"

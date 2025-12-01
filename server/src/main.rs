@@ -1,3 +1,13 @@
+//! YPF Ruta server binary CLI.
+//!
+//! This binary launches a node participating in the distributed YPF Ruta system.
+//! A node can run in one of several roles:
+//! - Leader: coordinates consensus and commits operations.
+//! - Replica: follows the leader and applies committed operations.
+//! - Station: (future mode) dedicated station-only process.
+//!
+//! The CLI uses subcommands to select the role and configure runtime parameters.
+
 mod errors;
 mod node;
 
@@ -87,6 +97,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(_) => ExitCode::SUCCESS,
         Err(_e) => {
+            // Intentionally avoid printing internal error details here.
             //println!("[FATAL] {e:?}");
             ExitCode::FAILURE
         }

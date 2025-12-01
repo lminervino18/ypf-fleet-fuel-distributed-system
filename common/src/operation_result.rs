@@ -1,8 +1,9 @@
 use crate::{VerifyError, operation::DatabaseSnapshot};
 
-/// Resultado de una operación de alto nivel.
+/// Result of a high-level operation.
 ///
-/// Cada variante matchea con una `Operation`:
+/// Each variant corresponds to an `Operation`:
+///
 /// - `Charge`           → `OperationResult::Charge(ChargeResult)`
 /// - `LimitAccount`     → `OperationResult::LimitAccount(LimitResult)`
 /// - `LimitCard`        → `OperationResult::LimitCard(LimitResult)`
@@ -11,38 +12,37 @@ use crate::{VerifyError, operation::DatabaseSnapshot};
 /// - `ReplaceDatabase`  → `OperationResult::ReplaceDatabase`
 #[derive(Debug, Clone, PartialEq)]
 pub enum OperationResult {
-    /// Resultado de un `Operation::Charge`.
+    /// Result of an `Operation::Charge`.
     Charge(ChargeResult),
 
-    /// Resultado de un `Operation::LimitAccount`.
+    /// Result of an `Operation::LimitAccount`.
     LimitAccount(LimitResult),
 
-    /// Resultado de un `Operation::LimitCard`.
+    /// Result of an `Operation::LimitCard`.
     LimitCard(LimitResult),
 
-    /// Resultado de un `Operation::AccountQuery` o `Bill`.
+    /// Result of an `Operation::AccountQuery` or `Bill`.
     AccountQuery(AccountQueryResult),
 
-    /// Resultado de un `Operation::GetDatabase`.
+    /// Result of an `Operation::GetDatabase`.
     ///
-    /// Contiene el snapshot completo (incluye el `addr` embebido en
-    /// `snapshot.addr`).
+    /// Contains the full snapshot (including the `snapshot.addr` field).
     DatabaseSnapshot(DatabaseSnapshot),
 
-    /// Ack de `Operation::ReplaceDatabase`.
+    /// Acknowledgement for `Operation::ReplaceDatabase`.
     ReplaceDatabase,
 }
 
-/// Resultado específico de un `Charge`.
+/// Specific result for a `Charge`.
 ///
-/// Básicamente: OK o error de verificación (`VerifyError`).
+/// Essentially: success (Ok) or a verification failure (`VerifyError`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChargeResult {
     Ok,
     Failed(VerifyError),
 }
 
-/// Resultado genérico para operaciones de límite
+/// Generic result type for limit operations
 /// (`LimitAccount` / `LimitCard`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum LimitResult {
@@ -50,11 +50,12 @@ pub enum LimitResult {
     Failed(VerifyError),
 }
 
-/// Resultado de una consulta de cuenta (`AccountQuery`).
+/// Result of an account query (`AccountQuery`).
 ///
-/// - `account_id`: la cuenta consultada
-/// - `total_spent`: gasto total de la cuenta
-/// - `per_card_spent`: mapa (card_id → gasto de esa tarjeta)
+/// Fields:
+/// - `account_id`: the queried account id.
+/// - `total_spent`: total spending for the account.
+/// - `per_card_spent`: list of pairs (card_id, amount) with per-card spending.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccountQueryResult {
     pub account_id: u64,

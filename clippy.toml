@@ -1,0 +1,4 @@
+# clippy.toml (root del workspace)
+
+# Por defecto son 7; acá lo subís, por ejemplo, a 10
+too-many-arguments-threshold = 10

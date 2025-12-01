@@ -1,3 +1,11 @@
+//! Operation deserialization utilities.
+//!
+//! Implement `TryFrom<&[u8]> for Operation` by dispatching on the leading
+//! operation type byte and delegating to per-operation deserializers.
+//!
+//! Each deserializer reads fixed-size fields in order, advancing a local
+//! pointer (`ptr`) over the payload and using helper functions for complex
+//! substructures (socket addresses, ids, amounts, limits).
 use super::{
     deserialize_socket_address_srl,
     helpers::{deserialize_account_id, deserialize_amount, deserialize_card_id, deserialize_limit},
@@ -28,17 +36,20 @@ impl TryFrom<&[u8]> for Operation {
 }
 
 fn deserialize_replace_database_operation(payload: &[u8]) -> AppResult<Operation> {
-    // mismo este to_vec está feo
+    // Convert remaining bytes into an owned snapshot for ReplaceDatabase.
     let snapshot = payload.to_vec().try_into()?;
     Ok(Operation::ReplaceDatabase { snapshot })
 }
 
 fn deserialize_get_database_operation(payload: &[u8]) -> AppResult<Operation> {
+    // Deserialize a socket address that identifies the requested database owner.
     let addr = deserialize_socket_address_srl(payload)?;
     Ok(Operation::GetDatabase { addr })
 }
 
-// attribute deserialization
+/// Deserialize the `from_offline_station` boolean attribute.
+///
+/// The attribute is encoded using a single byte with values `TRUE` or `FALSE`.
 fn deserialize_from_offline_station(payload: &[u8]) -> AppResult<bool> {
     Ok(match payload[0..OFFLINE_SRL_LEN] {
         [TRUE] => true,
@@ -52,7 +63,13 @@ fn deserialize_from_offline_station(payload: &[u8]) -> AppResult<bool> {
     })
 }
 
-// operations deserialization
+/// Deserialize a Charge operation.
+///
+/// Expected serialized layout (CHARGE_SRL_LEN bytes):
+/// - account_id (ACC_ID_SRL_LEN)
+/// - card_id (CARD_ID_SRL_LEN)
+/// - amount (AMOUNT_SRL_LEN)
+/// - from_offline_station (OFFLINE_SRL_LEN)
 fn deserialize_charge_operation(payload: &[u8]) -> AppResult<Operation> {
     if payload.len() != CHARGE_SRL_LEN {
         return Err(AppError::InvalidProtocol {
@@ -76,6 +93,11 @@ fn deserialize_charge_operation(payload: &[u8]) -> AppResult<Operation> {
     })
 }
 
+/// Deserialize a LimitAccount operation.
+///
+/// Expected serialized layout (LIMIT_ACC_SRL_LEN bytes):
+/// - account_id (ACC_ID_SRL_LEN)
+/// - new_limit (AMOUNT_SRL_LEN or sentinel for None)
 fn deserialize_limit_account_operation(payload: &[u8]) -> AppResult<Operation> {
     if payload.len() != LIMIT_ACC_SRL_LEN {
         return Err(AppError::InvalidProtocol {
@@ -93,6 +115,12 @@ fn deserialize_limit_account_operation(payload: &[u8]) -> AppResult<Operation> {
     })
 }
 
+/// Deserialize a LimitCard operation.
+///
+/// Expected serialized layout (LIMIT_CARD_SRL_LEN bytes):
+/// - account_id (ACC_ID_SRL_LEN)
+/// - card_id (CARD_ID_SRL_LEN)
+/// - new_limit (AMOUNT_SRL_LEN or sentinel)
 fn deserialize_limit_card_operation(payload: &[u8]) -> AppResult<Operation> {
     if payload.len() != LIMIT_CARD_SRL_LEN {
         return Err(AppError::InvalidProtocol {
@@ -113,6 +141,9 @@ fn deserialize_limit_card_operation(payload: &[u8]) -> AppResult<Operation> {
     })
 }
 
+/// Deserialize an AccountQuery operation.
+///
+/// The payload contains only the account id.
 fn deserialize_query_account_operation(payload: &[u8]) -> AppResult<Operation> {
     if payload.len() != ACC_ID_SRL_LEN {
         return Err(AppError::InvalidProtocol {
@@ -124,6 +155,11 @@ fn deserialize_query_account_operation(payload: &[u8]) -> AppResult<Operation> {
     Ok(Operation::AccountQuery { account_id })
 }
 
+/// Deserialize a Bill operation.
+///
+/// Layout:
+/// - account_id (ACC_ID_SRL_LEN)
+/// - optional period string (UTF-8). If present, extract and return its substring.
 fn deserialize_bill_operation(payload: &[u8]) -> AppResult<Operation> {
     if payload.len() < ACC_ID_SRL_LEN {
         return Err(AppError::InvalidProtocol {

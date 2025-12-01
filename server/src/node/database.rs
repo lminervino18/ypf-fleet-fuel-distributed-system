@@ -1,4 +1,17 @@
-// server/src/node/database.rs
+//! Actor-based database integration for the node.
+//!
+//! This module encapsulates an Actix-based "database" implemented by an
+//! ActorRouter running on a dedicated OS thread. It exposes a minimal,
+//! node-friendly API:
+//!
+//! - `Database::start()` boots the Actix system and returns a handle.
+//! - `Database::send(cmd)` submits high-level commands (e.g., Execute).
+//! - `Database::recv().await` yields `ActorEvent`s produced by the ActorRouter.
+//!
+//! The implementation keeps the actor system isolated from the async node
+//! code by exchanging messages over channels. A one-shot channel is used to
+//! trigger a graceful shutdown of the Actix system when the `Database` handle
+//! is dropped.
 
 use actix::{Actor, Addr};
 use tokio::sync::{mpsc, oneshot};
@@ -52,10 +65,10 @@ impl Database {
     /// Boot the actor system and return a `Database` handle.
     ///
     /// From the node's point of view:
-    ///   - `Database::send(cmd)` is used to push high-level commands
-    ///     (e.g. Execute) into the actor subsystem.
-    ///   - `Database::recv().await` is used to pop `ActorEvent`s produced
-    ///     by the ActorRouter (e.g. OperationResult).
+    /// - Call `Database::send(cmd)` to push high-level commands
+    ///   (e.g. Execute) into the actor subsystem.
+    /// - Await `Database::recv()` to receive `ActorEvent`s produced
+    ///   by the ActorRouter (e.g. OperationResult).
     pub async fn start() -> AppResult<Self> {
         // Channel ActorRouter -> Node.
         //
@@ -124,8 +137,8 @@ impl Database {
     /// Receive the next `ActorEvent` coming from the actor subsystem.
     ///
     /// Returns:
-    ///   - `Some(ActorEvent)` if the actor system is still alive,
-    ///   - `None` if the channel was closed (actor system stopped).
+    /// - `Some(ActorEvent)` if the actor system is still alive,
+    /// - `None` if the channel was closed (actor system stopped).
     ///
     /// This is symmetric to `Station::recv()`, so the node can use both
     /// inside a `tokio::select!` in its main loop.

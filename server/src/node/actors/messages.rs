@@ -1,7 +1,7 @@
 use actix::prelude::*;
 
 use crate::errors::VerifyError;
-use common::operation::{Operation, AccountSnapshot, CardSnapshot};
+use common::operation::{AccountSnapshot, CardSnapshot, Operation};
 use common::operation_result::OperationResult;
 
 /// Events sent by the ActorRouter to the Node.
@@ -51,32 +51,29 @@ pub enum AccountMsg {
     /// Request to change the account-wide limit.
     ApplyAccountLimit { op_id: u32, new_limit: Option<f32> },
 
-    /// Inicio de un query de cuenta (no resetea nada).
+    /// Start an account query (does not reset consumption).
     StartAccountQuery { op_id: u32, num_cards: usize },
 
-    /// Inicio de un Bill de cuenta (al final resetea consumos).
+    /// Start an account billing operation (resets consumption after completion).
     StartAccountBill { op_id: u32, num_cards: usize },
 
-    /// Respuesta de una tarjeta a un query/bill de cuenta.
+    /// Reply from a card to an account query or billing request.
     CardQueryReply {
         op_id: u32,
         card_id: u64,
         consumed: f32,
     },
 
-    /// Pedirle al AccountActor un snapshot completo de su estado
-    /// (límite + consumo), para construir la DatabaseSnapshot.
+    /// Request a complete snapshot of the account state (limit + consumed).
     ///
-    /// El resultado vuelve al Router como
+    /// The result is delivered back to the Router as
     /// `RouterInternalMsg::AccountSnapshotCollected { .. }`.
-    GetSnapshot {
-        op_id: u32,
-    },
+    GetSnapshot { op_id: u32 },
 
-    /// Reemplazar el estado interno de la cuenta según un snapshot.
+    /// Replace the internal account state using a snapshot.
     ///
-    /// - `new_limit`: nuevo límite de cuenta (o None si sin límite).
-    /// - `new_consumed`: nuevo consumo acumulado de la cuenta.
+    /// - `new_limit`: new account limit (`None` means no limit).
+    /// - `new_consumed`: new accumulated consumption.
     ReplaceState {
         new_limit: Option<f32>,
         new_consumed: f32,
@@ -110,27 +107,25 @@ pub enum CardMsg {
 
     /// Query this card's current consumption (used by account queries and bills).
     ///
-    /// - `reset_after_report = false`: AccountQuery normal.
-    /// - `reset_after_report = true`: Bill → se resetea `consumed` tras reportar.
+    /// If `reset_after_report` is false this is a normal AccountQuery.
+    /// If `reset_after_report` is true this is part of a Bill and the card
+    /// should reset its `consumed` value after reporting.
     QueryCardState {
         op_id: u32,
         account_id: u64,
         reset_after_report: bool,
     },
 
-    /// Pedirle al CardActor un snapshot completo de su estado
-    /// (límite + consumo), para construir la DatabaseSnapshot.
+    /// Request a complete snapshot of the card state (limit + consumed).
     ///
-    /// El resultado vuelve al Router como
+    /// The result is delivered back to the Router as
     /// `RouterInternalMsg::CardSnapshotCollected { .. }`.
-    GetSnapshot {
-        op_id: u32,
-    },
+    GetSnapshot { op_id: u32 },
 
-    /// Reemplazar el estado interno de la tarjeta según un snapshot.
+    /// Replace the internal card state using a snapshot.
     ///
-    /// - `new_limit`: nuevo límite de tarjeta (o None si sin límite).
-    /// - `new_consumed`: nuevo consumo acumulado de la tarjeta.
+    /// - `new_limit`: new card limit (`None` means no limit).
+    /// - `new_consumed`: new accumulated consumption.
     ReplaceState {
         new_limit: Option<f32>,
         new_consumed: f32,
@@ -145,17 +140,17 @@ pub enum CardMsg {
 #[derive(Debug, Message)]
 #[rtype(result = "()")]
 pub enum RouterInternalMsg {
-    /// Una operación de negocio terminó (charge / limit).
+    /// A business operation has finished (e.g., charge or limit change).
     OperationCompleted {
         op_id: u32,
         success: bool,
         error: Option<VerifyError>,
     },
 
-    /// Un query o un bill de cuenta terminó.
+    /// An account query or a billing run has completed.
     ///
-    /// Para Bill, los actores ya habrán reseteado sus consumos, pero acá
-    /// devolvemos el mismo tipo de payload que para AccountQuery.
+    /// For billing, actors will have already reset their consumption, but the
+    /// payload is identical to an AccountQuery result.
     AccountQueryCompleted {
         op_id: u32,
         account_id: u64,
@@ -163,20 +158,16 @@ pub enum RouterInternalMsg {
         per_card_spent: Vec<(u64, f32)>,
     },
 
-    /// Snapshot de una cuenta, para construir la DatabaseSnapshot
-    /// en respuesta a `Operation::GetDatabase`.
+    /// Account snapshot fragment collected while assembling a DatabaseSnapshot.
     AccountSnapshotCollected {
         op_id: u32,
         snapshot: AccountSnapshot,
     },
 
-    /// Snapshot de una tarjeta, para construir la DatabaseSnapshot
-    /// en respuesta a `Operation::GetDatabase`.
-    CardSnapshotCollected {
-        op_id: u32,
-        snapshot: CardSnapshot,
-    },
+    /// Card snapshot fragment collected while assembling a DatabaseSnapshot.
+    CardSnapshotCollected { op_id: u32, snapshot: CardSnapshot },
 
     /// Internal debug / diagnostics.
     Debug(String),
 }
+

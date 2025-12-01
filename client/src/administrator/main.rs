@@ -1,3 +1,15 @@
+//! Interactive administrator CLI for the YPF Ruta system.
+//!
+//! This binary provides a simple, interactive administrator client that:
+//! - binds a local socket to receive responses,
+//! - connects to a target node in the cluster,
+//! - accepts user commands on stdin,
+//! - sends operations to the node and waits for the correlated response.
+//!
+//! The client is intentionally minimal: it issues one request at a time and
+//! ignores unrelated messages coming from the node (for example, internal
+//! replication or election traffic).
+
 use std::env;
 use std::io::{self, Write};
 use std::net::SocketAddr;
@@ -19,21 +31,29 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Command-line usage and interactive examples.
+///
 /// Usage:
-///   administrator <bind_addr> <target_node_addr> <account_id>
+///
+/// ```text
+/// administrator <bind_addr> <target_node_addr> <account_id>
+/// ```
 ///
 /// Examples:
-///   administrator 127.0.0.1:9000 127.0.0.1:5000 100
-///   administrator 127.0.0.1:9001 127.0.0.1:5001 200
 ///
-/// Then, via stdin you can type:
-///   help
-///   limit-account 1000.0
-///   limit-card 55 500.0
-///   account-query
-///   bill
-///   bill 2025-10
-///   exit
+/// ```text
+/// administrator 127.0.0.1:9000 127.0.0.1:5000 100
+/// administrator 127.0.0.1:9001 127.0.0.1:5001 200
+/// ```
+///
+/// After starting, use stdin to enter commands such as:
+///
+/// - `help`
+/// - `limit-account 1000.0`
+/// - `limit-card 55 500.0`
+/// - `account-query`
+/// - `bill` or `bill 2025-10`
+/// - `exit`
 async fn async_main() -> AppResult<()> {
     let args: Vec<String> = env::args().collect();
 
@@ -108,6 +128,9 @@ async fn async_main() -> AppResult<()> {
     Ok(())
 }
 
+/// Print interactive help text to stdout.
+///
+/// The help text documents the available commands and their expected arguments.
 fn print_help() {
     println!();
     println!("Available commands:");
@@ -128,6 +151,10 @@ fn print_help() {
     println!();
 }
 
+/// Parse a single stdin line into an `AdminCommand`.
+///
+/// The returned command is bound to the `account_id` the administrator was
+/// started with; commands that require an account implicitly use that id.
 fn parse_line_to_command(line: &str, account_id: u64) -> Result<AdminCommand, String> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.is_empty() {

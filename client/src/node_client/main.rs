@@ -1,4 +1,13 @@
-// client/src/node_client/main.rs
+//! Thin forwarding node CLI for YPF Ruta.
+//!
+//! This binary implements a lightweight node client that:
+//! - parses command-line arguments,
+//! - creates a shared `Connection` (TCP abstraction),
+//! - starts a local `Station` pump simulator,
+//! - and runs a `NodeClient` which forwards station requests to known cluster nodes.
+//!
+//! The implementation intentionally mirrors the server-side abstractions so the
+//! forwarding node can behave like a simple station front-end.
 
 use std::env;
 use std::net::SocketAddr;
@@ -7,10 +16,10 @@ use std::process::ExitCode;
 use common::errors::{AppError, AppResult};
 use common::{Connection, Station};
 
-// 👇 ESTA es la forma correcta dentro del mismo bin:
+// This is the correct way to reference a sibling module inside the same binary.
 mod node_client;
 use crate::node_client::NodeClient;
-// (también podrías hacer `use node_client::NodeClient;`)
+// (You could also write `use node_client::NodeClient;` when appropriate.)
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -26,10 +35,16 @@ async fn main() -> ExitCode {
 /// Parse CLI, create Connection + Station, and start the thin forwarding node.
 ///
 /// Usage:
-///   node_client <bind_addr> <max_connections> <num_pumps> <known_node_1> [<known_node_2> ...]
+///
+/// ```text
+/// node_client <bind_addr> <max_connections> <num_pumps> <known_node_1> [<known_node_2> ...]
+/// ```
 ///
 /// Example:
-///   node_client 127.0.0.1:6000 128 4 127.0.0.1:5000 127.0.0.1:5001
+///
+/// ```text
+/// node_client 127.0.0.1:6000 128 4 127.0.0.1:5000 127.0.0.1:5001
+/// ```
 async fn async_main() -> AppResult<()> {
     let args: Vec<String> = env::args().collect();
 
@@ -42,32 +57,24 @@ async fn async_main() -> AppResult<()> {
         return Ok(());
     }
 
-    // Local address used by this forwarding node (just like leader/replica).
+    // Local address used by this forwarding node (same as leader/replica).
     let bind_addr: SocketAddr = args[1]
         .parse()
-        .map_err(|e| AppError::Config(
-            format!("invalid bind_addr '{}': {e}", args[1]),
-        ))?;
+        .map_err(|e| AppError::Config(format!("invalid bind_addr '{}': {e}", args[1])))?;
 
     let max_connections: usize = args[2]
         .parse()
-        .map_err(|e| AppError::Config(
-            format!("invalid max_connections '{}': {e}", args[2]),
-        ))?;
+        .map_err(|e| AppError::Config(format!("invalid max_connections '{}': {e}", args[2])))?;
 
     let num_pumps: usize = args[3]
         .parse()
-        .map_err(|e| AppError::Config(
-            format!("invalid num_pumps '{}': {e}", args[3]),
-        ))?;
+        .map_err(|e| AppError::Config(format!("invalid num_pumps '{}': {e}", args[3])))?;
 
     let mut known_nodes = Vec::new();
     for raw in &args[4..] {
         let addr: SocketAddr = raw
             .parse()
-            .map_err(|e| AppError::Config(
-                format!("invalid known_node address '{raw}': {e}"),
-            ))?;
+            .map_err(|e| AppError::Config(format!("invalid known_node address '{raw}': {e}")))?;
         known_nodes.push(addr);
     }
 

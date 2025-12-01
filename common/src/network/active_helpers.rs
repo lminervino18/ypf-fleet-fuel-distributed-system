@@ -1,10 +1,19 @@
+//! Utilities for managing the active connection handlers map.
+//!
+//! This module provides a small set of helpers to maintain the collection of
+//! currently active `Handler` instances. It supports inserting a newly-created
+//! handler while enforcing a maximum number of concurrent connections by
+//! evicting the least-recently-used handler when necessary.
+
 use super::handler::Handler;
 use std::{collections::HashMap, net::SocketAddr};
 use tokio::sync::MutexGuard;
 
-/// Adds the provided `Handler` to the collection of active handlers, if the length of active is
-/// greater or equal to `max_conns` then the last recently used handler is removed to make space
-/// for the new one.
+/// Insert `handler` into the active handlers map.
+///
+/// If the map size is already >= `max_conns`, evict the least-recently-used
+/// handler to make space, calling `stop()` on the removed handler to abort
+/// its background task and release resources.
 pub fn add_handler_from(
     active: &mut MutexGuard<'_, HashMap<SocketAddr, Handler>>,
     handler: Handler,
@@ -19,6 +28,11 @@ pub fn add_handler_from(
     active.insert(handler.address, handler);
 }
 
+/// Remove and return the least-recently-used handler from the map.
+///
+/// The LRU handler is determined by the `last_used` timestamp stored in each
+/// `Handler`. Returns `Some(Handler)` when an entry was removed, or `None` if
+/// the map was empty.
 fn remove_last_recently_used(
     active: &mut MutexGuard<'_, HashMap<SocketAddr, Handler>>,
 ) -> Option<Handler> {

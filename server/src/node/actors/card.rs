@@ -1,4 +1,4 @@
-// CardActor: manages per-card limit and per-card consumption.
+//! CardActor: manages per-card limit and per-card consumption.
 
 use actix::prelude::*;
 use std::collections::VecDeque;
@@ -7,7 +7,7 @@ use super::account::AccountActor;
 use super::actor_router::ActorRouter;
 use super::messages::{AccountChargeReply, AccountMsg, CardMsg, RouterInternalMsg};
 use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
-use common::operation::CardSnapshot; // <- desde common::operation
+use common::operation::CardSnapshot; // <- from common::operation
 
 /// Internal representation of a card-level charge.
 #[derive(Debug, Clone, Copy)]
@@ -93,7 +93,7 @@ impl CardActor {
             Some(_) => Err(LimitUpdateError::BelowCurrentUsage),
         }
     }
-    
+
     /// Start processing the current task, if any.
     fn start_current_task(&mut self, ctx: &mut Context<Self>) {
         let task = match self.current_task {
@@ -200,9 +200,7 @@ impl Handler<CardMsg> for CardActor {
                     self.send_internal(RouterInternalMsg::OperationCompleted {
                         op_id,
                         success: false,
-                        error: Some(VerifyError::ChargeLimit(
-                            LimitCheckError::CardLimitExceeded,
-                        )),
+                        error: Some(VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded)),
                     });
                     return;
                 }
@@ -238,31 +236,31 @@ impl Handler<CardMsg> for CardActor {
                 account_id,
                 reset_after_report,
             } => {
-                // sólo respondemos si la cuenta matchea
+                // Only respond if the account matches.
                 if account_id != self.account_id {
                     self.send_internal(RouterInternalMsg::Debug(format!(
-                        "[Card {}/{}] QueryCardState con account_id distinto: {}",
+                        "[Card {}/{}] QueryCardState with different account_id: {}",
                         self.card_id, self.account_id, account_id
                     )));
                     return;
                 }
 
-                // Respondemos a la Account con nuestro consumo actual
+                // Reply to the Account with our current consumption.
                 self.account.do_send(AccountMsg::CardQueryReply {
                     op_id,
                     card_id: self.card_id,
                     consumed: self.consumed,
                 });
 
-                // Si es un Bill, después de reportar nos reseteamos.
+                // For billing, reset consumption after reporting.
                 if reset_after_report {
                     self.consumed = 0.0;
                 }
             }
 
-            // ===== Nuevos mensajes para snapshot / replace =====
+            // ===== New messages for snapshot / replace =====
             CardMsg::GetSnapshot { op_id } => {
-                // Construimos snapshot de este card con su estado actual.
+                // Build a snapshot of this card's current state.
                 let snapshot = CardSnapshot {
                     account_id: self.account_id,
                     card_id: self.card_id,
@@ -277,11 +275,11 @@ impl Handler<CardMsg> for CardActor {
                 new_limit,
                 new_consumed,
             } => {
-                // Reemplazamos nuestro estado por el del snapshot.
+                // Replace our state with the values from the snapshot.
                 self.limit = new_limit;
                 self.consumed = new_consumed;
 
-                // Al aplicar un snapshot de DB, descartamos cualquier tarea pendiente:
+                // When applying a DB snapshot, discard any pending tasks.
                 self.current_task = None;
                 self.queue.clear();
             }
@@ -334,10 +332,10 @@ mod tests {
     use std::collections::VecDeque;
     use tokio::sync::mpsc;
 
-    /// Crea un CardActor de prueba.
+    /// Create a test CardActor.
     fn make_test_card() -> CardActor {
-        // Creamos un Router y una Account reales sólo para rellenar los Addr,
-        // pero en estos tests nunca les mandamos mensajes.
+        // Create a Router and an Account only to supply Addr values.
+        // These tests never actually send messages to those actors.
         let (tx, _rx) = mpsc::channel(8);
         let router = ActorRouter::new(tx).start();
         let account = AccountActor::new(1, router.clone()).start();

@@ -9,7 +9,7 @@ use crate::node::actors::messages::{
 
 use super::account::AccountActor;
 use super::card::CardActor;
-use common::operation::{Operation, AccountSnapshot, CardSnapshot, DatabaseSnapshot};
+use common::operation::{AccountSnapshot, CardSnapshot, DatabaseSnapshot, Operation};
 use common::operation_result::{AccountQueryResult, ChargeResult, LimitResult, OperationResult};
 
 /// Router actor that owns and routes to AccountActor and CardActor instances.
@@ -29,14 +29,14 @@ pub struct ActorRouter {
     /// Maps op_id to Operation for correlation.
     pub operations: HashMap<u32, Operation>,
 
-    /// Canal para snapshots de DB en curso (GetDatabase).
+    /// Channel for in-progress DB snapshots (GetDatabase).
     pending_db_snapshots: HashMap<u32, PendingDatabaseSnapshot>,
 
     /// Channel for sending ActorEvent messages to the Node.
     pub event_tx: mpsc::Sender<ActorEvent>,
 }
 
-/// Estado interno mientras se arma un snapshot de base de datos.
+/// Internal state while assembling a database snapshot.
 struct PendingDatabaseSnapshot {
     addr: SocketAddr,
     expected_accounts: usize,
@@ -99,12 +99,10 @@ impl ActorRouter {
         addr
     }
 
-    /// Intentar completar un snapshot de DB (GetDatabase) si ya llegaron todos los fragments.
+    /// Try to complete a DB snapshot (GetDatabase) if all fragments have arrived.
     fn try_complete_db_snapshot(&mut self, op_id: u32) {
         let done = match self.pending_db_snapshots.get(&op_id) {
-            Some(p) => {
-                p.accounts.len() == p.expected_accounts && p.cards.len() == p.expected_cards
-            }
+            Some(p) => p.accounts.len() == p.expected_accounts && p.cards.len() == p.expected_cards,
             None => return,
         };
 
@@ -112,7 +110,7 @@ impl ActorRouter {
             return;
         }
 
-        // Ya están todos los snapshots; los sacamos del mapa.
+        // All snapshots are present; remove the entry from the map.
         let pending = match self.pending_db_snapshots.remove(&op_id) {
             Some(p) => p,
             None => return,
@@ -122,8 +120,7 @@ impl ActorRouter {
             Some(op) => op.clone(),
             None => {
                 self.emit(ActorEvent::Debug(format!(
-                    "[Router] DB snapshot completed for unknown op_id={}",
-                    op_id
+                    "[Router] DB snapshot completed for unknown op_id={op_id}"
                 )));
                 return;
             }
@@ -227,16 +224,19 @@ impl Handler<RouterCmd> for ActorRouter {
                         }
                         // The final result arrives via RouterInternalMsg::AccountQueryCompleted
                     }
-                    Operation::Bill { account_id, period: _ } => {
-                        // Igual a AccountQuery, pero:
-                        // - la Account entra en modo "billing" (StartAccountBill),
-                        // - las Cards reportan y se resetean (reset_after_report=true),
-                        // - la Account también resetea account_consumed al finalizar.
+                    Operation::Bill {
+                        account_id,
+                        period: _,
+                    } => {
+                        // Same as AccountQuery, but:
+                        // - the Account enters "billing" mode (StartAccountBill),
+                        // - Cards report and reset themselves (reset_after_report=true),
+                        // - the Account also resets account_consumed after completion.
                         let acc = self.get_or_create_account(account_id, ctx);
 
-                        // Determinar tarjetas de esta cuenta
+                        // Determine cards of this account.
                         let mut card_ids = Vec::new();
-                        for ((acc_id, card_id), _) in &self.cards {
+                        for (acc_id, card_id) in self.cards.keys() {
                             if *acc_id == account_id {
                                 card_ids.push(*card_id);
                             }
@@ -254,8 +254,8 @@ impl Handler<RouterCmd> for ActorRouter {
                                 });
                             }
                         }
-                        // El resultado llega también como AccountQueryCompleted,
-                        // y el Router lo mapeará a OperationResult::AccountQuery.
+                        // The result also comes as AccountQueryCompleted,
+                        // and the Router will map it to OperationResult::AccountQuery.
                     }
 
                     Operation::GetDatabase { addr } => {
@@ -263,7 +263,7 @@ impl Handler<RouterCmd> for ActorRouter {
                         let expected_cards = self.cards.len();
 
                         if expected_accounts == 0 && expected_cards == 0 {
-                            // DB vacía: respondemos directamente sin mandar mensajes.
+                            // Empty DB: respond directly without sending messages.
                             let snapshot = DatabaseSnapshot {
                                 addr,
                                 accounts: Vec::new(),
@@ -283,7 +283,7 @@ impl Handler<RouterCmd> for ActorRouter {
                             return;
                         }
 
-                        // Registramos el pending de snapshot
+                        // Register the pending snapshot entry.
                         self.pending_db_snapshots.insert(
                             op_id,
                             PendingDatabaseSnapshot {
@@ -295,19 +295,19 @@ impl Handler<RouterCmd> for ActorRouter {
                             },
                         );
 
-                        // Pedimos snapshot a todas las cuentas
-                        for (_id, acc_addr) in &self.accounts {
+                        // Request snapshot from all accounts.
+                        for acc_addr in self.accounts.values() {
                             acc_addr.do_send(AccountMsg::GetSnapshot { op_id });
                         }
 
-                        // Y a todas las tarjetas
+                        // And from all cards.
                         for ((_acc_id, _card_id), card_addr) in &self.cards {
                             card_addr.do_send(CardMsg::GetSnapshot { op_id });
                         }
                     }
 
                     Operation::ReplaceDatabase { snapshot } => {
-                        // Aplicar snapshot a todas las cuentas
+                        // Apply snapshot to all accounts
                         for acc_snap in &snapshot.accounts {
                             let acc = self.get_or_create_account(acc_snap.account_id, ctx);
                             acc.do_send(AccountMsg::ReplaceState {
@@ -316,9 +316,13 @@ impl Handler<RouterCmd> for ActorRouter {
                             });
                         }
 
-                        // Aplicar snapshot a todas las tarjetas
+                        // Apply snapshot to all cards
                         for card_snap in &snapshot.cards {
-                            let card = self.get_or_create_card(card_snap.account_id, card_snap.card_id, ctx);
+                            let card = self.get_or_create_card(
+                                card_snap.account_id,
+                                card_snap.card_id,
+                                ctx,
+                            );
                             card.do_send(CardMsg::ReplaceState {
                                 new_limit: card_snap.limit,
                                 new_consumed: card_snap.consumed,
@@ -425,8 +429,8 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                         })
                     }
                     Operation::Bill { .. } => {
-                        // Bill también se resuelve por AccountQueryCompleted;
-                        // si llega acá sería un bug de wiring.
+                        // Bill is also resolved by AccountQueryCompleted;
+                        // reaching this point would indicate a wiring bug.
                         OperationResult::AccountQuery(AccountQueryResult {
                             account_id: 0,
                             total_spent: 0.0,
@@ -434,12 +438,12 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                         })
                     }
                     Operation::GetDatabase { .. } => {
-                        // No debería resolverse por OperationCompleted.
-                        // Fallback defensivo: devolvemos ReplaceDatabase (no usado).
+                        // Should not be resolved via OperationCompleted.
+                        // Defensive fallback: return ReplaceDatabase (unused).
                         OperationResult::ReplaceDatabase
                     }
                     Operation::ReplaceDatabase { .. } => {
-                        // Tampoco se espera por OperationCompleted, pero por completitud:
+                        // Also not expected via OperationCompleted, but return something.
                         OperationResult::ReplaceDatabase
                     }
                 };
@@ -469,8 +473,8 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                     }
                 };
 
-                // Tanto para AccountQuery como para Bill devolvemos
-                // OperationResult::AccountQuery con el mismo payload.
+                // For both AccountQuery and Bill we return
+                // OperationResult::AccountQuery with the same payload.
                 let result = OperationResult::AccountQuery(AccountQueryResult {
                     account_id,
                     total_spent,
@@ -492,8 +496,7 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                     self.try_complete_db_snapshot(op_id);
                 } else {
                     self.emit(ActorEvent::Debug(format!(
-                        "[Router] AccountSnapshotCollected for unknown op_id={}",
-                        op_id
+                        "[Router] AccountSnapshotCollected for unknown op_id={op_id}"
                     )));
                 }
             }
@@ -504,8 +507,7 @@ impl Handler<RouterInternalMsg> for ActorRouter {
                     self.try_complete_db_snapshot(op_id);
                 } else {
                     self.emit(ActorEvent::Debug(format!(
-                        "[Router] CardSnapshotCollected for unknown op_id={}",
-                        op_id
+                        "[Router] CardSnapshotCollected for unknown op_id={op_id}"
                     )));
                 }
             }

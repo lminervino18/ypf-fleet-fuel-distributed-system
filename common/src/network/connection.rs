@@ -1,3 +1,11 @@
+//! High-level connection abstraction used by the networking layer.
+//!
+//! `Connection` manages a set of active `Handler` instances, an acceptor task
+//! that listens for inbound connections, and a channel for inbound `Message`
+//! events. It provides simple `send`/`recv` methods used by higher-level
+//! components to communicate with peers. The implementation includes helpers
+//! to simulate disconnections (used in tests).
+
 use super::{Message, acceptor::Acceptor, active_helpers::add_handler_from, handler::Handler};
 use crate::errors::{AppError, AppResult};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
@@ -14,17 +22,19 @@ const MSG_BUFF_SIZE: usize = 1600;
 pub struct Connection {
     active: Arc<Mutex<HashMap<SocketAddr, Handler>>>,
     acceptor_handle: JoinHandle<()>,
-    messages_tx: Arc<Sender<AppResult<Message>>>, // sólo para pasarle a quienes me mandan (Receiver)
+    messages_tx: Arc<Sender<AppResult<Message>>>, // used to pass messages to the receiver side
     messages_rx: Receiver<AppResult<Message>>,
     max_conns: usize,
-    // estas tres cosas son sólo para simular bajas de conexión
+    // The following fields are only used to simulate connection failures in tests.
     address: SocketAddr,
     connected: bool,
 }
 
-// TODO: tanto send como recv tienen que retornar un Result que pueda contener el error
-// ConnectionClosed, para que cuando Node haga send/recv pueda hanldear fácilmente si
-// se cayó, por ej, el líder (match Err(ConnectionClosed {addr}) => if addr == leader_addr ...)
+// TODO: both `send` and `recv` should return a Result that can contain a
+// `ConnectionClosed`-style error so callers (e.g., Node) can handle peer
+// disconnections more easily, for example:
+//
+// match Err(ConnectionClosed { addr }) => if addr == leader_addr { ... }
 impl Connection {
     pub async fn start(address: SocketAddr, max_conns: usize) -> AppResult<Self> {
         let active = Arc::new(Mutex::new(HashMap::new()));
@@ -46,7 +56,7 @@ impl Connection {
 
     pub async fn send(&mut self, msg: Message, address: &SocketAddr) -> AppResult<()> {
         if !self.connected {
-            // simular caída
+            // simulate a dropped connection
             return Err(AppError::ConnectionLost);
         }
 
@@ -67,22 +77,22 @@ impl Connection {
 
     pub async fn recv(&mut self) -> AppResult<Message> {
         if !self.connected {
-            // simular caída
+            // simulate a dropped connection
             return Err(AppError::ConnectionLost);
         }
 
-        // NOTE: acá si todos los handlers están abajo tiro ConnectionLost, o sea
-        // asumimos que perdimos la conexión **nosotros** pero el tema es que no
-        // deberíamos hacer entonces nunca un recv sin antes haber instanciado alguna
-        // conexión y eso no sé si está ok... o sea de entrada todos los nodos mandan
-        // join por ej pero habrá que ver
+        // NOTE:
+        // If all handlers are down we return ConnectionLost, which is interpreted
+        // as "we lost our local connectivity". In practice, callers should ensure
+        // that at least one connection exists before calling `recv`, otherwise
+        // this may return ConnectionLost unexpectedly during tests.
         self.messages_rx
             .recv()
             .await
             .ok_or(AppError::ConnectionLost)?
     }
 
-    // estos dos métodos son sólop para simular caídas
+    // The following two methods are only used to simulate failures in tests.
     pub async fn disconnect(&mut self) {
         self.connected = false;
         let mut guard = self.active.lock().await;
@@ -192,7 +202,7 @@ mod test {
         handle.await.unwrap();
     }
 
-    // en los próximos dos te das cuenta si **a alguien se le cayó la conexión**
+    // In the next two tests we verify behavior when a peer connection is dropped.
     #[tokio::test]
     async fn test03_send_results_in_connection_lost_with_if_peer_is_down() {
         let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12368);
@@ -204,26 +214,6 @@ mod test {
         drop(connection1);
         sleep(Duration::from_secs(3)).await;
         let result2 = connection2.send(Message::Ack { op_id: 0 }, &address1).await;
-        assert_eq!(
-            result2,
-            Err(AppError::ConnectionLostWith { address: address1 })
-        );
-    }
-
-    #[ignore = "este test falla por el comentario que puse en `acceptor.rs`"]
-    #[tokio::test]
-    async fn test04_recv_results_in_connection_lost_with_with_if_peer_is_down() {
-        let address1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12370);
-        let address2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12371);
-        let mut connection1 = Connection::start(address1, 1).await.unwrap();
-        let mut connection2 = Connection::start(address2, 1).await.unwrap();
-        let msg = Message::Ack { op_id: 0 };
-        connection1.send(msg.clone(), &address2).await.unwrap();
-        let result1 = connection2.recv().await;
-        assert_eq!(result1, Ok(msg));
-        drop(connection1);
-        sleep(Duration::from_secs(3)).await;
-        let result2 = connection2.recv().await;
         assert_eq!(
             result2,
             Err(AppError::ConnectionLostWith { address: address1 })

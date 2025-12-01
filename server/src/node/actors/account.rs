@@ -6,14 +6,14 @@ use super::messages::{AccountChargeReply, AccountMsg, RouterInternalMsg};
 use crate::errors::{LimitCheckError, LimitUpdateError, VerifyError};
 use common::operation::AccountSnapshot;
 
-/// Estado interno de un query/bill de cuenta en curso.
+/// Internal state for an ongoing account query or billing operation.
 #[derive(Debug)]
 struct AccountPendingQuery {
     op_id: u32,
     remaining: usize,
     per_card_spent: Vec<(u64, f32)>,
-    /// true si es un Bill (hay que resetear al finalizar),
-    /// false si es un AccountQuery normal.
+    /// `true` if this is a billing operation (reset account after completion),
+    /// `false` if this is a regular AccountQuery.
     billing: bool,
 }
 
@@ -30,7 +30,7 @@ pub struct AccountActor {
     /// Back-reference to the router, to send `RouterInternalMsg` events.
     router: Addr<ActorRouter>,
 
-    /// Query de cuenta en curso (si lo hay).
+    /// In-progress account query or billing state, if any.
     pending_query: Option<AccountPendingQuery>,
 }
 
@@ -94,7 +94,7 @@ impl Handler<AccountMsg> for AccountActor {
                 reply_to,
             } => {
                 if from_offline_station {
-                    // OFFLINE REPLAY: saltar chequeos y aplicar siempre
+                    // OFFLINE REPLAY: skip checks and always apply
                     self.account_consumed += amount;
 
                     reply_to.do_send(AccountChargeReply {
@@ -106,7 +106,7 @@ impl Handler<AccountMsg> for AccountActor {
                     return;
                 }
 
-                // ONLINE CHARGE: verificar límite de cuenta
+                // ONLINE CHARGE: validate account-wide limit
                 let res = self
                     .check_account_limit(amount)
                     .map_err(VerifyError::ChargeLimit);
@@ -156,7 +156,7 @@ impl Handler<AccountMsg> for AccountActor {
             }
 
             AccountMsg::StartAccountQuery { op_id, num_cards } => {
-                // Si no hay tarjetas, respondemos directamente con lo que sabemos.
+                // If there are no cards, respond immediately with current data.
                 if num_cards == 0 {
                     self.send_internal(RouterInternalMsg::AccountQueryCompleted {
                         op_id,
@@ -167,7 +167,7 @@ impl Handler<AccountMsg> for AccountActor {
                     return;
                 }
 
-                // Iniciar estado interno del query (no billing).
+                // Initialize pending query state (not a billing operation).
                 self.pending_query = Some(AccountPendingQuery {
                     op_id,
                     remaining: num_cards,
@@ -177,7 +177,7 @@ impl Handler<AccountMsg> for AccountActor {
             }
 
             AccountMsg::StartAccountBill { op_id, num_cards } => {
-                // Bill sin tarjetas: devolvemos consumo y reseteamos.
+                // Billing with no cards: return consumption and reset the account.
                 if num_cards == 0 {
                     let total_spent = self.account_consumed;
                     self.account_consumed = 0.0;
@@ -204,12 +204,12 @@ impl Handler<AccountMsg> for AccountActor {
                 card_id,
                 consumed,
             } => {
-                // Solo nos importa si hay un query/bill en curso con ese op_id
+                // Only handle replies that match an in-progress query/bill.
                 let pending = match self.pending_query.as_mut() {
                     Some(p) if p.op_id == op_id => p,
                     _ => {
                         self.send_internal(RouterInternalMsg::Debug(format!(
-                            "[Account {}] CardQueryReply inesperado: op_id={}",
+                            "[Account {}] Unexpected CardQueryReply: op_id={}",
                             self.account_id, op_id
                         )));
                         return;
@@ -232,10 +232,10 @@ impl Handler<AccountMsg> for AccountActor {
                     let account_id = self.account_id;
                     let billing = pending.billing;
 
-                    // limpiar estado
+                    // Clear pending state.
                     self.pending_query = None;
 
-                    // Si es Bill, reseteamos el total de la cuenta.
+                    // If this was a billing operation, reset the account consumption.
                     if billing {
                         self.account_consumed = 0.0;
                     }
@@ -250,25 +250,22 @@ impl Handler<AccountMsg> for AccountActor {
             }
 
             AccountMsg::GetSnapshot { op_id } => {
-                // Construimos el snapshot actual de esta cuenta
+                // Build current snapshot for this account.
                 let snapshot = AccountSnapshot {
                     account_id: self.account_id,
                     limit: self.account_limit,
                     consumed: self.account_consumed,
                 };
 
-                self.send_internal(RouterInternalMsg::AccountSnapshotCollected {
-                    op_id,
-                    snapshot,
-                });
+                self.send_internal(RouterInternalMsg::AccountSnapshotCollected { op_id, snapshot });
             }
 
             AccountMsg::ReplaceState {
                 new_limit,
                 new_consumed,
             } => {
-                // Reemplazamos el estado interno con los valores del snapshot.
-                // No se emite OperationCompleted ni se toca pending_query.
+                // Replace internal state from snapshot values.
+                // Do not emit OperationCompleted or modify pending_query.
                 self.account_limit = new_limit;
                 self.account_consumed = new_consumed;
             }

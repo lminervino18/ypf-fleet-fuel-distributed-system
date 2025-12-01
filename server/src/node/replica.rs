@@ -1,3 +1,13 @@
+//! Replica node implementation and logic.
+//!
+//! The Replica receives logs from the leader (`Message::Log`), stores them,
+//! commits operations against the actor-based database (via `Database`), and
+//! acknowledges the leader when a committed operation completes.
+//!
+//! For requests originating from the local station:
+//! - If ONLINE, proxy the request to the leader with `Message::Request`.
+//! - If OFFLINE, enqueue the operation in `offline_queue` and reply OK to the station.
+
 use super::{
     database::{Database, DatabaseCmd},
     leader::Leader,
@@ -8,7 +18,7 @@ use crate::errors::AppResult;
 use common::{
     operation::{DatabaseSnapshot, Operation},
     operation_result::{ChargeResult, OperationResult},
-    AppError, Connection, Message, NodeToStationMsg, Station,
+    Connection, Message, NodeToStationMsg, Station,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -16,17 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Replica node.
-///
-/// Misma idea que el Leader:
-/// - recibe logs del líder (`Message::Log`),
-/// - guarda las operaciones,
-/// - las va “commit-eando” contra el sistema de actores (vía `Database`),
-/// - cuando el router termina una op, la réplica le manda un `Ack` al líder.
-///
-/// Para las requests que vienen de la estación:
-/// - si está ONLINE, las proxy-a al líder con `Message::Request`,
-/// - si está OFFLINE, las mete en `offline_queue` y contesta OK a la estación.
+/// Internal pending charge from the station (unused placeholder).
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct StationPendingCharge {
@@ -36,6 +36,7 @@ struct StationPendingCharge {
     amount: f32,
 }
 
+/// Internal representation of an offline queued charge (unused placeholder).
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct OfflineQueuedCharge {
@@ -45,6 +46,7 @@ struct OfflineQueuedCharge {
     amount: f32,
 }
 
+/// Replica role state.
 pub struct Replica {
     id: u64,
     coords: (f64, f64),
@@ -57,7 +59,7 @@ pub struct Replica {
     #[allow(dead_code)]
     start_time: Instant,
 
-    // Estado de la elección Bully
+    // Bully election state
     election_in_progress: bool,
     election_start: Option<Instant>,
 }
@@ -68,7 +70,7 @@ impl Node for Replica {
     }
 
     async fn get_status(&self) -> String {
-        //give mi cluster and leader, only that
+        // Return cluster size and leader address.
         format!(
             "Cluster: {:?}, Leader: {:?}",
             self.cluster.len(),
@@ -95,7 +97,7 @@ impl Node for Replica {
             self.cluster.retain(|_, &mut addr| addr != lost_address);
         }
 
-        // Si era el líder, además disparo la elección
+        // If the leader was lost, start an election.
         if lost_address == self.leader_addr {
             return self.start_election(connection).await;
         }
@@ -123,8 +125,10 @@ impl Node for Replica {
                 .is_ok()
             {
                 break;
-            } else{
-                connection.send(Message::Join { addr: self.address }, node_addr).await?;
+            } else {
+                connection
+                    .send(Message::Join { addr: self.address }, node_addr)
+                    .await?;
             }
         }
 
@@ -132,7 +136,7 @@ impl Node for Replica {
     }
 
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
-        // Broadcast de Coordinator a todo el cluster
+        // Broadcast Coordinator announcement to all peers.
         for (node, addr) in &self.cluster {
             if *node == self.id {
                 continue; // Skip announcing to ourselves
@@ -155,14 +159,14 @@ impl Node for Replica {
             }
         }
 
-        // Handle our own promoción a leader
+        // Handle our own promotion to leader if applicable.
         self.handle_coordinator(connection, self.id, self.address)
             .await
     }
 
-    /// Bully election:
-    /// - si hay IDs mayores, mando Election y arranco timeout
-    /// - si NO hay IDs mayores, me proclamo líder directo.
+    /// Start a Bully election:
+    /// - If there are higher IDs, send Election and start a timeout.
+    /// - If there are no higher IDs, immediately self-promote to leader.
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         if self.election_in_progress {
             return Ok(RoleChange::None);
@@ -191,17 +195,16 @@ impl Node for Replica {
         }
 
         if sent_any {
-            // Hay al menos un nodo con ID mayor → elección normal con timeout
+            // At least one node has a higher ID: election with timeout.
             self.election_in_progress = true;
             self.election_start = Some(Instant::now());
             Ok(RoleChange::None)
         } else {
-            // No hay ningún nodo con ID mayor → soy el más grande → líder YA
+            // No higher IDs → promote to leader immediately.
             self.election_in_progress = false;
             self.election_start = None;
 
-            // Esto manda Coordinator a todos y luego llama a handle_coordinator(self.id, self.address),
-            // que devuelve RoleChange::PromoteToLeader.
+            // Broadcast Coordinator and return promotion result.
             self.anounce_coordinator(connection).await
         }
     }
@@ -215,17 +218,16 @@ impl Node for Replica {
         operation: Operation,
         _result: OperationResult,
     ) -> AppResult<()> {
-        // Si esta operación era un ReplaceDatabase, no mandamos ningún Ack al líder.
+        // If this operation was ReplaceDatabase, do not ACK the leader.
         if let Operation::ReplaceDatabase { .. } = operation {
-             while let Some(op) = self.offline_queue.pop_front() {
+            while let Some(op) = self.offline_queue.pop_front() {
                 self.handle_request(connection, database, 0, op, self.address)
                     .await?
-        }
+            }
             return Ok(());
         }
 
-        // Igual que antes: cuando termina la operación "normal" en la réplica,
-        // mandamos un Ack al líder.
+        // For normal operations, send an Ack to the leader when done.
         connection
             .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
             .await
@@ -239,7 +241,7 @@ impl Node for Replica {
         op: Operation,
         addr: SocketAddr,
     ) -> AppResult<()> {
-        // redirijo al líder
+        // Proxy the request to the leader.
         connection
             .send(
                 Message::Request {
@@ -308,7 +310,7 @@ impl Node for Replica {
         op_id: u32,
         new_op: Operation,
     ) -> AppResult<()> {
-        // Guardamos el log y commiteamos la operación anterior.
+        // Store the log and commit the previous operation.
         self.operations.insert(op_id, new_op);
 
         if op_id == 1 {
@@ -317,12 +319,12 @@ impl Node for Replica {
                 .await;
         }
 
-        // Igual que antes, pero ahora via `Database` en vez de `router`.
+        // Commit operation (op_id - 1) via the Database abstraction.
         self.commit_operation(db, op_id - 1).await
     }
 
     async fn handle_ack(&mut self, _connection: &mut Connection, _db: &mut Database, _id: u32) {
-        // Replicas no deberían recibir ACKs.
+        // Replicas should not receive ACKs in normal flow.
         todo!();
     }
 
@@ -348,7 +350,7 @@ impl Node for Replica {
                 );
             }
 
-            // Yo soy más grande, así que también inicio mi propia elección
+            // If we are larger, start our own election.
             self.start_election(connection).await
         } else {
             Ok(RoleChange::None)
@@ -356,8 +358,7 @@ impl Node for Replica {
     }
 
     async fn handle_election_ok(&mut self, _connection: &mut Connection, _responder_id: u64) {
-      
-        // Si alguien más grande respondió, ya no me auto-proclamo líder por timeout.
+        // A larger node responded: stop our timeout-driven self-promotion.
         self.election_in_progress = false;
         self.election_start = None;
     }
@@ -368,11 +369,11 @@ impl Node for Replica {
         leader_id: u64,
         leader_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
-        // Resetear estado de elección (ya hay coordinador)
+        // Reset election state (we have a coordinator).
         self.election_in_progress = false;
         self.election_start = None;
 
-        // Check if we should promote to leader
+        // If the announcement is from ourselves, promote.
         if leader_id == self.id {
             return Ok(RoleChange::PromoteToLeader);
         }
@@ -381,8 +382,12 @@ impl Node for Replica {
             panic!("leader_id should not be less than self");
         }
 
-        // Update our local "current leader" pointer
+        // Update the current leader pointer.
         self.leader_addr = leader_addr;
+        println!(
+            "[REPLICA {}] New Leader elected: {}",
+            self.id, leader_id
+        );
         Ok(RoleChange::None)
     }
 
@@ -402,6 +407,7 @@ impl Node for Replica {
         _connection: &mut Connection,
         new_member: (u64, SocketAddr),
     ) {
+        println!("[REPLICA {}] New member joined: {:?}", self.id, new_member.0);
         self.cluster.insert(new_member.0, new_member.1);
     }
 
@@ -413,14 +419,10 @@ impl Node for Replica {
         leader_addr: SocketAddr,
         snapshot: DatabaseSnapshot,
     ) -> AppResult<()> {
-
         database.send(DatabaseCmd::Execute {
             op_id: 0,
-            operation: Operation::ReplaceDatabase {
-                snapshot: snapshot,
-            },
+            operation: Operation::ReplaceDatabase { snapshot },
         });
-    
 
         self.cluster.clear();
         for (id, addr) in members {
@@ -429,6 +431,12 @@ impl Node for Replica {
 
         self.leader_addr = leader_addr;
 
+        println!(
+            "[REPLICA {}] I Joined the cluster of {:?} member",
+            self.id,
+            self.cluster.len()
+        );
+
         if get_id_given_addr(leader_addr) > self.id {
             self.start_election(connection).await?;
         }
@@ -436,15 +444,14 @@ impl Node for Replica {
         Ok(())
     }
 
-
-    /// Timeout handler: si pasó el tiempo y nadie respondió con ElectionOk,
-    /// nos auto-proclamamos líder (Bully).
+    /// Election timeout handler:
+    /// If enough time passes without ElectionOk responses, self-promote (Bully).
     async fn handle_election_timeout(
         &mut self,
         connection: &mut Connection,
     ) -> AppResult<RoleChange> {
         if !self.election_in_progress {
-            // No hay elección en curso
+            // No election in progress.
             return Ok(RoleChange::None);
         }
 
@@ -452,13 +459,12 @@ impl Node for Replica {
             return Ok(RoleChange::None);
         };
 
-        // Si pasaron más de 2 segundos sin ElectionOk → me proclamo líder
+        // If more than 2 seconds passed without ElectionOk → self-promote.
         if start.elapsed() >= Duration::from_secs(2) {
             self.election_in_progress = false;
             self.election_start = None;
 
-            // Esto manda Coordinator a todos y luego llama a handle_coordinator(self.id, self.address),
-            // que devuelve RoleChange::PromoteToLeader.
+            // Broadcast Coordinator and handle promotion.
             return self.anounce_coordinator(connection).await;
         }
 
@@ -468,9 +474,8 @@ impl Node for Replica {
 
 impl Replica {
     /// Convert this Replica into a Leader.
-    /// Consumes self and returns a Leader.
     pub fn into_leader(self) -> Leader {
-        // When promoting, we use the replica's last op_id as current_op_id
+        // Use the highest known op_id as the current op id when promoting.
         let current_op_id = self.operations.keys().max().copied().unwrap_or(1);
 
         Leader::from_existing(
@@ -485,7 +490,7 @@ impl Replica {
         )
     }
 
-    /// Create a new Replica from existing node state (used for Leader demotion)
+    /// Create a Replica from existing state (used when demoting a Leader).
     pub fn from_existing(
         id: u64,
         coords: (f64, f64),
@@ -516,7 +521,7 @@ impl Replica {
             return Ok(());
         };
 
-        // Igual que en Leader: fire-and-forget al actor world, ahora vía `Database`.
+        // Fire-and-forget to the actor world via Database.
         db.send(DatabaseCmd::Execute {
             op_id,
             operation: op,
@@ -525,13 +530,14 @@ impl Replica {
         Ok(())
     }
 
-    /// - boots the ConnectionManager (TCP),
-    /// - boots the actor system wrapped in `Database` (Actix in a dedicated thread),
-    /// - starts the Station abstraction (which internally spawns the simulator with `pumps` pumps on stdin),
-    /// - seeds the cluster membership (self + leader),
-    /// - envía un Join inicial al líder,
-    /// - luego delega el loop principal a `run_node_runtime`, que maneja
-    ///   cambios de rol y reutiliza Connection/Database/Station por referencia.
+    /// Start a Replica node and run its main loop.
+    ///
+    /// Steps:
+    /// - Boot the actor-based Database (Actix in dedicated thread).
+    /// - Start the Station simulator.
+    /// - Start the network ConnectionManager.
+    /// - Seed membership with leader and send an initial Join to the leader.
+    /// - Enter the generic runtime `run_node_runtime`.
     pub async fn start(
         address: SocketAddr,
         leader_addr: SocketAddr,
@@ -539,16 +545,16 @@ impl Replica {
         max_conns: usize,
         pumps: usize,
     ) -> AppResult<()> {
-        // Start the actor-based "database" subsystem (ActorRouter + Actix system hidden inside).
+        // Start the actor-based "database" subsystem.
         let mut db = super::database::Database::start().await?;
 
-        // Start the reusable Station abstraction (stdin-based simulator runs inside it).
+        // Start the Station simulator.
         let mut station = Station::start(pumps).await?;
 
         // Start network connection.
         let mut connection = Connection::start(address, max_conns).await?;
 
-        // Seed membership: only leader at first.
+        // Seed membership with the leader.
         let id = get_id_given_addr(address);
 
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
@@ -570,7 +576,7 @@ impl Replica {
             election_start: None,
         };
 
-        // Join inicial contra el líder para que rebroadcastée el ClusterView.
+        // Send an initial Join to the leader to obtain ClusterView.
         let _ = connection
             .send(
                 Message::Join {
@@ -583,22 +589,5 @@ impl Replica {
         let runtime = NodeRuntime::Replica(replica);
         run_node_runtime(runtime, &mut connection, &mut db, &mut station).await
     }
-
-    /// Test helpers to access private fields.
-    #[cfg(test)]
-    pub fn test_get_id(&self) -> u64 {
-        self.id
-    }
-    #[cfg(test)]
-    pub fn test_get_leader_id(&self) -> u64 {
-        get_id_given_addr(self.leader_addr)
-    }
-    #[cfg(test)]
-    pub fn test_get_members(&self) -> HashMap<u64, SocketAddr> {
-        self.cluster.clone()
-    }
-    #[cfg(test)]
-    pub fn test_get_operations(&self) -> HashMap<u32, Operation> {
-        self.operations.clone()
-    }
 }
+ 

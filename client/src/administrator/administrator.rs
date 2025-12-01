@@ -1,3 +1,15 @@
+//! Administrator client utilities used to interact with a YPF Ruta node.
+//!
+//! This module provides an interactive administrator that:
+//! - binds to a local socket address,
+//! - maintains a Connection to a target node,
+//! - converts stdin-style commands into cluster Operations,
+//! - sends a request and waits for the correlated response.
+//!
+//! The administrator is intentionally simple: it performs one request at a time
+//! and ignores unrelated messages from the node (e.g., internal replication or
+//! membership events).
+
 use common::errors::{AppResult, LimitCheckError, LimitUpdateError, VerifyError};
 use common::operation::Operation;
 use common::operation_result::{AccountQueryResult, ChargeResult, LimitResult, OperationResult};
@@ -5,33 +17,51 @@ use common::{Connection, Message};
 
 use std::net::SocketAddr;
 
-/// High-level admin commands.
+/// High-level administrator commands.
 ///
-/// `account_id` is fixed by how you start the admin binary.
+/// `account_id` is fixed when the admin client is started and commands that
+/// target a different account will assert.
 #[derive(Debug, Clone)]
 pub enum AdminCommand {
+    /// Set or clear an account-wide limit.
+    ///
+    /// If `amount` is positive, the limit is set to `amount`.
+    /// If `amount` is zero or negative, the limit is cleared (no limit).
     LimitAccount {
         account_id: u64,
         amount: f32,
     },
+
+    /// Set or clear a per-card limit.
+    ///
+    /// If `amount` is positive, the card limit is set to `amount`.
+    /// If `amount` is zero or negative, the limit is cleared.
     LimitCard {
         account_id: u64,
         card_id: u64,
         amount: f32,
     },
+
+    /// Query account summary (total and per-card spending).
     AccountQuery {
         account_id: u64,
     },
+
+    /// Request a billing report for the account (optional period string).
     Bill {
         account_id: u64,
         period: Option<String>,
     },
 }
 
-/// Interactive administrator:
-/// - binds to `bind_addr`,
-/// - keeps a `Connection` alive,
-/// - each stdin command becomes an `Operation` sent to `target_node`.
+/// Interactive administrator client.
+///
+/// Behavior:
+/// - binds a local endpoint at `bind_addr`,
+/// - keeps a Connection alive,
+/// - maps each logical command to an `Operation` and sends it as a
+///   `Message::Request` to `target_node`,
+/// - waits (synchronously) for the matching `Message::Response`.
 pub struct Administrator {
     bind_addr: SocketAddr,
     target_node: SocketAddr,
@@ -41,7 +71,10 @@ pub struct Administrator {
 }
 
 impl Administrator {
-    /// Create the admin and open the `Connection` (same abstraction as node_client).
+    /// Create a new Administrator and open the underlying `Connection`.
+    ///
+    /// The `Connection` abstraction is the same used by node clients; the
+    /// admin uses it to send requests and receive responses.
     pub async fn new(
         bind_addr: SocketAddr,
         target_node: SocketAddr,
@@ -57,10 +90,12 @@ impl Administrator {
         })
     }
 
-    /// Execute a single command:
-    /// - build `Operation`,
-    /// - send it as `Message::Request`,
-    /// - wait for a matching `Message::Response`.
+    /// Execute a single admin command.
+    ///
+    /// Steps:
+    /// 1. Build the corresponding `Operation`.
+    /// 2. Send it as `Message::Request` to the target node.
+    /// 3. Wait for a `Message::Response` with the same `req_id`.
     pub async fn handle_command(&mut self, cmd: AdminCommand) -> AppResult<()> {
         let op = self.build_operation(cmd);
 
@@ -86,11 +121,11 @@ impl Administrator {
                     break;
                 }
                 Message::Response { req_id: other, .. } => {
-                    // Response for a different request id (unexpected for this simple admin).
+                    // Ignore responses for other request ids (not expected in this simple client).
                     eprintln!("[administrator] ignoring Response for unexpected req_id={other}");
                 }
                 other => {
-                    // The admin is not part of Raft / election / etc. Ignore all that.
+                    // The admin is not part of Raft/election; ignore unrelated messages.
                     eprintln!("[administrator] ignoring unexpected message from node: {other:?}");
                 }
             }
@@ -99,11 +134,13 @@ impl Administrator {
         Ok(())
     }
 
-    /// Map `AdminCommand` to the real `Operation` used by the cluster.
+    /// Map an `AdminCommand` to the cluster `Operation`.
+    ///
+    /// The admin enforces that commands only target the account it was started for.
     fn build_operation(&self, cmd: AdminCommand) -> Operation {
         match cmd {
             AdminCommand::LimitAccount { account_id, amount } => {
-                // Only allow touching the account id this admin was started with.
+                // Only allow modifying the configured admin account.
                 assert_eq!(
                     account_id, self.account_id,
                     "LimitAccount should only be used for the admin account_id"
@@ -138,7 +175,9 @@ impl Administrator {
         }
     }
 
-    /// Print a simple, stdout-friendly summary of the `OperationResult`.
+    /// Print a concise, human-friendly summary of an `OperationResult`.
+    ///
+    /// The output is intentionally compact and aimed at interactive use.
     fn handle_op_result(&self, op_result: OperationResult) {
         match op_result {
             OperationResult::Charge(res) => match res {
@@ -173,31 +212,32 @@ impl Administrator {
                 total_spent,
                 mut per_card_spent,
             }) => {
-                // Sort by card_id for a stable, easy-to-read output.
+                // Sort by card_id for stable, readable output.
                 per_card_spent.sort_by_key(|(card_id, _)| *card_id);
 
                 println!("ACCOUNT_QUERY: OK");
                 println!("  account_id={account_id}");
-                println!("  total_spent={:.2}", total_spent);
+                println!("  total_spent={total_spent:.2}");
 
                 if per_card_spent.is_empty() {
                     println!("  no per-card spending recorded");
                 } else {
                     for (card_id, spent) in per_card_spent {
-                        println!("  card_id={} spent={:.2}", card_id, spent);
+                        println!("  card_id={card_id} spent={spent:.2}");
                     }
                 }
             }
 
             _ => {
-                // no le puede venir op result de base de datos
+                // This branch should be unreachable: the admin should not receive
+                // low-level database operation results here.
                 panic!("[FATAL] Unknown operation result");
             }
         }
     }
 }
 
-/// Map a `VerifyError` to a short, human-readable message.
+/// Return a short human-readable description for a `VerifyError`.
 fn describe_verify_error(err: &VerifyError) -> &'static str {
     match err {
         VerifyError::ChargeLimit(LimitCheckError::CardLimitExceeded) => "card limit exceeded",

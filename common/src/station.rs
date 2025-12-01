@@ -1,19 +1,32 @@
+//! Station (pump) simulator and Station ↔ Node message types.
+//!
+//! This module provides a small station simulator that reads commands from
+//! stdin (one line per charge attempt), translates them into logical charge
+//! requests sent to a Node, and receives responses back from the Node.
+//!
+//! The `Station` abstraction exposes a simple async API:
+//! - `start(num_pumps)` spawns the simulator task,
+//! - `recv()` yields `StationToNodeMsg` messages produced by the simulator,
+//! - `send()` delivers `NodeToStationMsg` values back to the simulator.
+//!
+//! The simulator also supports simple control commands to switch the connected
+//! node into OFFLINE/ONLINE modes for testing offline behavior.
+
+use rand::Rng;
+use std::collections::HashMap;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use rand::Rng;
-use std::collections::HashMap;
 
 use crate::errors::{AppError, AppResult, VerifyError};
 
-/// Message sent from the Station (pumps) to the Node.
+/// Messages sent from the Station (pumps) to the Node.
 ///
-/// Same abstraction as before:
-/// - it only knows about the logical "charge" operation,
-/// - plus connect / disconnect commands.
+/// The station only knows about the logical "charge" operation plus control
+/// commands to change connection mode.
 #[derive(Debug)]
 pub enum StationToNodeMsg {
-    /// Charge request from a pump.
+    /// Charge request issued by a pump.
     ChargeRequest {
         account_id: u64,
         card_id: u64,
@@ -21,25 +34,25 @@ pub enum StationToNodeMsg {
         request_id: u32,
     },
 
-    /// Ask the node to switch to OFFLINE mode.
+    /// Request the node to switch into OFFLINE mode.
     DisconnectNode,
 
-    /// Ask the node to switch back to ONLINE mode.
+    /// Request the node to switch back into ONLINE mode.
     ConnectNode,
 }
 
-/// Message sent from the Node back to the Station.
+/// Messages sent from the Node back to the Station.
 #[derive(Debug)]
 pub enum NodeToStationMsg {
     /// Final result of a charge request.
     ChargeResult {
         request_id: u32,
         allowed: bool,
-        /// Optional error when `allowed == false`.
+        /// Optional verification error when `allowed == false`.
         error: Option<VerifyError>,
     },
 
-    /// Informational / debug messages from the node.
+    /// Informational / debug message from the node to the station operator.
     Debug(String),
 }
 
@@ -53,7 +66,7 @@ struct PumpRequest {
     request_id: u32,
 }
 
-/// Parsed user command (from stdin) before assigning `request_id`.
+/// Parsed user command (from stdin) before assigning a `request_id`.
 #[derive(Debug)]
 struct ParsedCommand {
     pump_id: usize,
@@ -64,24 +77,24 @@ struct ParsedCommand {
 
 /// High-level wrapper that encapsulates the station simulator.
 ///
-/// - Internally runs an async task that calls `run_station_simulator`.
+/// - Internally runs an asynchronous task that executes `run_station_simulator`.
 /// - Exposes only `start()`, `recv()` and `send()` to the outside.
 pub struct Station {
-    /// Messages coming from the station simulator to the node (the node calls `recv()`).
+    /// Messages produced by the simulator (consumed by the node).
     from_station_rx: mpsc::Receiver<StationToNodeMsg>,
-    /// Messages that the node sends back to the station (the node calls `send()`).
+    /// Channel used to send Node -> Station messages into the simulator task.
     to_station_tx: mpsc::Sender<NodeToStationMsg>,
-    /// Handle of the background task. It is kept alive while `Station` is in scope.
+    /// Handle of the background simulator task. Kept alive while `Station` exists.
     _task: JoinHandle<()>,
 }
 
 impl Station {
     /// Start the simulated station with `num_pumps` pumps.
     ///
-    /// Spawns a task that:
+    /// Spawns a background task that:
     /// - reads stdin,
-    /// - emits `StationToNodeMsg` for the node,
-    /// - consumes `NodeToStationMsg` coming from the node.
+    /// - emits `StationToNodeMsg` messages for the node to consume,
+    /// - receives `NodeToStationMsg` messages coming from the node.
     pub async fn start(num_pumps: usize) -> AppResult<Self> {
         // Channel Station -> Node (from simulator task to the caller).
         let (station_to_node_tx, station_to_node_rx) = mpsc::channel::<StationToNodeMsg>(128);
@@ -101,17 +114,17 @@ impl Station {
         })
     }
 
-    /// Receive a logical message from the station simulator.
+    /// Receive a logical message produced by the station simulator.
     ///
-    /// The node typically uses it inside a `select!`:
-    ///
+    /// The node typically awaits this inside a `tokio::select!` together with
+    /// other event sources.
     pub async fn recv(&mut self) -> Option<StationToNodeMsg> {
         self.from_station_rx.recv().await
     }
 
     /// Send a result or debug message to the station simulator.
     ///
-    /// If the channel is closed, returns `AppError::Channel`.
+    /// Returns an `AppError::Channel` if the simulator has already shut down.
     pub async fn send(&self, msg: NodeToStationMsg) -> AppResult<()> {
         self.to_station_tx
             .send(msg)
@@ -123,19 +136,19 @@ impl Station {
 }
 
 impl Drop for Station {
-    /// When `Station` goes out of scope, abort the background task.
+    /// Abort the background simulator task when `Station` is dropped.
     fn drop(&mut self) {
         self._task.abort();
     }
 }
 
-/// Main function of the station simulator.
+/// Core simulator loop.
 ///
 /// - Reads commands from stdin.
 /// - Sends `StationToNodeMsg` to the node.
 /// - Receives `NodeToStationMsg` from the node.
 ///
-/// It is private to the module: only used by the task created in `Station::start`.
+/// This function is private: it runs inside the task spawned by `Station::start`.
 async fn run_station_simulator(
     num_pumps: usize,
     to_node_tx: mpsc::Sender<StationToNodeMsg>,
@@ -151,7 +164,7 @@ async fn run_station_simulator(
         num_pumps,
         num_pumps - 1
     );
-    // print_help();
+    //print_help();
 
     let stdin = BufReader::new(io::stdin());
     let mut lines = stdin.lines();
@@ -159,7 +172,7 @@ async fn run_station_simulator(
     // For each pump: None = idle, Some(request_id) = busy.
     let mut in_flight_by_pump: Vec<Option<u32>> = vec![None; num_pumps];
 
-    // request_id -> PumpRequest
+    // Map request_id -> PumpRequest
     let mut requests: HashMap<u32, PumpRequest> = HashMap::new();
 
     loop {
@@ -387,18 +400,17 @@ fn handle_user_command(
         ));
     }
 
-        // Allocate a new random request_id (non-zero, not currently in use)
+    // Allocate a new random request_id (non-zero, not currently in use)
     let mut rng = rand::thread_rng();
     let request_id = loop {
         let candidate: u32 = rng.r#gen();
         if candidate != 0
             && !requests.contains_key(&candidate)
-            && !in_flight_by_pump.iter().any(|&slot| slot == Some(candidate))
+            && !in_flight_by_pump.contains(&Some(candidate))
         {
             break candidate;
         }
     };
-
 
     // Register the request.
     requests.insert(

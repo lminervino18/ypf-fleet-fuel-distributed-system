@@ -62,14 +62,10 @@ pub enum Operation {
     ///
     /// `addr` es la dirección del nodo que hizo el pedido, y vuelve dentro del
     /// snapshot para que el Node sepa a quién reenviar/usar.
-    GetDatabase {
-        addr: SocketAddr,
-    },
+    GetDatabase { addr: SocketAddr },
 
     /// Reemplazar la base de datos local usando un snapshot recibido previamente.
-    ReplaceDatabase {
-        snapshot: DatabaseSnapshot,
-    },
+    ReplaceDatabase { snapshot: DatabaseSnapshot },
 }
 
 /// Scope of a limit (card or account), useful for logging

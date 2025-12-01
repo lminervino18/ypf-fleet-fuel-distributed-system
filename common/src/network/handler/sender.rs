@@ -1,3 +1,16 @@
+//! Stream sender for peer TCP connections.
+//!
+//! The `StreamSender` owns the write half of a TCP stream and is responsible for:
+//! - serializing outgoing messages,
+//! - writing length-prefixed frames to the remote peer,
+//! - sending lightweight heartbeat request/reply frames.
+//!
+//! Frame format:
+//! - 2 bytes big-endian length (u16), followed by `len` bytes of payload.
+//!
+//! The sender returns `AppError::ChannelClosed` when the outbound channel is closed
+//! and `AppError::ConnectionLostWith { address }` when writes to the stream fail.
+
 use crate::{
     errors::{AppError, AppResult},
     network::serials::protocol::{HEARBEAT_REPLY, HEARTBEAT_REQUEST},
@@ -12,6 +25,8 @@ pub struct StreamSender<T> {
 }
 
 impl<T: Into<Vec<u8>>> StreamSender<T> {
+    /// Create a new `StreamSender` that reads outbound messages from `messages_rx`
+    /// and writes them to `stream`. `address` is used for error reporting.
     pub fn new(messages_rx: Receiver<T>, stream: OwnedWriteHalf, address: SocketAddr) -> Self {
         Self {
             messages_rx,
@@ -20,13 +35,20 @@ impl<T: Into<Vec<u8>>> StreamSender<T> {
         }
     }
 
+    /// Send a heartbeat request frame to the peer.
+    ///
+    /// The heartbeat frame is a single-byte payload identified by the
+    /// `HEARTBEAT_REQUEST` constant. The length prefix is written before the payload.
     pub async fn send_heartbeat_request(&mut self) -> AppResult<()> {
-        let len = size_of::<u8>() as u16; // u8 medio hardcoded pero es el len del hearbeat
+        let len = size_of::<u8>() as u16; // single-byte heartbeat payload length
         let mut len_bytes = len.to_be_bytes().to_vec();
         len_bytes.push(HEARTBEAT_REQUEST);
         self.write_all_bytes(&len_bytes).await
     }
 
+    /// Send a heartbeat reply frame to the peer.
+    ///
+    /// The reply uses the `HEARBEAT_REPLY` byte as the single-byte payload.
     pub async fn send_heartbeat_reply(&mut self) -> AppResult<()> {
         let len = size_of::<u8>() as u16;
         let mut len_bytes = len.to_be_bytes().to_vec();
@@ -34,11 +56,16 @@ impl<T: Into<Vec<u8>>> StreamSender<T> {
         self.write_all_bytes(&len_bytes).await
     }
 
+    /// Attempt to receive a single outbound message from the channel and write it.
+    ///
+    /// - If a message is available, serialize it into bytes, prefix with a 2-byte
+    ///   length and write to the TCP stream.
+    /// - If the channel is closed, return `AppError::ChannelClosed`.
     pub async fn send(&mut self) -> AppResult<()> {
         if let Some(msg) = self.messages_rx.recv().await {
-            // payload into bytes
+            // Convert payload into bytes.
             let bytes: Vec<u8> = msg.into();
-            // 2 bytes for the msg len (in bytes)
+            // 2 bytes for the message length (in bytes).
             let len: u16 = bytes.len() as u16;
             let mut len_bytes = len.to_be_bytes().to_vec();
             len_bytes.extend(bytes);
@@ -48,6 +75,9 @@ impl<T: Into<Vec<u8>>> StreamSender<T> {
         Err(AppError::ChannelClosed)
     }
 
+    /// Low-level write helper that writes all bytes to the underlying stream.
+    ///
+    /// Converts IO errors into `AppError::ConnectionLostWith { address }`.
     async fn write_all_bytes(&mut self, bytes: &[u8]) -> AppResult<()> {
         self.stream
             .write_all(bytes)
@@ -97,6 +127,4 @@ mod test {
         expected.extend(message);
         assert_eq!(buf, expected);
     }
-
-    
 }

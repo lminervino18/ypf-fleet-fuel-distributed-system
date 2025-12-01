@@ -1,9 +1,25 @@
+//! Stream receiver for peer TCP connections.
+//!
+//! This module provides `StreamReceiver`, a thin wrapper that reads framed
+//! messages from a peer TCP stream and forwards them to the connection layer
+//! via an mpsc channel. It recognizes lightweight heartbeat frames and
+//! classifies other frames as node messages to be deserialized by the caller.
+//!
+//! Responsibilities:
+//! - read a length-prefixed frame from the TCP stream,
+//! - detect heartbeat request/reply frames and report them as `MessageKind`,
+ //! - forward normal frames as serialized `T` on `messages_tx`.
+//!
+//! Errors are reported by sending an `AppError` through `messages_tx` so the
+//! owning connection can react (for example, by tearing down the peer).
+
 use super::handler::MessageKind::{self, *};
 use crate::errors::{AppError, AppResult};
 use crate::network::serials::protocol::{HEARBEAT_REPLY, HEARTBEAT_REQUEST};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::{io::AsyncReadExt, net::tcp::OwnedReadHalf, sync::mpsc::Sender};
+use std::mem::size_of;
 
 pub struct StreamReceiver<T> {
     messages_tx: Arc<Sender<AppResult<T>>>,
@@ -28,7 +44,10 @@ where
         }
     }
 
-    /// Writes `ConnectionClosedWith { addr }` in `messages_tx`
+    /// Send a `ConnectionLostWith { address }` error into `messages_tx`.
+    ///
+    /// This is used by the handler to notify the connection layer that the
+    /// peer stream has been lost.
     pub async fn write_connection_lost(&mut self) -> AppResult<()> {
         self.messages_tx
             .send(Err(AppError::ConnectionLostWith {
@@ -40,8 +59,17 @@ where
         Ok(())
     }
 
+    /// Read the next framed message from the stream and classify it.
+    ///
+    /// The frame format is:
+    /// - 2 bytes big-endian length (u16), followed by `len` bytes of payload.
+    ///
+    /// Returns:
+    /// - `Ok(HeartbeatRequest)` or `Ok(HeartbeatReply)` for heartbeat frames,
+    /// - `Ok(NodeMessage)` after sending the deserialized value via `messages_tx`.
+    /// - An error (`AppError`) if the stream is closed or deserialization fails.
     pub async fn recv(&mut self) -> AppResult<MessageKind> {
-        // two bytes for the len of the incoming msg
+        // Read two bytes for the length of the incoming message.
         let mut len_bytes = [0; size_of::<u16>()];
         self.stream
             .read_exact(&mut len_bytes)
@@ -50,7 +78,8 @@ where
                 address: self.address,
             })?;
         let len = u16::from_be_bytes(len_bytes) as usize;
-        // read to buffer with allocated expected size
+
+        // Read the expected number of bytes into a buffer.
         let mut bytes = vec![0; len];
         self.stream
             .read_exact(&mut bytes)
@@ -59,12 +88,14 @@ where
                 address: self.address,
             })?;
 
+        // Detect special heartbeat frames.
         match bytes[..] {
             [HEARTBEAT_REQUEST] => return Ok(HeartbeatRequest),
             [HEARBEAT_REPLY] => return Ok(HeartbeatReply),
-            _ => { /* flujo normal */ }
+            _ => { /* normal flow: forward payload for deserialization */ }
         }
 
+        // Attempt to deserialize and forward the message to the connection layer.
         self.messages_tx
             .send(Ok(bytes.try_into().map_err(Into::into)?))
             .await

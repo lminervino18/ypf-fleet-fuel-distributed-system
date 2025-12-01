@@ -1,3 +1,14 @@
+//! Deserialization helpers for database snapshots.
+//!
+//! This module implements `TryFrom` conversions from serialized byte payloads
+//! into the in-memory snapshot types used by the protocol:
+//! - `DatabaseSnapshot` (owned `Vec<u8>` -> `DatabaseSnapshot`)
+//! - `AccountSnapshot` (`&[u8]` -> `AccountSnapshot`)
+//! - `CardSnapshot` (`&[u8]` -> `CardSnapshot`)
+//!
+//! Frame layout and helper functions are provided by the `serials::helpers` and
+//! `serials::protocol` modules. Each `TryFrom` implementation reads fields in
+//! the defined order and advances a local pointer (`ptr`) over the payload.
 use super::{deserialize_socket_address_srl, helpers::deserialize_card_id};
 use crate::{
     AppError, AppResult,
@@ -13,6 +24,14 @@ use crate::{
     operation::{AccountSnapshot, CardSnapshot, DatabaseSnapshot},
 };
 
+/// Deserialize a `DatabaseSnapshot` from an owned byte vector.
+///
+/// The expected serialized layout is:
+/// - socket address (fixed length),
+/// - vector length for accounts,
+/// - sequence of account snapshots (each fixed-length),
+/// - vector length for cards,
+/// - sequence of card snapshots (each fixed-length).
 impl TryFrom<Vec<u8>> for DatabaseSnapshot {
     type Error = AppError;
 
@@ -46,6 +65,12 @@ impl TryFrom<Vec<u8>> for DatabaseSnapshot {
     }
 }
 
+/// Deserialize an `AccountSnapshot` from a byte slice.
+///
+/// Expected layout for an account snapshot:
+/// - account id (fixed length),
+/// - optional limit (serialized as AMOUNT_SRL_LEN),
+/// - consumed amount.
 impl TryFrom<&[u8]> for AccountSnapshot {
     type Error = AppError;
 
@@ -64,6 +89,13 @@ impl TryFrom<&[u8]> for AccountSnapshot {
     }
 }
 
+/// Deserialize a `CardSnapshot` from a byte slice.
+///
+/// Expected layout for a card snapshot:
+/// - account id (fixed length),
+/// - card id (fixed length),
+/// - optional limit (serialized as AMOUNT_SRL_LEN),
+/// - consumed amount.
 impl TryFrom<&[u8]> for CardSnapshot {
     type Error = AppError;
 
