@@ -92,19 +92,11 @@ impl Node for Replica {
         let lost_id = get_id_given_addr(lost_address);
 
         if self.cluster.contains_key(&lost_id) {
-            println!(
-                "[REPLICA {}] Peer {:?} is DOWN, removing from cluster",
-                self.id, lost_address
-            );
             self.cluster.retain(|_, &mut addr| addr != lost_address);
         }
 
         // Si era el líder, además disparo la elección
         if lost_address == self.leader_addr {
-            println!(
-                "[REPLICA {}] Lost connection with LEADER {:?}, starting election",
-                self.id, lost_address
-            );
             return self.start_election(connection).await;
         }
 
@@ -141,16 +133,10 @@ impl Node for Replica {
 
     async fn anounce_coordinator(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         // Broadcast de Coordinator a todo el cluster
-        println!("mi cluster is {:?}", self.cluster);
         for (node, addr) in &self.cluster {
             if *node == self.id {
                 continue; // Skip announcing to ourselves
             }
-
-            println!(
-                "[REPLICA {}] -> sending Coordinator to {:?} (id={})",
-                self.id, addr, node
-            );
 
             if let Err(e) = connection
                 .send(
@@ -179,27 +165,13 @@ impl Node for Replica {
     /// - si NO hay IDs mayores, me proclamo líder directo.
     async fn start_election(&mut self, connection: &mut Connection) -> AppResult<RoleChange> {
         if self.election_in_progress {
-            println!(
-                "[REPLICA {}] start_election called but election already in progress",
-                self.id
-            );
             return Ok(RoleChange::None);
         }
-
-        println!(
-            "[REPLICA {}] Starting election, checking for higher-ID nodes...",
-            self.id
-        );
-
         let mut sent_any = false;
 
         for (&node_id, replica_addr) in &self.cluster {
             if node_id > self.id {
                 sent_any = true;
-                println!(
-                    "[REPLICA {}] -> sending Election to {:?} (id={})",
-                    self.id, replica_addr, node_id
-                );
                 if let Err(e) = connection
                     .send(
                         Message::Election {
@@ -225,10 +197,6 @@ impl Node for Replica {
             Ok(RoleChange::None)
         } else {
             // No hay ningún nodo con ID mayor → soy el más grande → líder YA
-            println!(
-                "[REPLICA {}] No higher-ID nodes found. I am the highest → announcing myself as COORDINATOR",
-                self.id
-            );
             self.election_in_progress = false;
             self.election_start = None;
 
@@ -258,10 +226,6 @@ impl Node for Replica {
 
         // Igual que antes: cuando termina la operación "normal" en la réplica,
         // mandamos un Ack al líder.
-        println!(
-            "[REPLICA {}] Operation {} committed, sending Ack to leader at {}",
-            self.id, op_id, self.leader_addr
-        );
         connection
             .send(Message::Ack { op_id: op_id + 1 }, &self.leader_addr)
             .await
@@ -348,7 +312,6 @@ impl Node for Replica {
         self.operations.insert(op_id, new_op);
 
         if op_id == 1 {
-            println!("Es la primera operacion! mando ack instantaeamntee");
             return connection
                 .send(Message::Ack { op_id: 1 }, &self.leader_addr)
                 .await;
@@ -370,11 +333,6 @@ impl Node for Replica {
         candidate_addr: SocketAddr,
     ) -> AppResult<RoleChange> {
         if self.id > candidate_id {
-            println!(
-                "[REPLICA {}] Received Election from {}. Replying ElectionOk and starting own election",
-                self.id,
-                get_id_given_addr(candidate_addr)
-            );
             if let Err(e) = connection
                 .send(
                     Message::ElectionOk {
@@ -393,20 +351,12 @@ impl Node for Replica {
             // Yo soy más grande, así que también inicio mi propia elección
             self.start_election(connection).await
         } else {
-            println!(
-                "[REPLICA {}] Received Election from {}, not replying (candidate has >= ID)",
-                self.id,
-                get_id_given_addr(candidate_addr)
-            );
             Ok(RoleChange::None)
         }
     }
 
-    async fn handle_election_ok(&mut self, _connection: &mut Connection, responder_id: u64) {
-        println!(
-            "[REPLICA {}] Received ElectionOk from {}. Waiting for Coordinator...",
-            self.id, responder_id
-        );
+    async fn handle_election_ok(&mut self, _connection: &mut Connection, _responder_id: u64) {
+      
         // Si alguien más grande respondió, ya no me auto-proclamo líder por timeout.
         self.election_in_progress = false;
         self.election_start = None;
@@ -424,21 +374,12 @@ impl Node for Replica {
 
         // Check if we should promote to leader
         if leader_id == self.id {
-            println!(
-                "[REPLICA {}] Election complete: I AM THE LEADER promoting to LEADER",
-                self.id
-            );
             return Ok(RoleChange::PromoteToLeader);
         }
 
         if leader_id < self.id {
             panic!("leader_id should not be less than self");
         }
-
-        println!(
-            "[REPLICA {}] Election complete: new LEADER is {} at {}",
-            self.id, leader_id, leader_addr
-        );
 
         // Update our local "current leader" pointer
         self.leader_addr = leader_addr;
@@ -451,10 +392,6 @@ impl Node for Replica {
         _database: &mut Database,
         addr: SocketAddr,
     ) -> AppResult<()> {
-        println!(
-            "[REPLICA] me llegó join de {}, lo reenvío al líder {}",
-            addr, self.leader_addr
-        );
         connection
             .send(Message::Join { addr }, &self.leader_addr)
             .await
@@ -466,12 +403,6 @@ impl Node for Replica {
         new_member: (u64, SocketAddr),
     ) {
         self.cluster.insert(new_member.0, new_member.1);
-        println!("[REPLICA] handle cluster update: {new_member:?}");
-        println!(
-            "[REPLICA] ============ current members {:?}: {:?}",
-            self.cluster.len(),
-            self.cluster
-        );
     }
 
     async fn handle_cluster_view(
@@ -482,14 +413,6 @@ impl Node for Replica {
         leader_addr: SocketAddr,
         snapshot: DatabaseSnapshot,
     ) -> AppResult<()> {
-
-        println!(
-            "[REPLICA {}] Received ClusterView with {} members and leader at {} and DatabaseSnapshot {:?}",
-            self.id,
-            members.len(),
-            leader_addr,
-            snapshot
-        );
 
         database.send(DatabaseCmd::Execute {
             op_id: 0,
@@ -506,16 +429,7 @@ impl Node for Replica {
 
         self.leader_addr = leader_addr;
 
-        println!(
-            "[REPLICA {}] Cluster Update, Cluster Members: {:?} and Leader: {:?}",
-            self.id, self.cluster, leader_addr
-        );
-        
         if get_id_given_addr(leader_addr) > self.id {
-            println!(
-                "[REPLICA {}] New node with higher ID ({}) joined. Starting election.",
-                self.id, leader_addr
-            );
             self.start_election(connection).await?;
         }
 
@@ -540,10 +454,6 @@ impl Node for Replica {
 
         // Si pasaron más de 2 segundos sin ElectionOk → me proclamo líder
         if start.elapsed() >= Duration::from_secs(2) {
-            println!(
-                "[REPLICA {}] Election timeout exceeded. No ElectionOk received → announcing myself as COORDINATOR",
-                self.id
-            );
             self.election_in_progress = false;
             self.election_start = None;
 
@@ -641,10 +551,6 @@ impl Replica {
         // Seed membership: only leader at first.
         let id = get_id_given_addr(address);
 
-        println!(
-            "[REPLICA {}] Started at {}, leader at {}",
-            id, address, leader_addr
-        );
         let mut members: HashMap<u64, SocketAddr> = HashMap::new();
 
         let leader_id = get_id_given_addr(leader_addr);

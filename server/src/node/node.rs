@@ -19,6 +19,7 @@ pub enum RoleChange {
 }
 
 pub trait Node {
+    #[allow(dead_code)]
     async fn get_status(&self) -> String;
 
     // messages from connection
@@ -300,7 +301,6 @@ pub trait Node {
                 let rc = self
                     .handle_coordinator(connection, leader_id, leader_addr)
                     .await?;
-                println!("{}", self.get_status().await);
                 rc
             }
             Message::Join { addr } => {
@@ -335,26 +335,7 @@ pub trait Node {
         Ok(role_change)
     }
 
-    async fn handle_run_result(
-        &mut self,
-        connection: &mut Connection,
-        result: AppResult<RoleChange>,
-    ) -> AppResult<RoleChange> {
-        match result {
-            Ok(_) => Ok(RoleChange::None), // ok está handleado en el loop
-            Err(AppError::ConnectionLostWith { address }) => {
-                let role_change = self
-                    .handle_connection_lost_with(connection, address)
-                    .await?;
-                match role_change {
-                    RoleChange::None => Ok(RoleChange::None),
-                    RoleChange::PromoteToLeader => Ok(role_change),
-                    RoleChange::DemoteToReplica { .. } => Ok(role_change),
-                }
-            }
-            Err(e) => Err(e)?,
-        }
-    }
+   
 
     /// Hook de timeout de elección (por defecto, no hace nada).
     async fn handle_election_timeout(
@@ -482,7 +463,6 @@ pub async fn run_node_runtime(
             RoleChange::PromoteToLeader => {
                 node = match node {
                     NodeRuntime::Replica(replica) => {
-                        println!("[RUNTIME] Promoting Replica to Leader");
                         NodeRuntime::Leader(replica.into_leader())
                     }
                     NodeRuntime::Leader(leader) => {
@@ -494,17 +474,10 @@ pub async fn run_node_runtime(
             RoleChange::DemoteToReplica { new_leader_addr } => {
                 node = match node {
                     NodeRuntime::Leader(leader) => {
-                        println!(
-                            "[RUNTIME] Demoting Leader to Replica with new leader at {}",
-                            new_leader_addr
-                        );
                         NodeRuntime::Replica(leader.into_replica(new_leader_addr))
                     }
                     NodeRuntime::Replica(replica) => {
                         // No debería pasar, pero por si acaso dejamos la réplica como está.
-                        println!(
-                            "[RUNTIME] DemoteToReplica received while already Replica; ignoring"
-                        );
                         NodeRuntime::Replica(replica)
                     }
                 };

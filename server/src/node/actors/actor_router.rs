@@ -11,7 +11,6 @@ use super::account::AccountActor;
 use super::card::CardActor;
 use common::operation::{Operation, AccountSnapshot, CardSnapshot, DatabaseSnapshot};
 use common::operation_result::{AccountQueryResult, ChargeResult, LimitResult, OperationResult};
-use crate::errors::VerifyError;
 
 /// Router actor that owns and routes to AccountActor and CardActor instances.
 ///

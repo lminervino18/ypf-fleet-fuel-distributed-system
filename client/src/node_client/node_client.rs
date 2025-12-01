@@ -312,7 +312,7 @@ impl NodeClient {
                     sent = true;
                     break;
                 }
-                Err(e) => {
+                Err(_) => {
                     // eprintln!(
                     //     "[node_client] failed to send request_id={request_id} to {target}: {e:?}"
                     // );

@@ -141,7 +141,7 @@ impl Handler {
                 match result {
                     Ok(()) => {}
                     Err(AppError::ChannelClosed) => break,
-                    Err(AppError::ConnectionLostWith { address }) => {
+                    Err(AppError::ConnectionLostWith { address: _ }) => {
                         receiver.write_connection_lost().await?;
                         break;
                         // return Err(AppError::ConnectionLostWith { address });
@@ -261,6 +261,4 @@ mod test {
         handle1.await.unwrap();
     }
 
-    // #[tokio::test]
-    async fn tesst_send_result_in_connection_lost_with_if_peer_is_down() {}
 }

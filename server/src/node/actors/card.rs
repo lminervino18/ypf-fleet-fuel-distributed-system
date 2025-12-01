@@ -93,31 +93,7 @@ impl CardActor {
             Some(_) => Err(LimitUpdateError::BelowCurrentUsage),
         }
     }
-
-    // ==== Helpers sólo para tests ====
-    #[cfg(test)]
-    pub(crate) fn test_check_charge_limit(&self, amount: f32) -> Result<(), LimitCheckError> {
-        self.check_charge_limit(amount)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_can_set_new_limit(
-        &self,
-        new_limit: Option<f32>,
-    ) -> Result<(), LimitUpdateError> {
-        self.can_set_new_limit(new_limit)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_set_consumed(&mut self, consumed: f32) {
-        self.consumed = consumed;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_consumed(&self) -> f32 {
-        self.consumed
-    }
-
+    
     /// Start processing the current task, if any.
     fn start_current_task(&mut self, ctx: &mut Context<Self>) {
         let task = match self.current_task {

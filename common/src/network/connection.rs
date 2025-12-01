@@ -230,9 +230,4 @@ mod test {
         );
     }
 
-    // cómo sabés que se te cayó a vos la conexión? ...
-    // #[tokio::test]
-    async fn test05_send_and_recv_result_in_connection_lost_if_all_peers_are_down() {
-        // TODO
-    }
 }

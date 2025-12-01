@@ -136,6 +136,7 @@ pub enum CardMsg {
         new_consumed: f32,
     },
 
+    #[allow(dead_code)]
     /// Generic debug / diagnostic for the card.
     Debug(String),
 }

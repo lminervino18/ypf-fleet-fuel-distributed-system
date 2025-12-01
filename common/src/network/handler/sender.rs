@@ -98,36 +98,5 @@ mod test {
         assert_eq!(buf, expected);
     }
 
-    // #[tokio::test]
-    // TODO: para detectar conexiones caídas me parece que vamos a necesitar un *hearbeat*, la idea
-    // sería mandar cada tanto (creo que no es trivial cuándo ni de dónde, o sea si desde nodo,
-    // desde handler o si desde los mismos sender y recvr) un echo request y bloquearse (o sea
-    // ceder el runtime) hasta obtener un echo reply. Este test falla, por más que se dropee la
-    // conexión, no tenemos forma de saberlo desde el otro lado del socket
-    async fn test_sending_to_a_closed_stream_returns_connection_closed() {
-        let peer_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12349);
-        let peer = task::spawn(async move {
-            let (stream, _) = TcpListener::bind(peer_address)
-                .await
-                .unwrap()
-                .accept()
-                .await
-                .unwrap();
-            drop(stream);
-        });
-
-        tokio::time::sleep(Duration::from_secs(1)).await; // wait for listener
-        let (_, sender_skt) = TcpStream::connect(peer_address).await.unwrap().into_split();
-        let (messages_tx, messages_rx) = mpsc::channel(1);
-        let mut sender = StreamSender::new(messages_rx, sender_skt, peer_address);
-        peer.await.unwrap(); // close the conn on the other side
-        messages_tx.send([1, 2, 3, 4, 5]).await.unwrap();
-        let result = sender.send().await.unwrap_err();
-        assert_eq!(
-            result,
-            AppError::ConnectionLostWith {
-                address: peer_address
-            }
-        );
-    }
+    
 }
