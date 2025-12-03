@@ -1,128 +1,128 @@
-# YPF Fleet Fuel Distributed System
+# YPF Ruta
+Statement available at [this link](https://concurrentes-fiuba.github.io/2025_2C_tp2.html) or its local copy at [docs/enunciado_tp2](docs/enunciado_tp2.pdf).
 
-## Description
-Distributed system for managing fleet fuel consumption across multiple YPF service stations. Implements a microservices architecture with centralized coordination for handling fuel transactions, fleet management, and consumption analytics.
+## Members
+- **Team name**: `:(){ :|:& };:`
+- **Reviewer**: Darius Maitia
 
-## Architecture
+| Name                | Student ID |
+|---------------------|------------|
+| [Alejo Ordonez](https://github.com/alejoordonez02) | 108397 |
+| [Francisco Pereyra](https://github.com/fapereyra) | 105666 |
+| [Lorenzo Minervino](https://github.com/lminervino18) | 107863 |
+| [Alejandro Paff](https://github.com/AlePaff) | 103376 |
 
-### Components
-- **Central Coordinator**: Manages distributed transactions and coordinates between microservices
-- **Service Station Microservice**: Handles fuel transactions at individual stations
-- **Fleet Management Microservice**: Manages vehicle and fleet information
-- **Admin Panel**: Web interface for monitoring and administration
 
-### Technologies
-- Node.js + Express
-- MongoDB
-- React (Admin Panel)
-- REST APIs
-- Message queuing for async communication
+## Start project
 
-## Installation
+Run the following command in the terminal to automatically start the server side (leader + replicas + simulated stations):
 
-### Prerequisites
-- Node.js (v14 or higher)
-- MongoDB
-- npm or yarn
-
-### Setup
-
-1. Clone the repository
 ```bash
-git clone [repository-url]
-cd ypf-fleet-fuel-distributed-system
+./scripts/launch.sh <N_replicas> <M_stations>
 ```
 
-2. Install dependencies for each component
+> `<N_replicas>` = number of cluster replicas  
+> `<M_stations>` = number of node_client (stations) to start  
+
+---
+
+### Distributed server (`server`)
+
+If you want to launch the nodes manually (without script), use the `server` binary with `clap`:
+
 ```bash
-# Central Coordinator
-cd coordinator
-npm install
+# Leader
+cargo run --bin server -- \
+  --address 127.0.0.1:5000 \
+  --coords -31.4 -64.2 \
+  --pumps 4 \
+  leader --max-conns 32
 
-# Service Station Microservice
-cd ../microservices/service-station
-npm install
-
-# Fleet Management Microservice
-cd ../fleet-management
-npm install
-
-# Admin Panel
-cd ../../admin-panel
-npm install
+# Replica (pointing to the leader)
+cargo run --bin server -- \
+  --address 127.0.0.1:5001 \
+  --coords -34.6 -58.4 \
+  --pumps 4 \
+  replica --leader-addr 127.0.0.1:5000 --max-conns 32
 ```
 
-3. Configure environment variables
-Create `.env` files in each component following the `.env.example` templates
+Main parameters:
 
-4. Start MongoDB
+- `--address <IP:PORT>`: address where the node listens.  
+- `--coords <LAT> <LON>`: geographic coordinates of the node (for the map).  
+- `--pumps <N>`: number of pumps simulated by the internal station.  
+- Subcommands:
+  - `leader --max-conns <N>`: starts a leader node.
+  - `replica --leader-addr <IP:PORT> --max-conns <N>`: starts a replica connected to the leader.
+  - `station { ... }`: dedicated station mode (not yet implemented, `todo!`).
+
+> Both the **leader** and each **replica** internally start a station simulator (`Station::start(pumps)`) that reads **stdin** and allows you to trigger loads from the terminal (see section *Station simulator by stdin*).
+
+---
+
+### Station / client node (`node_client`)
+
+The `node_client` is a thin client that simulates the pumps of a station and forwards operations to the cluster:
+
 ```bash
-mongod
+# General usage
+node_client <bind_addr> <max_connections> <num_pumps> <known_node_1> [<known_node_2> ...]
+
+# Example
+cargo run --bin node_client -- \
+  127.0.0.1:6000 \
+  128 \
+  5 \
+  127.0.0.1:5000 127.0.0.1:5001
 ```
 
-5. Start services
-```bash
-# In separate terminals:
+Where:
 
-# Central Coordinator
-cd coordinator && npm start
+- `<bind_addr>`: IP:PORT where the `node_client` listens.
+- `<max_connections>`: maximum accepted connections.
+- `<num_pumps>`: number of pumps simulated.
+- `<known_node_*>`: one or more cluster nodes (leader and/or replicas) to which it sends operations.
 
-# Service Station Microservice
-cd microservices/service-station && npm start
+> Like the server, the `node_client` internally creates a `Station::start(num_pumps)` that uses **stdin** to simulate pump loads.
 
-# Fleet Management Microservice
-cd microservices/fleet-management && npm start
+---
 
-# Admin Panel
-cd admin-panel && npm start
-```
+### Station simulator by stdin (server and node_client)
 
-## Usage
-
-### API Endpoints
-
-#### Central Coordinator
-- `POST /api/transaction` - Create new fuel transaction
-- `GET /api/transaction/:id` - Query transaction status
-
-#### Service Station
-- `POST /api/fuel-supply` - Register fuel supply
-- `GET /api/stations` - List available stations
-
-#### Fleet Management
-- `GET /api/fleets` - List fleets
-- `GET /api/vehicles/:id` - Query vehicle information
-- `POST /api/vehicles` - Register new vehicle
-
-## Testing
-```bash
-npm test
-```
-
-## Contributing
-Contributions are welcome. Please open an issue first to discuss proposed changes.
-
-## License
-[Specify license]
-Ejemplos:
+Both the `server` binary (leader / replica) and the `node_client` binary share the same station simulator.  
+Each process that starts a `Station` shows a prompt like:
 
 ```text
-0 100 10 50.0     # surtidor 0, cuenta 100, tarjeta 10, monto 50.0
-1 200 20 125.5    # surtidor 1, cuenta 200, tarjeta 20, monto 125.5
+[Station] Starting station simulator with N pumps (ids: 0..=N-1)
+=== Station / pump simulator commands ===
+...
 ```
 
-- `pump_id`: índice del surtidor (0..=N-1).  
-- `account_id`: id de cuenta a debitar.  
-- `card_id`: id de tarjeta dentro de esa cuenta.  
-- `amount`: monto a consumir.
+From **stdin** you can send commands with the following format:
 
-Cuando se envía una línea válida:
+```text
+<pump_id> <account_id> <card_id> <amount>
+```
 
-- El simulador genera un `request_id` único.
-- Marca el `pump_id` como **ocupado** hasta recibir la respuesta.
-- Envía un `StationToNodeMsg::ChargeRequest` al nodo (server o node_client).
+Examples:
 
-Las respuestas del nodo llegan como `NodeToStationMsg::ChargeResult` y se muestran así:
+```text
+0 100 10 50.0     # pump 0, account 100, card 10, amount 50.0
+1 200 20 125.5    # pump 1, account 200, card 20, amount 125.5
+```
+
+- `pump_id`: pump index (0..=N-1).  
+- `account_id`: account id to debit.  
+- `card_id`: card id within that account.  
+- `amount`: amount to consume.
+
+When a valid line is sent:
+
+- The simulator generates a unique `request_id`.
+- Marks the `pump_id` as **busy** until it receives the response.
+- Sends a `StationToNodeMsg::ChargeRequest` to the node (server or node_client).
+
+Node responses arrive as `NodeToStationMsg::ChargeResult` and are displayed as:
 
 ```text
 [Station][RESULT] pump=0 -> CHARGE OK (request_id=123, account=100, card=10, amount=50)
@@ -131,9 +131,9 @@ Las respuestas del nodo llegan como `NodeToStationMsg::ChargeResult` y se muestr
 
 ---
 
-#### Comandos especiales del simulador
+#### Special simulator commands
 
-Además de las líneas de carga, el simulador entiende los siguientes comandos de texto plano:
+In addition to load lines, the simulator understands the following plain text commands:
 
 ```text
 help
@@ -144,35 +144,35 @@ connect
 ```
 
 - `help`  
-  Muestra la ayuda del simulador (formato de comandos y ejemplos).
+  Shows simulator help (command format and examples).
 
 - `quit` / `exit`  
-  Detiene el simulador de estación de ese proceso:
-  - Se imprime: `[Station] Received 'quit', shutting down simulator.`
-  - El proceso principal sigue corriendo, pero ya no se leen más comandos de stdin para esa estación.
+  Stops the station simulator of that process:
+  - Prints: `[Station] Received 'quit', shutting down simulator.`
+  - The main process continues running, but no more stdin commands are read for that station.
 
 - `disconnect`  
-  Envía `StationToNodeMsg::DisconnectNode` al nodo:
-  - Pide al nodo pasar a **modo OFFLINE** (según la lógica interna del nodo).
-  - Útil para probar colas de operaciones y reconexión.
+  Sends `StationToNodeMsg::DisconnectNode` to the node:
+  - Asks the node to switch to **OFFLINE** mode (according to the node's internal logic).
+  - Useful for testing operation queues and reconnection.
 
 - `connect`  
-  Envía `StationToNodeMsg::ConnectNode` al nodo:
-  - Pide al nodo volver a **modo ONLINE**.
-  - Útil para probar cómo se vacía la cola de operaciones pendientes.
+  Sends `StationToNodeMsg::ConnectNode` to the node:
+  - Asks the node to return to **ONLINE** mode.
+  - Useful for testing how the pending operation queue is emptied.
 
 ---
 
-### Administrador de cuentas interactivo (`administrator`)
+### Interactive account administrator (`administrator`)
 
-El administrador se conecta a un nodo del cluster para consultar y modificar límites de cuenta/tarjeta.  
-Es **interactivo por stdin** (un pequeño REPL con comandos de texto).
+The administrator connects to a cluster node to query and modify account/card limits.  
+It is **interactive via stdin** (a small REPL with text commands).
 
 ```bash
-# Uso general
+# General usage
 administrator <bind_addr> <target_node_addr> <account_id>
 
-# Ejemplos
+# Examples
 cargo run --bin administrator -- \
   127.0.0.1:9000 \
   127.0.0.1:5000 \
@@ -184,11 +184,11 @@ cargo run --bin administrator -- \
   200
 ```
 
-- `<bind_addr>`: dirección local desde la que se conecta el administrador.
-- `<target_node_addr>`: nodo del cluster al que se le envían las solicitudes (típicamente el líder).
-- `<account_id>`: cuenta fija sobre la que va a operar esta instancia del administrador.
+- `<bind_addr>`: local address from which the administrator connects.
+- `<target_node_addr>`: cluster node to which requests are sent (typically the leader).
+- `<account_id>`: fixed account on which this administrator instance will operate.
 
-Una vez levantado, aparece el prompt:
+Once started, the prompt appears:
 
 ```text
 Interactive administrator is ready.
@@ -196,30 +196,30 @@ Type 'help' to see commands, 'exit' to quit.
 admin>
 ```
 
-Comandos disponibles dentro del administrador:
+Available commands within the administrator:
 
 - `help`  
-  Muestra la lista de comandos.
+  Shows the list of commands.
 
 - `exit` / `quit`  
-  Cierra el administrador.
+  Closes the administrator.
 
 - `limit-account <amount>`  
-  Actualiza el límite de la cuenta fija (`account_id` con la que se levantó el proceso).  
-  - `amount > 0` → establece ese límite.  
-  - `amount <= 0` → elimina el límite (lo deja en `None`).
+  Updates the limit of the fixed account (`account_id` with which the process was started).  
+  - `amount > 0` → sets that limit.  
+  - `amount <= 0` → removes the limit (sets it to `None`).
 
 - `limit-card <card_id> <amount>`  
-  Actualiza el límite de una tarjeta específica de la cuenta.
+  Updates the limit of a specific card of the account.
 
 - `account-query`  
-  Consulta el estado de la cuenta (saldos, consumos por tarjeta, etc.).
+  Queries the account status (balances, consumption per card, etc.).
 
 - `bill`  
 - `bill 2025-10`  
-  Dispara la facturación de la cuenta, opcionalmente filtrando por periodo `YYYY-MM`.  
+  Triggers account billing, optionally filtering by period `YYYY-MM`.  
 
-Ejemplos de sesión:
+Session examples:
 
 ```text
 admin> limit-account 1000.0
@@ -233,381 +233,363 @@ admin> exit
 
 
 
-## Informe
-El informe que se presenta a continuación está disponible en formato PDF $\LaTeX{}$ en [docs/informe.pdf](docs/informe/informe.pdf).
+## Report
+The report presented below is available in PDF $\LaTeX{}$ format at [docs/informe.pdf](docs/informe/informe.pdf).
 
-# Introducción
+# Introduction
 
-En este trabajo se presenta **YPF Ruta**, un sistema distribuido que permite a las empresas
-centralizar el pago y el control del gasto de combustible de su flota de vehículos.
+This work presents **YPF Ruta**, a distributed system that allows companies
+to centralize payment and control of fuel expenses for their vehicle fleet.
 
-Cada empresa dispone de una cuenta principal y de tarjetas asociadas a los distintos conductores.
-Cuando un vehículo necesita cargar combustible en cualquiera de las más de 1600 estaciones
-distribuidas en el país, el conductor utiliza su tarjeta para autorizar la operación. El sistema
-registra cada consumo y, posteriormente, factura a la empresa el monto total acumulado en todas
-sus tarjetas durante el período de facturación.
+Each company has a main account and cards associated with different drivers.
+When a vehicle needs to refuel at any of the more than 1600 stations
+distributed throughout the country, the driver uses their card to authorize the operation. The system
+records each consumption and, later, bills the company the total amount accumulated on all
+its cards during the billing period.
 
-# Panorama general del sistema
+# General overview of the system
 
-En esta sección se describe, a grandes rasgos, cómo se organiza **YPF Ruta**: qué actores
-intervienen, cómo se conectan entre sí y qué problemas busca resolver el sistema a nivel de
-negocio y de infraestructura distribuida.
+This section broadly describes how **YPF Ruta** is organized: which actors
+are involved, how they connect to each other, and what problems the system seeks to solve at the
+business and distributed infrastructure level.
 
-## Contexto de uso
+## Usage context
 
-YPF Ruta modela un escenario en el que empresas con flotas de vehículos cargan combustible en una
-red amplia de estaciones de servicio. Cada conductor utiliza una tarjeta asociada a la cuenta de
-su empresa para autorizar la carga, mientras que el sistema central:
+YPF Ruta models a scenario in which companies with vehicle fleets refuel at a
+wide network of service stations. Each driver uses a card associated with their company's account to authorize the load, while the central system:
 
-- valida los límites de consumo de la tarjeta y de la cuenta,
-- registra cada operación de cobro,
-- permite consultas de consumo y facturación posterior.
+- validates the consumption limits of the card and the account,
+- records each charging operation,
+- allows consumption queries and subsequent billing.
 
-Desde el punto de vista técnico, el sistema asume un entorno distribuido con múltiples nodos
-comunicados por red, posibles fallas de nodos, desconexiones temporales y estaciones que pueden
-funcionar momentáneamente sin conectividad directa al clúster de consenso.
+From a technical point of view, the system assumes a distributed environment with multiple nodes
+communicated over the network, possible node failures, temporary disconnections, and stations that can
+temporarily operate without direct connectivity to the consensus cluster.
 
-## Objetivos y alcance del sistema
+## System objectives and scope
 
-El objetivo principal de YPF Ruta es proporcionar una infraestructura distribuida que permita:
+The main objective of YPF Ruta is to provide a distributed infrastructure that allows:
 
-- Centralizar el control del gasto de combustible de una flota mediante cuentas y tarjetas.
-- Replicar el estado de cuentas y tarjetas entre varios nodos (líder y réplicas) manteniendo
-  consistencia mediante un log replicado.
-- Tolerar la caída del líder mediante una elección automática de nuevo líder (algoritmo Bully).
-- Soportar políticas de cobro en escenarios de desconexión (modo OFFLINE) y reconciliar los
-  consumos una vez recuperada la conectividad.
-- Ofrecer una interfaz de administración (CLI) para limitar cuentas y tarjetas, consultar
-  consumos y disparar procesos de facturación.
+- Centralize fuel expense control for a fleet through accounts and cards.
+- Replicate the state of accounts and cards among several nodes (leader and replicas) maintaining
+  consistency through a replicated log.
+- Tolerate leader failure through automatic election of a new leader (Bully algorithm).
+- Support charging policies in disconnection scenarios (OFFLINE mode) and reconcile
+  consumption once connectivity is restored.
+- Offer an administration interface (CLI) to limit accounts and cards, query
+  consumption, and trigger billing processes.
 
-El sistema se implementa como un prototipo académico: el almacenamiento es en memoria, la lógica
-de negocio se modela mediante actores y la comunicación entre nodos se realiza sobre TCP con un
-protocolo de aplicación propio.
+The system is implemented as an academic prototype: storage is in memory, business logic is modeled through actors, and communication between nodes is done over TCP with a custom application protocol.
 
 
-# Server distribuido
+# Distributed server
 
-En esta sección se describe la arquitectura interna del servidor de **YPF Ruta** como sistema
-distribuido. El foco está en el clúster de consenso (líder y réplicas), en el flujo de las
-operaciones de negocio y en cómo se mantiene un estado consistente entre nodos a través de un log
-replicado.
+This section describes the internal architecture of the **YPF Ruta** server as a distributed system. The focus is on the consensus cluster (leader and replicas), the flow of business operations, and how consistent state is maintained between nodes through a replicated log.
 
-## Clúster de consenso (líder y réplicas)
+## Consensus cluster (leader and replicas)
 
-El servidor está organizado alrededor de un *clúster de consenso* formado por un nodo **líder** y
-uno o más nodos **réplica**. Todos ellos mantienen una copia lógica del mismo estado de negocio:
-cuentas, tarjetas, límites y consumos. Ese estado residente en memoria se implementa mediante un
-modelo de actores (ActorRouter, AccountActor, CardActor), aislando la lógica de negocio de la
-lógica de comunicación distribuida.
+The server is organized around a *consensus cluster* formed by a **leader** node and
+one or more **replica** nodes. All of them maintain a logical copy of the same business state:
+accounts, cards, limits, and consumption. That in-memory state is implemented through an
+actor model (ActorRouter, AccountActor, CardActor), isolating business logic from
+distributed communication logic.
 
-Desde el punto de vista del clúster:
+From the cluster's point of view:
 
-- El **líder** es el único nodo que decide el *orden global* de las operaciones y coordina el
-  commit. Cada vez que recibe una nueva operación (por ejemplo, un `Charge` generado por una
-  estación o un `LimitAccount` solicitado por un administrador) la registra en su log local y
-  desencadena el proceso de replicación hacia las réplicas.
-- Las **réplicas** reciben del líder las entradas del log y las aplican en el mismo orden,
-  manteniendo su propio sistema de actores sincronizado con el del líder. No toman decisiones de
-  orden ni de commit por sí mismas: siguen la secuencia que les envía el líder.
+- The **leader** is the only node that decides the *global order* of operations and coordinates the
+  commit. Each time it receives a new operation (for example, a `Charge` generated by a
+  station or a `LimitAccount` requested by an administrator) it records it in its local log and
+  triggers the replication process to the replicas.
+- The **replicas** receive log entries from the leader and apply them in the same order,
+  keeping their own actor system synchronized with the leader's. They do not make ordering or
+  commit decisions themselves: they follow the sequence sent by the leader.
 
-El flujo simplificado para una operación es el siguiente (esquema inspirado en Raft):
+The simplified flow for an operation is as follows (scheme inspired by Raft):
 
-1. Una operación de alto nivel (`Operation`) llega a algún nodo del sistema (líder, réplica o
-   estación que proxyea) y termina siendo entregada al líder en forma de mensaje `Request`.
-2. El líder asigna un nuevo identificador de operación (`op_id`), la guarda en su estructura de
-   `PendingOperation` y crea una entrada de log asociada.
-3. El líder envía a cada réplica un mensaje `Log { op_id, op }` a través de la capa de red
-   (abstracción `Connection`).
-4. Cada réplica, al recibir un `Log`, almacena la operación en su propio log y ejecuta, a través
-   de su `Database` (ActorRouter + actores), la operación inmediatamente anterior. Una vez que la
-   ejecución termina, la réplica responde al líder con un mensaje `Ack { op_id }`.
-5. El líder va contabilizando los `Ack` recibidos. Cuando una operación tiene *ack* de la
-   mayoría de las réplicas, se considera *committed*. En ese momento el líder ejecuta la
-   operación en su propio sistema de actores y traduce el resultado a una respuesta:
-   - si el origen era una estación, genera un `NodeToStationMsg::ChargeResult` hacia la Station;
-   - si el origen era un cliente TCP (CLI administrativo), envía un `Message::Response` con el
-     `OperationResult` correspondiente.
+1. A high-level operation (`Operation`) arrives at some node of the system (leader, replica or
+   station that proxies) and ends up being delivered to the leader as a `Request` message.
+2. The leader assigns a new operation identifier (`op_id`), saves it in its `PendingOperation`
+   structure, and creates an associated log entry.
+3. The leader sends each replica a `Log { op_id, op }` message through the network layer
+   (abstraction `Connection`).
+4. Each replica, upon receiving a `Log`, stores the operation in its own log and executes, through
+   its `Database` (ActorRouter + actors), the immediately previous operation. Once execution
+   finishes, the replica responds to the leader with an `Ack { op_id }` message.
+5. The leader counts the `Ack`s received. When an operation has *ack* from the
+   majority of replicas, it is considered *committed*. At that moment the leader executes the
+   operation in its own actor system and translates the result into a response:
+   - if the origin was a station, it generates a `NodeToStationMsg::ChargeResult` to the Station;
+   - if the origin was a TCP client (administrative CLI), it sends a `Message::Response` with the
+     corresponding `OperationResult`.
 
-De esta manera, el log replicado define un orden total de las operaciones y garantiza que tanto el
-líder como las réplicas apliquen exactamente la misma secuencia sobre su estado en memoria. La
-consistencia del clúster se logra sin compartir memoria entre nodos: toda la coordinación se hace
-mediante mensajes (`Request`, `Log`, `Ack`, `Response`) sobre TCP.
+In this way, the replicated log defines a total order of operations and ensures that both the
+leader and the replicas apply exactly the same sequence to their in-memory state. Cluster
+consistency is achieved without sharing memory between nodes: all coordination is done
+through messages (`Request`, `Log`, `Ack`, `Response`) over TCP.
 
-## Estaciones y clientes administrativos
+## Stations and administrative clients
 
-Aunque el clúster de consenso está formado únicamente por el líder y las réplicas, **no todas las
-estaciones de servicio forman parte de ese clúster**. En YPF Ruta distinguimos dos tipos de
-clientes del servidor:
+Although the consensus cluster is formed only by the leader and replicas, **not all
+service stations are part of that cluster**. In YPF Ruta we distinguish two types of
+server clients:
 
-- Estaciones que no cumplen rol en el clúster de consenso (nodos “externos” al consenso).
-- Clientes administrativos (CLI) utilizados por las empresas para gestionar sus cuentas.
+- Stations that do not play a role in the consensus cluster (nodes “external” to consensus).
+- Administrative clients (CLI) used by companies to manage their accounts.
 
-Ambos tipos de cliente generan operaciones de alto nivel (`Operation`) que, directa o
-indirectamente, terminan llegando al líder.
+Both types of client generate high-level operations (`Operation`) that, directly or
+indirectly, end up reaching the leader.
 
-### Estaciones de servicio
+### Service stations
 
-Cada estación cuenta con un simulador de surtidores (`Station`) que:
+Each station has a pump simulator (`Station`) that:
 
-- lee comandos desde stdin (uno por operación de cobro),
-- los traduce a mensajes de alto nivel (`StationToNodeMsg::ChargeRequest`),
-- y espera la respuesta correspondiente (`NodeToStationMsg::ChargeResult`).
+- reads commands from stdin (one per charging operation),
+- translates them into high-level messages (`StationToNodeMsg::ChargeRequest`),
+- and waits for the corresponding response (`NodeToStationMsg::ChargeResult`).
 
-Según dónde esté corriendo la estación:
+Depending on where the station is running:
 
-- Si se ejecuta en el mismo proceso que un **nodo líder** o una **réplica**, la `Station` se
-  conecta internamente a ese nodo y éste actúa como “frente” de la estación frente al clúster de
-  consenso.
-- Si la estación está completamente **afuera del clúster**, se conecta por TCP a algún nodo
-  (típicamente el líder) y ese nodo toma el rol de entrada para sus operaciones.
+- If it runs in the same process as a **leader node** or a **replica**, the `Station`
+  connects internally to that node and it acts as the station's “front” to the consensus cluster.
+- If the station is completely **outside the cluster**, it connects via TCP to some node
+  (typically the leader) and that node takes the role of entry point for its operations.
 
-En cualquier caso, la estación no necesita conocer la topología interna del clúster ni cómo se
-implementa la replicación: únicamente envía requests de cobro y recibe resultados admitido/denegado
-con información opcional de error (`VerifyError`).
+In any case, the station does not need to know the internal topology of the cluster or how
+replication is implemented: it only sends charging requests and receives admitted/denied results
+with optional error information (`VerifyError`).
 
-### Clientes administrativos (CLI)
+### Administrative clients (CLI)
 
-El cliente administrativo se implementa como un binario independiente (`client`) que ofrece un
-CLI para interactuar con el sistema. A través de este cliente es posible:
+The administrative client is implemented as an independent binary (`client`) that offers a
+CLI to interact with the system. Through this client it is possible to:
 
-- limitar el monto disponible en una cuenta (`Operation::LimitAccount`),
-- limitar el monto disponible en una tarjeta (`Operation::LimitCard`),
-- consultar el consumo de una cuenta (`Operation::AccountQuery`),
-- iniciar procesos de facturación (`Operation::Bill`).
+- limit the available amount in an account (`Operation::LimitAccount`),
+- limit the available amount on a card (`Operation::LimitCard`),
+- query account consumption (`Operation::AccountQuery`),
+- start billing processes (`Operation::Bill`).
 
-El CLI serializa estas operaciones a un formato binario propio y las envía por TCP al servidor.
-Desde la perspectiva del clúster, un comando del CLI es simplemente otra `Operation` que ingresa
-al líder mediante un mensaje `Request`, sigue el mismo flujo de replicación y commit que un cobro
-originado en una estación, y termina en una respuesta `OperationResult` que el cliente muestra por
+The CLI serializes these operations into its own binary format and sends them via TCP to the server.
+From the cluster's perspective, a CLI command is simply another `Operation` that enters
+the leader via a `Request` message, follows the same replication and commit flow as a charge
+originated at a station, and ends in an `OperationResult` response that the client displays via
 stdout.
 
-## Tolerancia a fallas y elección de líder (Bully)
+## Fault tolerance and leader election (Bully)
 
-El clúster de consenso está pensado para seguir funcionando incluso si algunos nodos dejan de
-responder, en particular el líder. Mientras al menos una réplica y la mayoría de los nodos sigan
-activos, el sistema puede elegir un nuevo líder y continuar procesando operaciones.
+The consensus cluster is designed to continue operating even if some nodes stop
+responding, particularly the leader. As long as at least one replica and the majority of nodes remain
+active, the system can elect a new leader and continue processing operations.
 
-Cuando se detecta la caída del líder, una de las réplicas inicia una **elección de líder** usando el
-algoritmo Bully. La idea básica es:
+When leader failure is detected, one of the replicas starts a **leader election** using the
+Bully algorithm. The basic idea is:
 
-- Cada nodo del clúster tiene un identificador único (ID numérico).
-- El nodo que detecta la falla se postula como candidato y envía mensajes de *elección* a los nodos
-  con ID más alto que el suyo.
-- Si ningún nodo con ID mayor responde, el candidato se proclama nuevo líder y anuncia su rol al
-  resto del clúster.
-- Si algún nodo con ID mayor responde, ese nodo “toma la posta” y continúa el proceso de elección,
-  hasta que finalmente el nodo con ID más alto disponible se convierta en líder.
+- Each cluster node has a unique identifier (numeric ID).
+- The node that detects the failure nominates itself as a candidate and sends *election* messages to nodes
+  with a higher ID than its own.
+- If no node with a higher ID responds, the candidate proclaims itself the new leader and announces its role to
+  the rest of the cluster.
+- If a node with a higher ID responds, that node “takes over” and continues the election process,
+  until finally the highest available ID node becomes leader.
 
-De esta forma, el liderazgo siempre recae en el nodo “más fuerte” (ID más alto) que siga activo.
-Para las estaciones y los clientes administrativos, este proceso es casi transparente: pueden
-seguir enviando operaciones a los nodos del clúster, que se encargan de redirigirlas internamente
-hacia el líder vigente.
+Thus, leadership always falls to the “strongest” (highest ID) node that remains active.
+For stations and administrative clients, this process is almost transparent: they can
+continue sending operations to cluster nodes, which internally redirect them
+to the current leader.
 
-# Clientes
+# Clients
 
-En esta sección se describen los dos tipos principales de clientes que interactúan con
-**YPF Ruta**: las estaciones de servicio (a través de sus surtidores) y los usuarios
-administrativos de las empresas, que operan mediante un cliente de línea de comandos (CLI).
+This section describes the two main types of clients that interact with
+**YPF Ruta**: service stations (through their pumps) and
+administrative users of companies, who operate via a command line client (CLI).
 
-## Estaciones de servicio y surtidores
+## Service stations and pumps
 
-Cada estación se modela como una terminal que agrupa varios surtidores. En el prototipo,
-esta terminal está representada por el componente `Station`, que:
+Each station is modeled as a terminal that groups several pumps. In the prototype,
+this terminal is represented by the `Station` component, which:
 
-- lee comandos ingresados por el operador (uno por cada intento de carga),
-- los traduce a solicitudes de cobro de alto nivel hacia el nodo con el que está conectada,
-- y muestra en pantalla el resultado de la operación (aprobada o rechazada, con el motivo).
+- reads commands entered by the operator (one for each load attempt),
+- translates them into high-level charging requests to the node it is connected to,
+- and displays the result of the operation (approved or rejected, with the reason) on screen.
 
-Desde la perspectiva de la estación, el flujo típico es:
+From the station's perspective, the typical flow is:
 
-1. El operador ingresa los datos de la operación (surtidor, cuenta, tarjeta, monto).
-2. La estación envía una solicitud de cobro al sistema.
-3. El sistema responde indicando si la operación fue aceptada o no, y por qué
-   (por ejemplo, límite de tarjeta o de cuenta excedido).
+1. The operator enters the operation data (pump, account, card, amount).
+2. The station sends a charging request to the system.
+3. The system responds indicating whether the operation was accepted or not, and why
+   (for example, card or account limit exceeded).
 
-El detalle de cómo se replica esa operación dentro del clúster (líder, réplicas, log, ACKs)
-queda oculto detrás de esta interfaz simple de “solicitud de cobro / resultado”.
+The details of how that operation is replicated within the cluster (leader, replicas, log, ACKs)
+are hidden behind this simple “charging request / result” interface.
 
-## Cliente administrativo (CLI) para empresas
+## Administrative client (CLI) for companies
 
-Las empresas que utilizan YPF Ruta cuentan además con un cliente administrativo en modo
-texto (CLI), pensado para tareas de gestión sobre sus cuentas. A través de este cliente es
-posible:
+Companies using YPF Ruta also have a text-mode administrative client (CLI), designed for management tasks on their accounts. Through this client it is possible to:
 
-- establecer o modificar el límite global de una cuenta,
-- fijar límites individuales para cada tarjeta asociada,
-- consultar el consumo acumulado de una cuenta y su desglose por tarjeta,
-- iniciar procesos de facturación sobre una cuenta.
+- set or modify the global limit of an account,
+- set individual limits for each associated card,
+- query the accumulated consumption of an account and its breakdown by card,
+- start billing processes on an account.
 
-Cada comando del CLI se traduce internamente en una `Operation` (por ejemplo,
-`LimitAccount`, `LimitCard`, `AccountQuery` o `Bill`) que se envía al servidor y sigue el
-mismo flujo de consenso que las operaciones de cobro. El usuario administrativo, sin
-embargo, sólo ve una interfaz simple de consulta y actualización de parámetros de su cuenta.
+Each CLI command is internally translated into an `Operation` (for example,
+`LimitAccount`, `LimitCard`, `AccountQuery` or `Bill`) that is sent to the server and follows the
+same consensus flow as charging operations. The administrative user, however, only sees a simple interface for querying and updating their account parameters.
 
 
-# Implementación del nodo
+# Node implementation
 
-Cada proceso del servidor (líder o réplica) se modela como un **nodo** que se comunica
-simultáneamente con tres “mundos” distintos:
+Each server process (leader or replica) is modeled as a **node** that communicates
+simultaneously with three different “worlds”:
 
-- otros nodos del clúster (consenso y replicación),
-- la estación local (surtidores simulados),
-- la base de datos lógica implementada con actores.
+- other cluster nodes (consensus and replication),
+- the local station (simulated pumps),
+- the logical database implemented with actors.
 
-Estos comportamientos se abstraen en el trait `Node`, que es implementado por `Leader` y
+These behaviors are abstracted in the `Node` trait, which is implemented by `Leader` and
 `Replica`.
 
-## Visión general y bucle principal del nodo
+## Overview and main node loop
 
-El corazón de la implementación es el bucle principal definido en `Node::run`. Este bucle
-asincrónico se ejecuta mientras el nodo está vivo y resuelve, mediante un `tokio::select!`,
-tres tipos de eventos:
+The heart of the implementation is the main loop defined in `Node::run`. This asynchronous loop runs while the node is alive and resolves, using a `tokio::select!`,
+three types of events:
 
-- mensajes que llegan desde otros nodos a través de la capa de red (`Connection`),
-- mensajes que llegan desde la estación local (`StationToNodeMsg`),
-- eventos emitidos por el mundo de actores (`ActorEvent`) a través de `Database`.
+- messages arriving from other nodes via the network layer (`Connection`),
+- messages arriving from the local station (`StationToNodeMsg`),
+- events emitted by the actor world (`ActorEvent`) via `Database`.
 
-Según el tipo de evento, el nodo delega en los métodos del trait `Node`:
+Depending on the type of event, the node delegates to the trait methods:
 
-- `handle_node_msg` para mensajes de consenso y replicación (`Request`, `Log`, `Ack`,
+- `handle_node_msg` for consensus and replication messages (`Request`, `Log`, `Ack`,
   `Election`, etc.),
-- `handle_station_msg` para solicitudes de cobro y cambios de modo ONLINE/OFFLINE,
-- `handle_actor_event` para resultados de operaciones de negocio.
+- `handle_station_msg` for charging requests and ONLINE/OFFLINE mode changes,
+- `handle_actor_event` for business operation results.
 
-De esta forma, la lógica específica de líder o réplica se concentra en la implementación del
-trait, mientras que el bucle principal es común a todos los roles.
+Thus, the specific logic of leader or replica is concentrated in the trait implementation, while the main loop is common to all roles.
 
-## Comunicación con otros nodos (Connection / Message)
+## Communication with other nodes (Connection / Message)
 
-La comunicación entre nodos se encapsula en la abstracción `Connection`, que ofrece una
-interfaz uniforme para:
+Communication between nodes is encapsulated in the `Connection` abstraction, which offers a
+uniform interface for:
 
-- aceptar conexiones entrantes y establecer conexiones salientes,
-- enviar mensajes tipados (`Message`) a una dirección (`SocketAddr`),
-- recibir mensajes desde la red de forma asincrónica.
+- accepting incoming connections and establishing outgoing connections,
+- sending typed messages (`Message`) to an address (`SocketAddr`),
+- receiving messages from the network asynchronously.
 
-El enum `Message` representa todos los mensajes de “mundo nodo”:
+The `Message` enum represents all “node world” messages:
 
-- mensajes de operaciones (`Request`, `Response`, `Log`, `Ack`),
-- mensajes de elección de líder (`Election`, `ElectionOk`, `Coordinator`),
-- mensajes de membresía del clúster (`Join`, `ClusterView`, `ClusterUpdate`).
+- operation messages (`Request`, `Response`, `Log`, `Ack`),
+- leader election messages (`Election`, `ElectionOk`, `Coordinator`),
+- cluster membership messages (`Join`, `ClusterView`, `ClusterUpdate`).
 
-El método `handle_node_msg` del trait `Node` actúa como *dispatcher*: desempaqueta el
-`Message` recibido y llama a los handlers específicos (`handle_request`, `handle_log`,
-`handle_ack`, `handle_election`, etc.) que implementan la semántica de líder o réplica.
+The `handle_node_msg` method of the `Node` trait acts as a *dispatcher*: it unpacks the
+received `Message` and calls the specific handlers (`handle_request`, `handle_log`,
+`handle_ack`, `handle_election`, etc.) that implement leader or replica semantics.
 
-## Comunicación con la estación (Station, StationToNodeMsg, NodeToStationMsg)
+## Communication with the station (Station, StationToNodeMsg, NodeToStationMsg)
 
-La interacción con los surtidores de una estación se modela mediante el tipo `Station`, que
-corre en una tarea de fondo y se comunica con el nodo por canales asincrónicos:
+Interaction with a station's pumps is modeled by the `Station` type, which
+runs in a background task and communicates with the node via asynchronous channels:
 
-- `StationToNodeMsg`: mensajes que la estación envía al nodo.
-- `NodeToStationMsg`: mensajes que el nodo envía de vuelta a la estación.
+- `StationToNodeMsg`: messages the station sends to the node.
+- `NodeToStationMsg`: messages the node sends back to the station.
 
-Los mensajes principales son:
+The main messages are:
 
-- `StationToNodeMsg::ChargeRequest` para solicitar un cobro (cuenta, tarjeta, monto).
-- `StationToNodeMsg::DisconnectNode` y `ConnectNode` para cambiar el modo ONLINE/OFFLINE.
-- `NodeToStationMsg::ChargeResult` para devolver el resultado final de una operación de
-  cobro, incluyendo si fue permitida o no y un posible `VerifyError`.
-- `NodeToStationMsg::Debug` para enviar mensajes informativos al operador.
+- `StationToNodeMsg::ChargeRequest` to request a charge (account, card, amount).
+- `StationToNodeMsg::DisconnectNode` and `ConnectNode` to change ONLINE/OFFLINE mode.
+- `NodeToStationMsg::ChargeResult` to return the final result of a charging operation,
+  including whether it was allowed or not and a possible `VerifyError`.
+- `NodeToStationMsg::Debug` to send informational messages to the operator.
 
-El método `handle_station_msg` del trait `Node` encapsula la política de qué hacer ante cada
-mensaje: en el caso de un `ChargeRequest`, construye una `Operation::Charge` y la inyecta en
-el flujo normal del clúster (pasando por el líder y la replicación).
+The `handle_station_msg` method of the `Node` trait encapsulates the policy of what to do for each
+message: in the case of a `ChargeRequest`, it builds an `Operation::Charge` and injects it into
+the normal cluster flow (passing through the leader and replication).
 
-## Comunicación con la base de datos lógica (Database, ActorEvent)
+## Communication with the logical database (Database, ActorEvent)
 
-La **base de datos lógica** del sistema está implementada como un conjunto de actores y se
-encapsula detrás del tipo `Database`. Desde el punto de vista del nodo, `Database` ofrece
-dos operaciones:
+The system's **logical database** is implemented as a set of actors and is
+encapsulated behind the `Database` type. From the node's point of view, `Database` offers
+two operations:
 
-- `send(DatabaseCmd)`: para enviar comandos de alto nivel (por ahora, `Execute { op_id,
+- `send(DatabaseCmd)`: to send high-level commands (for now, `Execute { op_id,
   operation }`).
-- `recv()`: para recibir eventos producidos por el mundo de actores (`ActorEvent`).
+- `recv()`: to receive events produced by the actor world (`ActorEvent`).
 
-El actor principal es el `ActorRouter`, que coordina:
+The main actor is the `ActorRouter`, which coordinates:
 
-- actores de cuenta (`AccountActor`) responsables de los límites y consumos a nivel cuenta,
-- actores de tarjeta (`CardActor`) responsables de los límites y consumos por tarjeta.
+- account actors (`AccountActor`) responsible for limits and consumption at the account level,
+- card actors (`CardActor`) responsible for limits and consumption per card.
 
-Cuando el líder decide *commit* de una operación, en lugar de aplicar la lógica de negocio
-directamente, envía un `DatabaseCmd::Execute` a `Database`. El resultado llega luego como un
-`ActorEvent::OperationResult`, que el nodo traduce a:
+When the leader decides to *commit* an operation, instead of applying business logic
+directly, it sends a `DatabaseCmd::Execute` to `Database`. The result then arrives as an
+`ActorEvent::OperationResult`, which the node translates into:
 
-- una respuesta a la estación (`NodeToStationMsg::ChargeResult`), o
-- una respuesta al cliente administrativo (`Message::Response` con un `OperationResult`).
+- a response to the station (`NodeToStationMsg::ChargeResult`), or
+- a response to the administrative client (`Message::Response` with an `OperationResult`).
 
-Esta separación permite que el nodo se concentre en coordinación distribuida y tolerancia a
-fallas, mientras que la consistencia y verificación de las operaciones de negocio se
-resuelven dentro del modelo de actores.
+This separation allows the node to focus on distributed coordination and fault tolerance, while consistency and verification of business operations are resolved within the actor model.
 
 
-# Modelo de actores de la base de datos
+# Actor model of the database
 
-La base de datos lógica de **YPF Ruta** se modela con el patrón de **actores**: cada entidad
-de negocio (cuenta, tarjeta) es un actor con estado propio, que solo se modifica a través
-de mensajes. El nodo nunca accede a ese estado directamente: envía operaciones de alto
-nivel y recibe un resultado tipado.
+The logical database of **YPF Ruta** is modeled with the **actor** pattern: each business entity (account, card) is an actor with its own state, which is only modified through messages. The node never accesses that state directly: it sends high-level operations and receives a typed result.
 
 ## ActorRouter
 
-`ActorRouter` es la puerta de entrada al mundo de actores. Desde el punto de vista del nodo:
+`ActorRouter` is the entry point to the actor world. From the node's point of view:
 
-- recibe una operación de negocio (por ejemplo, `Execute(op_id, Operation)`),
-- se asegura de tener creados los actores necesarios (cuentas y tarjetas),
-- coordina el intercambio de mensajes entre ellos,
-- y, cuando todo termina, emite un único resultado
-  `OperationResult(op_id, Operation, Resultado)`.
+- receives a business operation (for example, `Execute(op_id, Operation)`),
+- ensures the necessary actors are created (accounts and cards),
+- coordinates message exchange between them,
+- and, when everything is done, emits a single result
+  `OperationResult(op_id, Operation, Result)`.
 
-En síntesis, toma un pedido de alto nivel, lo descompone en mensajes internos y vuelve a
-concentrar todas esas interacciones en una respuesta única para el nodo.
+In summary, it takes a high-level request, breaks it down into internal messages, and reconcentrates all those interactions into a single response for the node.
 
 ## AccountActor
 
-Cada `AccountActor` encapsula el estado de una cuenta:
+Each `AccountActor` encapsulates the state of an account:
 
-- límite global de la cuenta,
-- consumo acumulado,
-- y, cuando hace falta, estado temporal para consultas con detalle por tarjeta.
+- global account limit,
+- accumulated consumption,
+- and, when needed, temporary state for queries with card detail.
 
-Conceptualmente maneja tres tipos de mensajes:
+Conceptually it handles three types of messages:
 
 - `ApplyCharge(amount, from_offline_station)`
 - `ApplyAccountLimit(new_limit)`
 - `AccountQueryStep(card_id, consumed)`
 
-Con ellos:
+With them:
 
-- valida y aplica cargos a nivel cuenta (respetando el límite global),
-- valida y actualiza el límite global,
-- y agrega la información que le van reportando las tarjetas para construir la respuesta
-  de una consulta de cuenta.
+- validates and applies charges at the account level (respecting the global limit),
+- validates and updates the global limit,
+- and adds the information reported by the cards to build the response
+  to an account query.
 
 ## CardActor
 
-Cada `CardActor` representa una tarjeta individual:
+Each `CardActor` represents an individual card:
 
-- límite por tarjeta,
-- consumo acumulado,
-- y una cola de tareas para procesar sus operaciones en orden.
+- card limit,
+- accumulated consumption,
+- and a task queue to process its operations in order.
 
-Recibe, de forma conceptual, mensajes del estilo:
+It conceptually receives messages like:
 
 - `ExecuteCharge(amount, from_offline_station)`
 - `ExecuteLimitChange(new_limit)`
 - `ReportStateForAccountQuery()`
 
-Con estos mensajes:
+With these messages:
 
-- verifica el límite de tarjeta antes de un cargo,
-- delega en la cuenta la verificación del límite global,
-- y responde con su consumo actual cuando se arma una consulta de cuenta.
+- verifies the card limit before a charge,
+- delegates to the account the verification of the global limit,
+- and responds with its current consumption when building an account query.
 
-## Mensajes, operaciones y resultados (Operation, OperationResult)
+## Messages, operations and results (Operation, OperationResult)
 
-Para desacoplar el nodo del modelo de actores se define un conjunto acotado de operaciones
-y resultados de alto nivel:
+To decouple the node from the actor model, a limited set of high-level operations
+and results is defined:
 
 `Operation` =
 - `Charge(account_id, card_id, amount, from_offline_station)`
@@ -622,135 +604,133 @@ y resultados de alto nivel:
 - `LimitCardResult(Ok | Failed(VerifyError))`
 - `AccountQueryResult(account_id, total_spent, per_card_spent)`
 
-El flujo completo es:
+The complete flow is:
 
-1. El nodo recibe una `Operation` y decide cuándo se *commitea* según el consenso.
-2. Una vez decidido, envía `Execute(op_id, Operation)` al modelo de actores.
-3. Los actores de cuenta y tarjeta procesan la operación únicamente mediante mensajes.
-4. `ActorRouter` devuelve un `OperationResult`, que el nodo traduce en la respuesta
-   a la estación o al cliente administrativo.
-
-
-# Protocolo de comunicación
-
-## Protocolo de aplicación (formato de mensajes y serialización)
-
-Los distintos procesos de **YPF Ruta** se comunican mediante un protocolo de aplicación
-binario propio. Cada mensaje comienza con un byte de tipo que identifica la variante
-(`Request`, `Log`, `Ack`, `Election`, etc.), seguido por los campos específicos de ese tipo
-codificados en binario (enteros, `f32`, banderas, etc.).
-
-Este formato se usa de manera uniforme tanto entre nodos del clúster de consenso como entre
-clientes (estaciones o CLI administrativo) y el nodo al que se conectan. Por encima de estos
-mensajes de bajo nivel, la lógica del sistema trabaja con operaciones de negocio (`Operation`)
-y resultados (`OperationResult`), lo que permite separar las decisiones de dominio de los
-detalles de serialización.
-
-## Protocolo de transporte (TCP)
-
-Para el transporte se utiliza **TCP**, que ofrece un canal fiable, orientado a conexión y con
-entrega ordenada de los bytes. Estas propiedades son fundamentales en un sistema de cobros,
-donde cada mensaje representa una operación económica y cada entrada de log debe aplicarse en
-el mismo orden en todos los nodos del clúster. Además, el cierre o error en la conexión TCP
-se usa como señal de caída de un nodo o cliente, disparando los mecanismos de tolerancia a
-fallas cuando corresponde.
+1. The node receives an `Operation` and decides when to *commit* according to consensus.
+2. Once decided, it sends `Execute(op_id, Operation)` to the actor model.
+3. Account and card actors process the operation only through messages.
+4. `ActorRouter` returns an `OperationResult`, which the node translates into the response
+   to the station or administrative client.
 
 
-# Política de cobro en estaciones sin conexión
+# Communication protocol
 
-## Nodo fuera del clúster
+## Application protocol (message format and serialization)
 
-Cuando una estación que **no forma parte del clúster de consenso** pierde conexión con la red, el sistema central no puede verificar límites ni saldos. En ese escenario la decisión de aceptar o rechazar el cobro queda íntegramente del lado de la estación: puede operar en modo “confío y anoto localmente” o en modo “no autorizo sin conexión”, pero cualquier política que adopte será necesariamente local y no consistente con el resto del sistema hasta que se recupere la conectividad.
+The different **YPF Ruta** processes communicate through their own binary application protocol. Each message begins with a type byte that identifies the variant
+(`Request`, `Log`, `Ack`, `Election`, etc.), followed by the specific fields of that type
+encoded in binary (integers, `f32`, flags, etc.).
 
-## Nodo réplica / líder en modo OFFLINE
+This format is used uniformly both between consensus cluster nodes and between
+clients (stations or administrative CLI) and the node they connect to. Above these
+low-level messages, the system logic works with business operations (`Operation`)
+and results (`OperationResult`), which allows separating domain decisions from
+serialization details.
 
-Si quien pierde conectividad es un nodo del clúster (líder o réplica), puede entrar explícitamente en modo **OFFLINE**. En este modo el nodo deja de participar del consenso, pero sigue atendiendo a sus surtidores: cada cobro se acepta inmediatamente y la operación se registra en una cola de “cargos offline” marcada como tal (`from_offline_station = true`). La idea es priorizar la continuidad de servicio en la estación, posponiendo la verificación global de límites para cuando el nodo vuelva a estar en línea.
+## Transport protocol (TCP)
 
-## Reconciliación al recuperar la conexión
-
-Al volver a modo **ONLINE**, el nodo reproduce secuencialmente todas las operaciones encoladas contra la base de datos lógica y las replica al clúster de consenso. Como esas operaciones están etiquetadas como provenientes de una estación offline, se aplican directamente sobre el estado (sin volver a bloquear al cliente) para reconstruir un historial consistente. Si durante la desconexión se eligió un nuevo líder, las actualizaciones pendientes se envían a ese líder vigente, de modo que el clúster converge nuevamente a un único estado acordado.
-
-
-# Cambios respecto a la primera entrega
-
-Durante la implementación del sistema se realizaron cambios significativos respecto al diseño inicial presentado en la primera entrega. Estos cambios surgieron de una mejor comprensión de los requisitos del sistema y de las herramientas de concurrencia distribuida disponibles.
-
-## 1 - Cambio de arquitectura: de clústeres por tarjeta a consenso centralizado
-El cambio fundamental fue pasar de un sistema con **múltiples clústeres descentralizados por tarjeta** a un **clúster de consenso centralizado con log replicado**. Esta decisión simplificó enormemente la implementación, permitió demostrar de forma más clara las herramientas de concurrencia distribuida (elección de líder, consenso) y resultó en un sistema más robusto y fácil de razonar
-
-**Diseño inicial:** El sistema se planteó con tres tipos de clústeres:
-Clúster de surtidores en cada estación, clúster de nodos suscriptores por tarjeta (con líder de tarjeta) y clúster de cuenta que coordinaba líderes de tarjetas
-Esta arquitectura buscaba optimizar la comunicación mediante localidad geográfica, donde cada tarjeta tenía su propio clúster de nodos suscriptores que se replicaban la información, con un mecanismo de TTL (Time-To-Live) para desuscribirse de tarjetas no utilizadas.
-
-**Implementación final:** Se adoptó un modelo de **consenso centralizado** con:
-- Un nodo **líder** único que coordina todas las operaciones
-- Nodos **réplica** que mantienen copias sincronizadas del estado
-- Un **log replicado** inspirado en Raft para garantizar consistencia
-
-**Razones del cambio:**
-1. **Simplicidad:** El modelo de consenso centralizado es más simple de implementar correctamente y razonar sobre su comportamiento.
-2. **Consistencia fuerte:** El log replicado garantiza que todas las operaciones se apliquen en el mismo orden en todos los nodos, evitando inconsistencias complejas. Asi como tecnicas de consenso y tolerancia a fallas
-3. **Scope del prototipo:** Para un sistema académico con 1600 estaciones simuladas, la optimización por localidad geográfica agregaba complejidad innecesaria.
-
-## 2 - Modelo de actores: de actores distribuidos a actores locales
-**Diseño inicial:** Se plantearon tres tipos de actores distribuidos: Actor **Suscriptor**, Actor **Líder Tarjeta** y Actor **Cuenta**
-
-Los actores se comunicaban entre nodos mediante propagación viral de mensajes.
-
-**Implementación final:** Los actores quedaron como entidades **locales** dentro de cada nodo y que además permiten 
-- `ActorRouter`: punto de entrada y coordinador
-- `AccountActor`: maneja el estado de una cuenta (límite y consumo)
-- `CardActor`: maneja el estado de una tarjeta (límite y consumo)
-
-**Razones del cambio:**
-1. **Separación de responsabilidades:** Los actores se enfocan exclusivamente en la lógica de negocio (validar límites, acumular consumos), mientras que el consenso distribuido lo maneja el clúster de nodos.
-2. **Simplicidad del modelo:** Los actores solo se comunican mediante mensajes dentro del mismo proceso, eliminando la complejidad de comunicación inter-nodo a nivel de actores.
-
-## 3 - Eliminación del mecanismo de TTL y suscripciones dinámicas
-
-**Diseño inicial:** Los nodos se suscribían dinámicamente a tarjetas según uso geográfico, con un mecanismo de TTL para desuscribirse automáticamente.
-
-**Implementación final:** Se eliminó completamente este mecanismo. Todos los nodos del clúster replican todo el estado desde el inicio.
-
-## 4 - Protocolo de consenso: log replicado con mayoría de ACKs
-
-**Diseño inicial:** No se especificaba un protocolo formal de consenso entre nodos del clúster.
-
-**Implementación final:** Se implementó un protocolo de log replicado simplificado:
-1. El líder asigna un `op_id` secuencial a cada operación
-2. El líder envía `Log { op_id, operation }` a todas las réplicas
-3. Cada réplica ejecuta la operación **anterior** y responde con `Ack { op_id }`
-4. El líder espera ACKs de la mayoría antes de considerar la operación *committed*
-5. El líder ejecuta la operación en su propio sistema de actores y responde al cliente
-
-## 5 - Manejo de desconexiones: modo OFFLINE con reconciliación
-
-**Diseño inicial:** Se mencionaba que las estaciones sin conexión podían realizar cobros que se encolaban para posterior sincronización.
-
-**Implementación final:** Se formalizó el concepto de **modo OFFLINE**:
-- Cualquier nodo (líder o réplica) puede entrar explícitamente en modo OFFLINE
-- En modo OFFLINE, los cobros se aceptan inmediatamente y se encolan con flag `from_offline_station = true`
-- Al volver a modo ONLINE, se reproducen todas las operaciones encoladas contra el clúster
-- Las operaciones offline se aplican sin re-validar límites (ya fueron consumidas)
-
-## 6 - Protocolo de serialización binario
-
-**Diseño inicial:** Se especificaba un protocolo con 1 byte de tipo de mensaje y campos específicos por tipo.
-
-**Implementación final:** Se mantuvo la idea general pero se refinó:
-- Byte inicial identifica el tipo de `Message` o `Operation`
-- Campos serializados en orden fijo (u32, u64, f32, etc.)
-- Sin compresión ni optimizaciones avanzadas (simplicidad sobre eficiencia)
+**TCP** is used for transport, providing a reliable, connection-oriented channel with
+ordered delivery of bytes. These properties are fundamental in a charging system,
+where each message represents a financial operation and each log entry must be applied in
+the same order on all cluster nodes. In addition, TCP connection closure or error
+is used as a signal of node or client failure, triggering fault tolerance mechanisms when appropriate.
 
 
-# Conclusiones
+# Charging policy at stations without connection
 
-El desarrollo de **YPF Ruta** permitió diseñar e implementar un sistema distribuido capaz de centralizar el control de gasto de combustible de una flota, manteniendo al mismo tiempo un nivel alto de disponibilidad en las estaciones. La combinación de un clúster de consenso (líder + réplicas) con un modelo de actores para la base de datos lógica separa con claridad las preocupaciones: por un lado, la replicación y el acuerdo sobre el orden de las operaciones; por otro, la consistencia de las reglas de negocio sobre cuentas y tarjetas.
+## Node outside the cluster
 
-El rol del **líder** como punto de compromiso de las operaciones, junto con las **réplicas** que mantienen copias sincronizadas del estado, aporta tolerancia a fallas a nivel de nodo. La elección de líder basada en el algoritmo **Bully** permite recuperar un coordinador válido cuando se detecta la caída del nodo actual, evitando que el sistema quede indefinidamente sin un responsable de avanzar el log de operaciones. Desde el punto de vista de los clientes (estaciones y CLI administrativo) esta transición es transparente: basta con reenviar la operación al nodo que responde efectivamente.
+When a station that **is not part of the consensus cluster** loses connection to the network, the central system cannot verify limits or balances. In that scenario, the decision to accept or reject the charge is entirely on the station side: it can operate in “trust and record locally” mode or “do not authorize without connection” mode, but any policy it adopts will necessarily be local and not consistent with the rest of the system until connectivity is restored.
 
-El uso del **modelo de actores** para representar cuentas y tarjetas introduce un esquema de concurrencia que evita compartir memoria mutable entre hilos y nodos. Todas las modificaciones de estado se expresan como mensajes de alto nivel (`Operation`) y sus correspondientes resultados (`OperationResult`), lo que simplifica tanto el razonamiento sobre la lógica de negocio como la integración con el protocolo de replicación. La política explícita para el **modo OFFLINE** en estaciones o nodos del clúster, junto con la reconciliación posterior, permite balancear continuidad de servicio y consistencia eventual del sistema.
+## Replica / leader node in OFFLINE mode
 
-En conjunto, la arquitectura propuesta muestra que es posible construir un servicio de cobros distribuido que combina: replicación y consenso sobre operaciones, encapsulamiento de la lógica de negocio en actores y un protocolo de comunicación binario simple pero suficiente para las necesidades del dominio. A partir de esta base se pueden explorar extensiones naturales, como nuevas operaciones administrativas, métricas de uso por estación, o políticas más sofisticadas de manejo de riesgo en m
+If the node that loses connectivity is a cluster node (leader or replica), it can explicitly enter **OFFLINE** mode. In this mode, the node stops participating in consensus but continues serving its pumps: each charge is accepted immediately and the operation is recorded in a queue of “offline charges” marked as such (`from_offline_station = true`). The idea is to prioritize service continuity at the station, postponing global limit verification until the node is back online.
+
+## Reconciliation upon connection recovery
+
+When returning to **ONLINE** mode, the node sequentially replays all queued operations against the logical database and replicates them to the consensus cluster. Since those operations are tagged as coming from an offline station, they are applied directly to the state (without blocking the client again) to rebuild a consistent history. If a new leader was elected during the disconnection, pending updates are sent to that current leader, so the cluster converges again to a single agreed state.
+
+
+# Changes from the first delivery
+
+During the system implementation, significant changes were made compared to the initial design presented in the first delivery. These changes arose from a better understanding of the system requirements and the available distributed concurrency tools.
+
+## 1 - Architecture change: from per-card clusters to centralized consensus
+The fundamental change was moving from a system with **multiple decentralized clusters per card** to a **centralized consensus cluster with replicated log**. This decision greatly simplified the implementation, allowed for a clearer demonstration of distributed concurrency tools (leader election, consensus), and resulted in a more robust and easier to reason about system.
+
+**Initial design:** The system was planned with three types of clusters:
+Pump cluster at each station, subscriber node cluster per card (with card leader) and account cluster that coordinated card leaders.
+This architecture sought to optimize communication through geographic locality, where each card had its own cluster of subscriber nodes that replicated information, with a TTL (Time-To-Live) mechanism to unsubscribe from unused cards.
+
+**Final implementation:** A **centralized consensus** model was adopted with:
+- A single **leader** node that coordinates all operations
+- **Replica** nodes that maintain synchronized copies of the state
+- A **replicated log** inspired by Raft to guarantee consistency
+
+**Reasons for the change:**
+1. **Simplicity:** The centralized consensus model is simpler to implement correctly and reason about its behavior.
+2. **Strong consistency:** The replicated log ensures that all operations are applied in the same order on all nodes, avoiding complex inconsistencies. As well as consensus and fault tolerance techniques.
+3. **Prototype scope:** For an academic system with 1600 simulated stations, optimization by geographic locality added unnecessary complexity.
+
+## 2 - Actor model: from distributed actors to local actors
+**Initial design:** Three types of distributed actors were proposed: **Subscriber** Actor, **Card Leader** Actor, and **Account** Actor.
+
+Actors communicated between nodes via viral message propagation.
+
+**Final implementation:** Actors remained as **local** entities within each node and also allow
+- `ActorRouter`: entry point and coordinator
+- `AccountActor`: manages account state (limit and consumption)
+- `CardActor`: manages card state (limit and consumption)
+
+**Reasons for the change:**
+1. **Separation of responsibilities:** Actors focus exclusively on business logic (validate limits, accumulate consumption), while distributed consensus is handled by the cluster of nodes.
+2. **Model simplicity:** Actors only communicate via messages within the same process, eliminating the complexity of inter-node communication at the actor level.
+
+## 3 - Elimination of TTL mechanism and dynamic subscriptions
+
+**Initial design:** Nodes dynamically subscribed to cards according to geographic use, with a TTL mechanism for automatic unsubscription.
+
+**Final implementation:** This mechanism was completely eliminated. All cluster nodes replicate all state from the start.
+
+## 4 - Consensus protocol: replicated log with majority of ACKs
+
+**Initial design:** No formal consensus protocol between cluster nodes was specified.
+
+**Final implementation:** A simplified replicated log protocol was implemented:
+1. The leader assigns a sequential `op_id` to each operation
+2. The leader sends `Log { op_id, operation }` to all replicas
+3. Each replica executes the **previous** operation and responds with `Ack { op_id }`
+4. The leader waits for ACKs from the majority before considering the operation *committed*
+5. The leader executes the operation in its own actor system and responds to the client
+
+## 5 - Handling disconnections: OFFLINE mode with reconciliation
+
+**Initial design:** It was mentioned that stations without connection could perform charges that were queued for later synchronization.
+
+**Final implementation:** The concept of **OFFLINE mode** was formalized:
+- Any node (leader or replica) can explicitly enter OFFLINE mode
+- In OFFLINE mode, charges are accepted immediately and queued with flag `from_offline_station = true`
+- Upon returning to ONLINE mode, all queued operations are replayed against the cluster
+- Offline operations are applied without re-validating limits (they were already consumed)
+
+## 6 - Binary serialization protocol
+
+**Initial design:** A protocol was specified with 1 byte for message type and specific fields per type.
+
+**Final implementation:** The general idea was maintained but refined:
+- Initial byte identifies the type of `Message` or `Operation`
+- Fields serialized in fixed order (u32, u64, f32, etc.)
+- No compression or advanced optimizations (simplicity over efficiency)
+
+
+# Conclusions
+
+The development of **YPF Ruta** allowed the design and implementation of a distributed system capable of centralizing fuel expense control for a fleet, while maintaining a high level of availability at stations. The combination of a consensus cluster (leader + replicas) with an actor model for the logical database clearly separates concerns: on one hand, replication and agreement on the order of operations; on the other, consistency of business rules on accounts and cards.
+
+The role of the **leader** as the point of commitment for operations, together with the **replicas** that maintain synchronized copies of the state, provides node-level fault tolerance. Leader election based on the **Bully** algorithm allows recovery of a valid coordinator when the current node fails, preventing the system from indefinitely lacking someone responsible for advancing the operation log. From the clients' perspective (stations and administrative CLI) this transition is transparent: just resend the operation to the node that effectively responds.
+
+The use of the **actor model** to represent accounts and cards introduces a concurrency scheme that avoids sharing mutable memory between threads and nodes. All state modifications are expressed as high-level messages (`Operation`) and their corresponding results (`OperationResult`), which simplifies both reasoning about business logic and integration with the replication protocol. The explicit policy for **OFFLINE mode** at stations or cluster nodes, along with subsequent reconciliation, allows balancing service continuity and eventual system consistency.
+
+Overall, the proposed architecture shows that it is possible to build a distributed charging service that combines: replication and consensus on operations, encapsulation of business logic in actors, and a simple binary communication protocol sufficient for the domain's needs. From this base, natural extensions can be explored, such as new administrative operations, usage metrics per station, or more sophisticated risk management policies in m
 
 
