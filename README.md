@@ -1,109 +1,109 @@
-# YPF Ruta
-Enunciado disponible en [este enlace](https://concurrentes-fiuba.github.io/2025_2C_tp2.html) o bien su copia local en [docs/enunciado_tp2](docs/enunciado_tp2.pdf).
+# YPF Fleet Fuel Distributed System
 
-## Integrantes
-- **Nombre del equipo**: `:(){ :|:& };:`
-- **Corrector**: Darius Maitia
+## Description
+Distributed system for managing fleet fuel consumption across multiple YPF service stations. Implements a microservices architecture with centralized coordination for handling fuel transactions, fleet management, and consumption analytics.
 
-| Nombre              | Padrón  |
-|---------------------|---------|
-| [Alejo Ordonez](https://github.com/alejoordonez02) | 108397 |
-| [Francisco Pereyra](https://github.com/fapereyra) | 105666 |
-| [Lorenzo Minervino](https://github.com/lminervino18) | 107863 |
-| [Alejandro Paff](https://github.com/AlePaff) | 103376 |
+## Architecture
 
+### Components
+- **Central Coordinator**: Manages distributed transactions and coordinates between microservices
+- **Service Station Microservice**: Handles fuel transactions at individual stations
+- **Fleet Management Microservice**: Manages vehicle and fleet information
+- **Admin Panel**: Web interface for monitoring and administration
 
-## Levantar proyecto
+### Technologies
+- Node.js + Express
+- MongoDB
+- React (Admin Panel)
+- REST APIs
+- Message queuing for async communication
 
-Ejecutar el siguiente comando en la terminal para levantar el lado del servidor (líder + réplicas + estaciones simuladas) de forma automática:
+## Installation
 
+### Prerequisites
+- Node.js (v14 or higher)
+- MongoDB
+- npm or yarn
+
+### Setup
+
+1. Clone the repository
 ```bash
-./scripts/launch.sh <N_replicas> <M_estaciones>
+git clone [repository-url]
+cd ypf-fleet-fuel-distributed-system
 ```
 
-> `<N_replicas>` = cantidad de réplicas del cluster  
-> `<M_estaciones>` = cantidad de node_client (estaciones) a levantar  
-
----
-
-### Servidor distribuido (`server`)
-
-Si se quiere lanzar los nodos a mano (sin script), se usa el binario `server` con `clap`:
-
+2. Install dependencies for each component
 ```bash
-# Líder
-cargo run --bin server -- \
-  --address 127.0.0.1:5000 \
-  --coords -31.4 -64.2 \
-  --pumps 4 \
-  leader --max-conns 32
+# Central Coordinator
+cd coordinator
+npm install
 
-# Réplica (apuntando al líder)
-cargo run --bin server -- \
-  --address 127.0.0.1:5001 \
-  --coords -34.6 -58.4 \
-  --pumps 4 \
-  replica --leader-addr 127.0.0.1:5000 --max-conns 32
+# Service Station Microservice
+cd ../microservices/service-station
+npm install
+
+# Fleet Management Microservice
+cd ../fleet-management
+npm install
+
+# Admin Panel
+cd ../../admin-panel
+npm install
 ```
 
-Parámetros principales:
+3. Configure environment variables
+Create `.env` files in each component following the `.env.example` templates
 
-- `--address <IP:PORT>`: dirección en la que escucha el nodo.  
-- `--coords <LAT> <LON>`: coordenadas geográficas del nodo (para el mapa).  
-- `--pumps <N>`: cantidad de surtidores que simula la estación interna.  
-- Subcomandos:
-  - `leader --max-conns <N>`: inicia un nodo líder.
-  - `replica --leader-addr <IP:PORT> --max-conns <N>`: inicia una réplica conectada al líder.
-  - `station { ... }`: modo estación dedicado (aún no implementado, `todo!`).
-
-> Tanto el **líder** como cada **réplica** levantan internamente un simulador de estación (`Station::start(pumps)`) que lee **stdin** y permite disparar cargas desde la terminal (ver sección *Simulador de estación por stdin*).
-
----
-
-### Estación / nodo cliente (`node_client`)
-
-El `node_client` es un cliente fino que simula los surtidores de una estación y reenvía las operaciones al cluster:
-
+4. Start MongoDB
 ```bash
-# Uso general
-node_client <bind_addr> <max_connections> <num_pumps> <known_node_1> [<known_node_2> ...]
-
-# Ejemplo
-cargo run --bin node_client -- \
-  127.0.0.1:6000 \
-  128 \
-  5 \
-  127.0.0.1:5000 127.0.0.1:5001
+mongod
 ```
 
-Donde:
+5. Start services
+```bash
+# In separate terminals:
 
-- `<bind_addr>`: IP:PUERTO donde escucha el `node_client`.
-- `<max_connections>`: máximo de conexiones aceptadas.
-- `<num_pumps>`: cantidad de surtidores que simula.
-- `<known_node_*>`: uno o más nodos del cluster (líder y/o réplicas) a los que envía las operaciones.
+# Central Coordinator
+cd coordinator && npm start
 
-> Igual que el servidor, el `node_client` crea internamente un `Station::start(num_pumps)` que usa **stdin** para simular las cargas de los surtidores.
+# Service Station Microservice
+cd microservices/service-station && npm start
 
----
+# Fleet Management Microservice
+cd microservices/fleet-management && npm start
 
-### Simulador de estación por stdin (server y node_client)
-
-Tanto el binario `server` (líder / réplica) como el binario `node_client` comparten el mismo simulador de estación.  
-Cada proceso que levanta una `Station` muestra un prompt estilo:
-
-```text
-[Station] Starting station simulator with N pumps (ids: 0..=N-1)
-=== Station / pump simulator commands ===
-...
+# Admin Panel
+cd admin-panel && npm start
 ```
 
-Desde **stdin** se pueden enviar comandos con el siguiente formato:
+## Usage
 
-```text
-<pump_id> <account_id> <card_id> <amount>
+### API Endpoints
+
+#### Central Coordinator
+- `POST /api/transaction` - Create new fuel transaction
+- `GET /api/transaction/:id` - Query transaction status
+
+#### Service Station
+- `POST /api/fuel-supply` - Register fuel supply
+- `GET /api/stations` - List available stations
+
+#### Fleet Management
+- `GET /api/fleets` - List fleets
+- `GET /api/vehicles/:id` - Query vehicle information
+- `POST /api/vehicles` - Register new vehicle
+
+## Testing
+```bash
+npm test
 ```
 
+## Contributing
+Contributions are welcome. Please open an issue first to discuss proposed changes.
+
+## License
+[Specify license]
 Ejemplos:
 
 ```text
